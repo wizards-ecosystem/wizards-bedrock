@@ -476,8 +476,8 @@ impl Queue {
     }
 }
 
-pub(crate) fn start_worker() {
-    match crate::thread::spawn("service-worker", work_forever, 0) {
+pub(crate) fn start_worker(context: &mut ThreadContext) {
+    match crate::thread::spawn(context, "service-worker", work_forever, 0) {
         Ok(_) => {
             WORKER_READY.store(true, Ordering::Release);
             crate::info!("kernel: service worker ready; file queue has {WORK_DEPTH} slots");

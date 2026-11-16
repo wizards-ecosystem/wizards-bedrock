@@ -1,40 +1,31 @@
+use core::cell::UnsafeCell;
 use core::fmt;
-use core::sync::atomic::Ordering;
+use core::marker::PhantomData;
+use core::ptr::NonNull;
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 
-use x86_paging::{CanonicalAddress, Flags};
+use x86_paging::{CanonicalAddress, Flags, PAGE_SIZE};
 
 use super::cpu;
-use super::interrupt::{self, TrapFrame};
+use super::interrupt::{self, ExclusionLedger, TrapFrame};
 use super::kpti;
 use super::msr;
-use super::paging::{
-    self, AddressSpaceRoots, Binding, KernelStackTop, MappedStack, StackArena, TaskStackPin,
-};
+use super::paging::{self, AddressSpaceRoots, Binding, MappedStack, TaskStack};
 use super::percpu;
 use super::xstate;
-use crate::cell::HardwareCell;
-use crate::panic::PanicToken;
-use crate::sync::{Leaf, Once, SpinLock, ThreadContext};
+use crate::mm::{self, pool::ArenaFrame};
+use crate::sync::ThreadContext;
 
-pub(crate) const MAX_TASKS: usize = 32;
-
-pub const BOOT: usize = 0;
+pub const STACK_FRAMES: usize = 8;
 
 pub type Entry = fn(&mut ThreadContext, usize) -> !;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum TaskError {
-    NotInitialised,
-    Inactive,
-    Unmapped(u64),
-    TooMany(usize),
-    OutOfRange(usize),
-    Vacant(usize),
-    Dead(usize),
-    Occupied(usize),
-    Current(usize),
     Boot,
+    Started,
+    OnProcessor,
     Uninterruptible,
     NotInTrap,
     InTrap,
@@ -44,242 +35,357 @@ pub enum TaskError {
 
 impl fmt::Display for TaskError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match *self {
-            Self::NotInitialised => formatter.write_str("the task table is not initialised"),
-            Self::Inactive => formatter.write_str("the kernel's page tables are not active"),
-            Self::Unmapped(address) => {
-                write!(formatter, "stack at {address:#x} is not mapped as a stack")
-            }
-            Self::TooMany(stacks) => {
-                write!(formatter, "{stacks} stacks exceed {MAX_TASKS} task slots")
-            }
-            Self::OutOfRange(slot) => write!(formatter, "slot {slot} does not exist"),
-            Self::Vacant(slot) => write!(formatter, "slot {slot} holds no thread"),
-            Self::Dead(slot) => write!(formatter, "slot {slot} has exited"),
-            Self::Occupied(slot) => write!(formatter, "slot {slot} is live"),
-            Self::Current(slot) => write!(formatter, "slot {slot} is already running"),
-            Self::Boot => formatter.write_str("the boot slot has no arena stack"),
-            Self::Uninterruptible => {
-                formatter.write_str("the interrupted code holds a critical section")
-            }
-            Self::NotInTrap => formatter.write_str("not inside a trap handler"),
-            Self::InTrap => formatter.write_str("inside a trap handler"),
-            Self::ForeignFrame => {
-                formatter.write_str("not the frame the live handler was entered with")
-            }
-            Self::UserFrame => {
-                formatter.write_str("a ring 3 frame switches only through its handoff")
-            }
-        }
+        formatter.write_str(match *self {
+            Self::Boot => "the boot task has no arena record",
+            Self::Started => "the task has already run",
+            Self::OnProcessor => "the task is on a processor",
+            Self::Uninterruptible => "the interrupted code holds a critical section",
+            Self::NotInTrap => "not inside a trap handler",
+            Self::InTrap => "inside a trap handler",
+            Self::ForeignFrame => "not the frame the live handler was entered with",
+            Self::UserFrame => "a ring 3 frame switches only through its handoff",
+        })
     }
 }
 
 impl core::error::Error for TaskError {}
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum State {
-    Vacant,
-    Alive,
-    Dead,
+const FRESH: u8 = 0;
+const STARTED: u8 = 1;
+const DEAD: u8 = 2;
+
+// One thread's switch state, at the start of a frame its task owns, or the boot thread's static.
+#[repr(C, align(64))]
+pub(super) struct Record {
+    extended: UnsafeCell<[u8; xstate::CEILING]>,
+    saved: UnsafeCell<u64>,
+    thread_base: UnsafeCell<u64>,
+    page_table: UnsafeCell<Option<AddressSpaceRoots>>,
+    entry: UnsafeCell<Option<(Entry, usize)>>,
+    starts_interruptible: AtomicBool,
+    // Held by the processor running the task and by whoever changes it while it runs nowhere.
+    on_cpu: AtomicBool,
+    state: AtomicU8,
+    named: AtomicBool,
+    tag: [AtomicU64; 2],
+    pub(super) ranks: AtomicU64,
+    pub(super) ledger: ExclusionLedger,
+    stack_top: Option<u64>,
+}
+
+const _: () = assert!(
+    size_of::<Record>() <= PAGE_SIZE as usize,
+    "a task record must fit its frame"
+);
+
+// SAFETY: the `UnsafeCell` fields are touched only by the holder of `on_cpu`, whose Acquire take
+// and Release clear order every access, or by the boot thread on its own static record.
+unsafe impl Sync for Record {}
+
+impl Record {
+    const fn new(
+        stack_top: Option<u64>,
+        entry: Option<(Entry, usize)>,
+        interruptible: bool,
+    ) -> Self {
+        Self {
+            extended: UnsafeCell::new([0; xstate::CEILING]),
+            saved: UnsafeCell::new(0),
+            thread_base: UnsafeCell::new(0),
+            page_table: UnsafeCell::new(None),
+            entry: UnsafeCell::new(entry),
+            starts_interruptible: AtomicBool::new(interruptible),
+            on_cpu: AtomicBool::new(false),
+            state: AtomicU8::new(FRESH),
+            named: AtomicBool::new(false),
+            tag: [AtomicU64::new(0), AtomicU64::new(0)],
+            ranks: AtomicU64::new(0),
+            ledger: ExclusionLedger::new(),
+            stack_top,
+        }
+    }
+
+    fn address(&self) -> usize {
+        core::ptr::from_ref(self).addr()
+    }
+
+    fn page_table(&self) -> Option<AddressSpaceRoots> {
+        // SAFETY: the caller holds `on_cpu` or is this record's running thread.
+        unsafe { *self.page_table.get() }
+    }
+
+    fn kernel_stack_top(&self) -> Option<KernelStackTop<'_>> {
+        self.stack_top.map(|address| KernelStackTop {
+            address,
+            record: PhantomData,
+        })
+    }
+
+    // Taken by compare-exchange, so a racing claim or change finds it held and refuses.
+    fn hold(&self) -> bool {
+        self.on_cpu
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
+    }
+
+    fn let_go(&self) {
+        self.on_cpu.store(false, Ordering::Release);
+    }
+}
+
+// The running boot thread starts on this processor, so the switch and the boot path own it.
+static BOOT_RECORD: Record = Record {
+    on_cpu: AtomicBool::new(true),
+    state: AtomicU8::new(STARTED),
+    ..Record::new(None, None, false)
+};
+
+static BOOT_TAKEN: AtomicBool = AtomicBool::new(false);
+
+static PREDICTOR_BARRIER: AtomicBool = AtomicBool::new(false);
+
+pub(super) fn boot_record() -> usize {
+    BOOT_RECORD.address()
+}
+
+// Every processor shares the boot processor's posture, so one answer serves all.
+pub fn init() {
+    PREDICTOR_BARRIER.store(cpu::has_predictor_barrier(), Ordering::Relaxed);
 }
 
 #[derive(Clone, Copy, Debug)]
-struct Slot {
-    state: State,
-    stack_index: Option<usize>,
-    entry: Option<(Entry, usize)>,
-    starts_interruptible: bool,
-    page_table: Option<AddressSpaceRoots>,
-    thread_base: CanonicalAddress,
+pub(crate) struct KernelStackTop<'record> {
+    address: u64,
+    record: PhantomData<&'record Record>,
 }
 
-impl Slot {
-    const VACANT: Self = Self {
-        state: State::Vacant,
-        stack_index: None,
-        entry: None,
-        starts_interruptible: false,
-        page_table: None,
-        thread_base: CanonicalAddress::ZERO,
-    };
-}
-
-#[derive(Debug)]
-struct Table {
-    slots: [Slot; MAX_TASKS],
-    count: usize,
-    stacks: Option<TaskStackPin>,
-    predictor_barrier: bool,
-}
-
-impl Table {
-    fn kernel_stack_top(&self, slot: usize) -> Option<KernelStackTop<'_>> {
-        let index = self.slots.get(slot)?.stack_index?;
-        self.stacks.as_ref()?.stack_top(index)
+impl KernelStackTop<'_> {
+    pub(crate) const fn address(self) -> u64 {
+        self.address
     }
 }
 
-static TABLE: SpinLock<Leaf, Table> = SpinLock::new(Table {
-    slots: [Slot::VACANT; MAX_TASKS],
-    count: 0,
-    stacks: None,
-    predictor_barrier: false,
-});
-
-// Switch-assembly state, touched only with interrupts clear and the slot settled under `TABLE`.
-static CONTEXTS: HardwareCell<[u64; MAX_TASKS]> = HardwareCell::new([0; MAX_TASKS]);
-
+// A thread's record and kernel stack; it outlives every processor that runs it.
 #[derive(Debug)]
-#[repr(C, align(64))]
-struct SaveAreas([[u8; xstate::CEILING]; MAX_TASKS]);
-
-static EXTENDED: HardwareCell<SaveAreas> =
-    HardwareCell::new(SaveAreas([[0; xstate::CEILING]; MAX_TASKS]));
-
-static INIT: Once = Once::new();
-
-#[derive(Debug)]
-#[must_use = "a refused task-table initialization returns its stack arena"]
-pub struct InitFailure {
-    pub reason: TaskError,
-    pub arena: StackArena,
+pub struct Task {
+    owned: Option<Owned>,
 }
 
-impl fmt::Display for InitFailure {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&self.reason, formatter)
+#[derive(Debug)]
+struct Owned {
+    record: ArenaFrame,
+    stack: TaskStack,
+}
+
+impl Task {
+    #[must_use]
+    pub fn boot() -> Option<Self> {
+        (!BOOT_TAKEN.swap(true, Ordering::AcqRel)).then_some(Self { owned: None })
     }
-}
 
-impl core::error::Error for InitFailure {}
-
-pub fn init(arena: StackArena) -> Result<usize, InitFailure> {
-    let saved = interrupt::disable();
-    let layout = match validate_arena(&arena) {
-        Ok(layout) => layout,
-        Err(reason) => {
-            saved.restore();
-            return Err(InitFailure { reason, arena });
+    // The stack is mapped and the record frame is this task's alone, so the writes reach no one.
+    pub(super) fn fabricate(
+        record: ArenaFrame,
+        mut stack: TaskStack,
+        entry: Entry,
+        argument: usize,
+        starts_interruptible: bool,
+    ) -> Self {
+        let top = stack.top();
+        let words: [u64; FRAME_WORDS] = [0, 0, 0, 0, 0, 0, thread_start as *const () as u64, 0];
+        let mut bytes = [0; FRAME_BYTES as usize];
+        for (chunk, word) in bytes.chunks_exact_mut(8).zip(words) {
+            chunk.copy_from_slice(&word.to_le_bytes());
         }
-    };
-    if !INIT.claim() {
-        saved.restore();
-        return Err(InitFailure {
-            reason: TaskError::NotInitialised,
-            arena,
-        });
-    }
-
-    // Pin before taking TABLE's leaf guard: the pin has its own ledger lock.
-    let pin = arena.pin();
-    let mut table = TABLE.lock_leaf();
-    table.slots[BOOT].state = State::Alive;
-    for index in 0..layout.slots() {
-        table.slots[index + 1].stack_index = Some(index);
-    }
-    table.count = layout.slots() + 1;
-    table.stacks = Some(pin);
-    table.predictor_barrier = cpu::has_predictor_barrier();
-    drop(table);
-    saved.restore();
-    Ok(layout.slots())
-}
-
-fn validate_arena(arena: &StackArena) -> Result<stack_layout::StackLayout, TaskError> {
-    if !paging::is_active() {
-        return Err(TaskError::Inactive);
-    }
-    if let Some(address) = arena.invalid_page() {
-        return Err(TaskError::Unmapped(address));
-    }
-    let layout = *arena.layout();
-    if layout.slots() + 1 > MAX_TASKS {
-        return Err(TaskError::TooMany(layout.slots()));
-    }
-    for index in 0..layout.slots() {
-        if layout.slot(index).is_none() {
-            return Err(TaskError::OutOfRange(index));
+        assert!(
+            stack
+                .top_frame()
+                .write_at(PAGE_SIZE as usize - FRAME_BYTES as usize, &bytes),
+            "a task stack's top frame refused its switch frame"
+        );
+        let Some(pointer) = mm::direct_pointer(record.address(), PAGE_SIZE) else {
+            panic!("an arena frame lost its direct-map address");
+        };
+        let pointer = pointer.cast::<Record>();
+        // SAFETY: the frame is a zeroed page this task owns and nothing else references, its
+        // direct-map address is page aligned, and `Record` fits in it.
+        unsafe {
+            pointer.write(Record::new(
+                Some(top),
+                Some((entry, argument)),
+                starts_interruptible,
+            ));
         }
+        let task = Self {
+            owned: Some(Owned { record, stack }),
+        };
+        let record = task.record();
+        // SAFETY: the area is the record's 64-byte-aligned `CEILING` bytes, held by no one else.
+        unsafe { xstate::write_initial(record.extended.get().cast()) };
+        // SAFETY: as above; no switch reads the word before the task is first claimed.
+        unsafe { *record.saved.get() = top - FRAME_BYTES };
+        task
     }
-    Ok(layout)
+
+    pub(super) fn record(&self) -> &Record {
+        let Some(owned) = &self.owned else {
+            return &BOOT_RECORD;
+        };
+        let Some(pointer) = mm::direct_pointer(owned.record.address(), PAGE_SIZE) else {
+            panic!("an arena frame lost its direct-map address");
+        };
+        // SAFETY: `fabricate` wrote a `Record` at the start of this frame, which the task owns
+        // for its whole life and which nothing else writes.
+        unsafe { &*pointer.cast::<Record>() }
+    }
+
+    // On a processor now, or until the thread that follows it there has run.
+    pub fn is_on_cpu(&self) -> bool {
+        self.record().on_cpu.load(Ordering::Acquire)
+    }
+
+    pub fn is_dead(&self) -> bool {
+        self.record().state.load(Ordering::Acquire) == DEAD
+    }
+
+    pub fn name(&self, tag: [u64; 2]) {
+        let record = self.record();
+        record.tag[0].store(tag[0], Ordering::Relaxed);
+        record.tag[1].store(tag[1], Ordering::Relaxed);
+        record.named.store(true, Ordering::Release);
+    }
+
+    // Exactly one claim holds a task, and only a live one off every processor.
+    #[must_use = "a dropped claim lets the task go again"]
+    pub fn claim(&self) -> Option<Claimed> {
+        let record = self.record();
+        if !record.hold() {
+            return None;
+        }
+        if record.state.load(Ordering::Acquire) == DEAD {
+            record.let_go();
+            return None;
+        }
+        Some(Claimed {
+            record: NonNull::from(record),
+        })
+    }
+
+    pub(super) fn take_owned(&mut self) -> Option<(ArenaFrame, TaskStack)> {
+        self.owned.take().map(|owned| (owned.record, owned.stack))
+    }
+
+    // Held for good on success: the record is about to go with its frame.
+    pub(super) fn hold_for_release(&self) -> Result<(), TaskError> {
+        if self.owned.is_none() {
+            return Err(TaskError::Boot);
+        }
+        let record = self.record();
+        if !record.hold() {
+            return Err(TaskError::OnProcessor);
+        }
+        if record.state.load(Ordering::Acquire) == STARTED || record.page_table().is_some() {
+            record.let_go();
+            return Err(TaskError::Started);
+        }
+        assert!(
+            interrupt::context_is_clear(&record.ledger),
+            "a released task retains interrupt-exclusion ownership"
+        );
+        Ok(())
+    }
 }
 
-pub fn current() -> usize {
-    percpu::current().current_task.load(Ordering::Acquire)
+impl Drop for Task {
+    fn drop(&mut self) {
+        assert!(
+            self.owned.is_none(),
+            "a task leaves only by unmapping its stack"
+        );
+    }
 }
 
-pub fn fabricate(slot: usize, entry: Entry, argument: usize) -> Result<(), TaskError> {
-    // Before the lock, which clears the flag: the caller's own flag is wanted.
-    let starts_interruptible = interrupt::are_enabled();
-    let mut table = TABLE.lock_leaf();
-    if table.count == 0 {
-        return Err(TaskError::NotInitialised);
-    }
-    if slot == BOOT {
-        return Err(TaskError::Boot);
-    }
-    if slot >= table.count {
-        return Err(TaskError::OutOfRange(slot));
-    }
-    if table.slots[slot].state == State::Alive {
-        return Err(TaskError::Occupied(slot));
-    }
-    assert!(
-        interrupt::context_is_clear(slot),
-        "a reusable task slot retains interrupt-exclusion ownership"
-    );
-
-    let extended = EXTENDED
-        .as_mut_ptr()
-        .cast::<u8>()
-        .wrapping_add(slot * xstate::CEILING);
-    // SAFETY: `slot` is below `count`, so below `MAX_TASKS`, and `extended` starts one
-    // `CEILING`-byte element of `EXTENDED`; the lock and clear flag exclude the switch path, its
-    // only other user, and the slot is not live.
-    unsafe { xstate::write_initial(extended) };
-
-    let stack_index = table.slots[slot].stack_index;
-    let Some(top) = table.kernel_stack_top(slot) else {
-        panic!("a reusable task lost its pinned stack identity");
-    };
-    let base = top.address() - FRAME_BYTES;
-    let frame: [u64; FRAME_WORDS] = [0, 0, 0, 0, 0, 0, thread_start as *const () as u64, 0];
-    // SAFETY: `init` found the top page writable; `base`, `FRAME_BYTES` below the page-aligned top,
-    // is aligned in that page, nothing uses a non-`Alive` slot's stack, and the lock is held.
-    unsafe { core::ptr::write(base as usize as *mut [u64; FRAME_WORDS], frame) };
-
-    let word = CONTEXTS.as_mut_ptr().cast::<u64>().wrapping_add(slot);
-    // SAFETY: `slot` is below `MAX_TASKS`; the lock is held, and the assembly that also writes
-    // this word runs only with the flag clear.
-    unsafe { core::ptr::write(word, base) };
-
-    table.slots[slot] = Slot {
-        state: State::Alive,
-        stack_index,
-        entry: Some((entry, argument)),
-        starts_interruptible,
-        page_table: None,
-        thread_base: CanonicalAddress::ZERO,
-    };
-    Ok(())
+// Proof that this processor holds the task; the record lives while it does.
+#[derive(Debug)]
+pub struct Claimed {
+    record: NonNull<Record>,
 }
 
-pub fn switch_to(slot: usize) -> Result<(), TaskError> {
+impl Claimed {
+    fn record(&self) -> &Record {
+        // SAFETY: the claim holds `on_cpu`, and no task is released while that is held.
+        unsafe { self.record.as_ref() }
+    }
+
+    fn into_record(self) -> NonNull<Record> {
+        let record = self.record;
+        core::mem::forget(self);
+        record
+    }
+}
+
+impl Drop for Claimed {
+    fn drop(&mut self) {
+        self.record().let_go();
+    }
+}
+
+pub fn current_tag() -> Option<[u64; 2]> {
+    let record = current_record()?;
+    record.named.load(Ordering::Acquire).then(|| {
+        [
+            record.tag[0].load(Ordering::Relaxed),
+            record.tag[1].load(Ordering::Relaxed),
+        ]
+    })
+}
+
+pub fn has_thread() -> bool {
+    percpu::current().current_task.load(Ordering::Acquire) != percpu::NO_THREAD
+}
+
+pub(super) fn current_record() -> Option<&'static Record> {
+    let address = percpu::current().current_task.load(Ordering::Acquire);
+    if address == percpu::NO_THREAD {
+        return None;
+    }
+    // SAFETY: a processor's current task is claimed by it, so its record lives at least until a
+    // later task here lets it go, and the caller runs on this task.
+    Some(unsafe { &*(address as *const Record) })
+}
+
+// Only for this processor's exclusion owner, which `interrupt` checks before it asks.
+pub(super) fn owner_ledger(owner: usize) -> &'static ExclusionLedger {
+    let pointer = owner as *const Record;
+    // SAFETY: a processor's exclusion owner is a record it holds: its running task's, or across a
+    // switch the one it leaves or the one it claimed, each kept alive by its `on_cpu`.
+    unsafe { &(*pointer).ledger }
+}
+
+// A processor running no thread keeps its thread-lock ranks in its own block.
+pub(crate) fn current_ranks() -> &'static AtomicU64 {
+    current_record().map_or(&percpu::current().threadless_ranks, |record| &record.ranks)
+}
+
+fn running() -> &'static Record {
+    current_record().unwrap_or_else(|| panic!("this processor runs no thread"))
+}
+
+pub fn switch_to(next: Claimed) -> Result<(), TaskError> {
     if interrupt::in_trap() {
         return Err(TaskError::InTrap);
     }
     let saved = interrupt::disable();
-    let outcome = prepare(slot, State::Alive).map(|(save, load)| {
-        interrupt::switch_context(slot);
-        // SAFETY: `prepare` took `save` from this CPU's slot and `load` from a live record, written
-        // only by `fabricate` or a verified-stack switch; IF is clear, so nothing runs in between.
-        unsafe { switch(save, load) };
-    });
+    let (save, load) = prepare(next, STARTED);
+    // SAFETY: `prepare` took `save` from the running record and `load` from the claimed one,
+    // written only by `fabricate` or a switch; IF is clear, so nothing runs in between.
+    unsafe { switch(save, load) };
+    finish_switch();
     saved.restore();
-    outcome
+    Ok(())
 }
 
-pub fn switch_from_trap(slot: usize, frame: &TrapFrame) -> Result<(), TaskError> {
+pub fn switch_from_trap(next: Claimed, frame: &TrapFrame) -> Result<(), TaskError> {
     if !interrupt::in_trap() {
         return Err(TaskError::NotInTrap);
     }
@@ -295,57 +401,84 @@ pub fn switch_from_trap(slot: usize, frame: &TrapFrame) -> Result<(), TaskError>
 
     let saved = interrupt::disable();
     let suspended = interrupt::suspend_trap();
-    let outcome = prepare(slot, State::Alive).map(|(save, load)| {
-        interrupt::switch_context(slot);
-        // SAFETY: as in `switch_to`, `prepare` vouches for both pointers with the flag clear; the
-        // handler's frame lies below the saved pointer, and only this thread will unwind it.
-        unsafe { switch(save, load) };
-    });
+    let (save, load) = prepare(next, STARTED);
+    // SAFETY: as in `switch_to`; the handler's frame lies below the saved pointer, and only this
+    // thread will unwind it.
+    unsafe { switch(save, load) };
+    finish_switch();
     interrupt::resume_trap(suspended);
     saved.restore();
-    outcome
+    Ok(())
 }
 
-pub fn exit_to(slot: usize) -> TaskError {
-    let saved = interrupt::disable();
-    match prepare(slot, State::Dead) {
-        Ok((save, load)) => {
-            saved.commit_context_disabled();
-            interrupt::switch_context(slot);
-            // SAFETY: as in `switch_to`, and the slot being left is now `Dead`, which every later
-            // switch refuses, so the save is never loaded.
-            unsafe { switch(save, load) };
-            unreachable!("a thread marked dead was resumed");
-        }
-        Err(error) => {
-            saved.restore();
-            error
-        }
+pub fn exit_to(next: Claimed) -> TaskError {
+    if interrupt::in_trap() {
+        return TaskError::InTrap;
     }
+    let saved = interrupt::disable();
+    saved.commit_context_disabled();
+    let (save, load) = prepare(next, DEAD);
+    // SAFETY: as in `switch_to`; the record left is now dead, which every claim refuses, so the
+    // save is never loaded.
+    unsafe { switch(save, load) };
+    unreachable!("a thread marked dead was resumed")
 }
 
-fn prepare(slot: usize, leaving: State) -> Result<(*mut u64, u64), TaskError> {
+// From a processor that runs no thread yet; its bring-up context is never resumed.
+pub fn enter(next: Claimed) -> ! {
+    assert!(!has_thread(), "only a threadless processor enters a task");
+    let saved = interrupt::disable();
+    saved.commit_context_disabled();
+    let (save, load) = prepare(next, DEAD);
+    // SAFETY: as in `switch_to`; `save` is this processor's scratch word, which nothing loads.
+    unsafe { switch(save, load) };
+    unreachable!("an abandoned bring-up context was resumed")
+}
+
+// The arriving thread lets the one it replaced go, after that one's last save.
+fn finish_switch() {
+    let previous = percpu::current()
+        .previous_task
+        .swap(percpu::NO_THREAD, Ordering::Relaxed);
+    if previous == percpu::NO_THREAD {
+        return;
+    }
+    // SAFETY: `prepare` stored the left task's record, which its `on_cpu` keeps alive until this
+    // store, the last access this processor makes to it.
+    let previous = unsafe { &*(previous as *const Record) };
+    previous.let_go();
+}
+
+fn prepare(next: Claimed, leaving: u8) -> (*mut u64, u64) {
     assert!(
         !crate::sync::holds_spin_lock(),
         "a spin lock is held, so the thread left behind could never release it"
     );
-    let mut table = TABLE.lock_leaf();
-    let current = admit(&table, slot)?;
+    let block = percpu::current();
+    let current = current_record();
+    let next = next.into_record();
+    // SAFETY: the claim held `on_cpu`, which now passes to this processor's current task.
+    let next = unsafe { next.as_ref() };
 
     // Revoke the old route before changing the current task, so an NMI here fails closed.
     kpti::begin_route_update();
-    table.slots[current].state = leaving;
-    percpu::current()
-        .current_task
-        .store(slot, Ordering::Release);
+    if let Some(current) = current {
+        current.state.store(leaving, Ordering::Release);
+    }
+    next.state.store(STARTED, Ordering::Release);
+    block.previous_task.store(
+        current.map_or(percpu::NO_THREAD, Record::address),
+        Ordering::Relaxed,
+    );
+    block.current_task.store(next.address(), Ordering::Release);
 
     // Root, route and privilege stack move together before the target can run.
-    let roots = table.slots[slot].page_table;
+    let roots = next.page_table();
     let wanted = roots.map_or_else(paging::active_root, AddressSpaceRoots::full_root);
     let paired = roots.is_some_and(AddressSpaceRoots::is_paired);
     if paired {
-        let Some(landing) = table.kernel_stack_top(slot) else {
-            panic!("a paired task lost its pinned stack identity");
+        let Some(landing) = next.kernel_stack_top() else {
+            panic!("a paired task has no kernel stack");
         };
         let Some(roots) = roots else {
             panic!("a paired task lost its root identity");
@@ -358,18 +491,21 @@ fn prepare(slot: usize, leaving: State) -> Result<(*mut u64, u64), TaskError> {
             "a published root pair could not install its entry stacks"
         );
     } else {
-        restore_ordinary_entry(&table, slot);
+        if let Some(landing) = next.kernel_stack_top() {
+            super::segment::write_kernel_stack(landing);
+        }
+        kpti::clear_route();
     }
-    percpu::current().load_root(roots.map(AddressSpaceRoots::full_root));
+    block.load_root(roots.map(AddressSpaceRoots::full_root));
     if wanted != cpu::page_table_base() {
         // SAFETY: `bind_address_space` matched the higher half to the kernel root, frozen at
-        // activation so device maps stay under shared entries; IF is clear and the lock held.
+        // activation so device maps stay under shared entries; IF is clear.
         unsafe { cpu::set_page_table_base(wanted) };
     }
-    // Kernel-only slots leave the predictor's user history as it was.
+    // Kernel-only tasks leave the predictor's user history as it was.
     if let Some(roots) = roots
-        && percpu::current().enter_user_root(roots.full_root())
-        && table.predictor_barrier
+        && block.enter_user_root(roots.full_root())
+        && PREDICTOR_BARRIER.load(Ordering::Relaxed)
     {
         cpu::barrier_predictions();
     }
@@ -385,125 +521,87 @@ fn prepare(slot: usize, leaving: State) -> Result<(*mut u64, u64), TaskError> {
 
     // Saving outside the naked switch is sound only because the kernel is built soft-float.
     if xstate::is_enabled() {
-        let areas = EXTENDED.as_mut_ptr().cast::<u8>();
-        let leaving = areas.wrapping_add(current * xstate::CEILING);
-        let arriving = areas.wrapping_add(slot * xstate::CEILING);
-        // SAFETY: both indices are below `MAX_TASKS`, so each pointer starts a `CEILING`-byte
-        // element of the 64-byte-aligned `EXTENDED` (1024 is a multiple of 64), and `init`
-        // refused any `bytes()` above `CEILING`; the lock and clear flag exclude other access.
-        unsafe { xstate::save(leaving) };
-        // SAFETY: as above, and the area holds initial-state zeros or a complete `save`.
-        unsafe { xstate::restore(arriving) };
+        if let Some(current) = current {
+            // SAFETY: the record's area is 64-byte aligned `CEILING` bytes, `init` refused any
+            // `bytes()` above `CEILING`, and this processor holds the running record.
+            unsafe { xstate::save(current.extended.get().cast()) };
+        }
+        // SAFETY: as above for the claimed record, whose area holds the initial state or a save.
+        unsafe { xstate::restore(next.extended.get().cast_const().cast()) };
     }
 
-    switch_thread_base(&mut table, current, slot);
+    switch_thread_base(current, next);
+    interrupt::switch_context(next.address());
 
-    let contexts = CONTEXTS.as_mut_ptr().cast::<u64>();
-    let save = contexts.wrapping_add(current);
-    let target = contexts.wrapping_add(slot);
-    // SAFETY: both indices are below `MAX_TASKS`; the lock and clear flag exclude the assembly
-    // writer, and `fabricate` or a switch wrote the word.
-    let load = unsafe { core::ptr::read(target) };
-    Ok((save, load))
+    let save = current.map_or_else(|| block.abandoned.as_ptr(), |current| current.saved.get());
+    // SAFETY: this processor holds the claimed record, and `fabricate` or a switch wrote the word.
+    let load = unsafe { *next.saved.get() };
+    (save, load)
 }
 
-fn admit(table: &Table, slot: usize) -> Result<usize, TaskError> {
-    if table.count == 0 {
-        return Err(TaskError::NotInitialised);
-    }
-    if slot >= table.count {
-        return Err(TaskError::OutOfRange(slot));
-    }
-    let current = current();
-    if slot == current {
-        return Err(TaskError::Current(slot));
-    }
-    match table.slots[slot].state {
-        State::Alive => {}
-        State::Vacant => return Err(TaskError::Vacant(slot)),
-        State::Dead => return Err(TaskError::Dead(slot)),
-    }
-    Ok(current)
-}
-
-fn restore_ordinary_entry(table: &Table, slot: usize) {
-    if table.slots[slot].stack_index.is_some() {
-        let Some(landing) = table.kernel_stack_top(slot) else {
-            panic!("a live task lost its pinned stack identity");
-        };
-        super::segment::write_kernel_stack(landing);
-    }
-    kpti::clear_route();
-}
-
-// Ring 3 can change its own FS base, so the switch reads it rather than trusting the slot.
-fn switch_thread_base(table: &mut Table, current: usize, slot: usize) {
+// Ring 3 can change its own FS base, so the switch reads it rather than trusting the record.
+fn switch_thread_base(current: Option<&Record>, next: &Record) {
     let Some(leaving) = CanonicalAddress::new(read_thread_base()) else {
         panic!("the processor retained a non-canonical FS base");
     };
-    table.slots[current].thread_base = leaving;
+    if let Some(current) = current {
+        // SAFETY: this processor holds the running record.
+        unsafe { *current.thread_base.get() = leaving.get() };
+    }
     super::segment::reset_data_selectors();
-    write_thread_base(table.slots[slot].thread_base);
+    // SAFETY: this processor holds the claimed record.
+    let arriving = unsafe { *next.thread_base.get() };
+    let Some(arriving) = CanonicalAddress::new(arriving) else {
+        panic!("a task recorded a non-canonical FS base");
+    };
+    write_thread_base(arriving);
 }
 
-pub fn bind_address_space(slot: usize, binding: Binding) -> Result<Bound, (TaskError, Binding)> {
+pub fn bind_address_space(task: &Task, binding: Binding) -> Result<Bound, (TaskError, Binding)> {
     let roots = binding.roots();
-    let saved = interrupt::disable();
-    let mut table = TABLE.lock_leaf();
-    let outcome = if slot >= table.count {
-        Err(TaskError::OutOfRange(slot))
-    } else if slot == BOOT {
-        Err(TaskError::Boot)
-    } else if table.slots[slot].state != State::Alive {
-        Err(TaskError::Vacant(slot))
-    } else if slot == current() {
-        Err(TaskError::Current(slot))
-    } else {
-        table.slots[slot].page_table = Some(roots);
-        Ok(())
-    };
-    drop(table);
-    saved.restore();
-    outcome
-        .map(|()| Bound { roots })
-        .map_err(|error| (error, binding))
+    if task.owned.is_none() {
+        return Err((TaskError::Boot, binding));
+    }
+    let record = task.record();
+    if !record.hold() {
+        return Err((TaskError::OnProcessor, binding));
+    }
+    if record.state.load(Ordering::Acquire) != FRESH {
+        record.let_go();
+        return Err((TaskError::Started, binding));
+    }
+    // SAFETY: the hold excludes every claim and change until it is let go.
+    unsafe { *record.page_table.get() = Some(roots) };
+    record.let_go();
+    Ok(Bound {
+        roots,
+        record: record.address(),
+    })
 }
 
-pub fn retire(slot: usize) -> Result<(), TaskError> {
-    let saved = interrupt::disable();
-    let mut table = TABLE.lock_leaf();
-    let outcome = if slot >= table.count {
-        Err(TaskError::OutOfRange(slot))
-    } else if slot == current() {
-        Err(TaskError::Current(slot))
-    } else if table.slots[slot].state != State::Alive {
-        Err(TaskError::Vacant(slot))
-    } else {
-        assert!(
-            interrupt::context_is_clear(slot),
-            "a retired task slot retains interrupt-exclusion ownership"
-        );
-        let stack_index = table.slots[slot].stack_index;
-        table.slots[slot] = Slot {
-            stack_index,
-            ..Slot::VACANT
-        };
+// A task that never ran is marked dead, so no claim can start it.
+pub fn retire(task: &Task) -> Result<(), TaskError> {
+    if task.owned.is_none() {
+        return Err(TaskError::Boot);
+    }
+    let record = task.record();
+    if !record.hold() {
+        return Err(TaskError::OnProcessor);
+    }
+    let outcome = if record.state.load(Ordering::Acquire) == FRESH {
+        record.state.store(DEAD, Ordering::Release);
         Ok(())
+    } else {
+        Err(TaskError::Started)
     };
-    drop(table);
-    saved.restore();
+    record.let_go();
     outcome
 }
 
 #[derive(Debug)]
 pub struct Bound {
     roots: AddressSpaceRoots,
-}
-
-impl Bound {
-    pub(crate) const fn roots(&self) -> AddressSpaceRoots {
-        self.roots
-    }
+    record: usize,
 }
 
 #[derive(Debug)]
@@ -523,29 +621,27 @@ pub fn release_uninstalled(binding: Binding) -> Released {
     }
 }
 
+// Refused until the bound task is dead and off every processor.
 pub fn release_address_space(bound: Bound) -> Result<Released, Bound> {
-    let roots = bound.roots();
-    let saved = interrupt::disable();
-    let mut table = TABLE.lock_leaf();
-    let live = table
-        .slots
-        .iter()
-        .any(|slot| slot.state == State::Alive && slot.page_table == Some(roots));
-    if !live {
-        percpu::current().forget_user_root(roots.full_root());
-        for slot in &mut table.slots {
-            if slot.page_table == Some(roots) {
-                slot.page_table = None;
-            }
-        }
+    // SAFETY: a task's stack is unmapped, and its record freed, only once its page table is
+    // unbound, which only this function does, consuming the one `Bound`.
+    let record = unsafe { &*(bound.record as *const Record) };
+    if !record.hold() {
+        return Err(bound);
     }
-    drop(table);
-    saved.restore();
-    if live {
-        Err(bound)
-    } else {
-        Ok(Released { roots })
+    if record.state.load(Ordering::Acquire) != DEAD {
+        record.let_go();
+        return Err(bound);
     }
+    assert!(
+        record.page_table() == Some(bound.roots),
+        "a bound task lost its page table"
+    );
+    // SAFETY: the hold excludes every claim and change.
+    unsafe { *record.page_table.get() = None };
+    percpu::forget_user_root(bound.roots.full_root());
+    record.let_go();
+    Ok(Released { roots: bound.roots })
 }
 
 const FS_BASE: u32 = 0xC000_0100;
@@ -578,18 +674,14 @@ const FRAME_WORDS: usize = 8;
 
 // A switch or a stack move arrives with interrupts clear, so the creator's flag is restored here.
 extern "C" fn thread_start() -> ! {
-    let slot = current();
-    let (entry, interruptible) = {
-        let table = TABLE.lock_leaf();
-        (
-            table.slots[slot].entry,
-            table.slots[slot].starts_interruptible,
-        )
-    };
+    finish_switch();
+    let record = running();
+    // SAFETY: this processor holds the running record.
+    let entry = unsafe { *record.entry.get() };
     let Some((entry, argument)) = entry else {
-        panic!("slot {slot} started with no entry point");
+        panic!("a task started with no entry point");
     };
-    if interruptible {
+    if record.starts_interruptible.load(Ordering::Relaxed) {
         interrupt::enable();
     }
     entry(&mut ThreadContext::mint(), argument)
@@ -695,16 +787,12 @@ fn user_entry_preflight(entry: u64, stack_top: u64) -> Result<(), UserError> {
     if !xstate::user_state_is_isolated() {
         return Err(UserError::NoExtendedState);
     }
-    let table = TABLE.lock_leaf();
-    let current = current();
-    let roots = table.slots[current].page_table;
-    let mine = table.kernel_stack_top(current);
-    let isolation = match roots {
+    let record = running();
+    let mine = record.kernel_stack_top();
+    match record.page_table() {
         Some(roots) if roots.is_paired() => paired_isolation(roots, mine),
         _ => shared_isolation(mine),
-    };
-    drop(table);
-    isolation?;
+    }?;
     match paging::translate(entry) {
         Some((_, flags)) if flags.contains(Flags::USER) && !flags.contains(Flags::NO_EXECUTE) => {}
         _ => return Err(UserError::EntryNotExecutable(entry)),
@@ -774,12 +862,10 @@ pub fn continue_on_stack(
     let stack = stack
         .retain()
         .unwrap_or_else(|reason| panic!("the boot stack could not be retained: {reason}"));
-    {
-        let mut table = TABLE.lock_leaf();
-        let slot = &mut table.slots[current()];
-        slot.entry = Some((continuation, argument));
-        slot.starts_interruptible = false;
-    }
+    let record = running();
+    // SAFETY: this is the running record, which only its own thread changes.
+    unsafe { *record.entry.get() = Some((continuation, argument)) };
+    record.starts_interruptible.store(false, Ordering::Relaxed);
     // A guard live on the abandoned stack could never be released.
     assert!(
         !crate::sync::holds_spin_lock(),
@@ -811,8 +897,8 @@ unsafe extern "C" fn load_stack(stack_top: u64) -> ! {
 /// # Safety
 ///
 /// `save` must point at a word this thread's saved pointer may be written to, and `load` must be a
-/// pointer a previous call stored or [`fabricate`] wrote, on a stack nothing else is using. The
-/// interrupt flag must be clear.
+/// pointer a previous call stored or [`Task::fabricate`] wrote, on a stack nothing else is using.
+/// The interrupt flag must be clear.
 #[unsafe(naked)]
 unsafe extern "C" fn switch(save: *mut u64, load: u64) {
     ::core::arch::naked_asm!(
@@ -832,8 +918,4 @@ unsafe extern "C" fn switch(save: *mut u64, load: u64) {
         "pop rbp",
         "ret",
     )
-}
-
-pub(crate) fn force_unlock(panic: &PanicToken) {
-    TABLE.force_unlock(panic);
 }

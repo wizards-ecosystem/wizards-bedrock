@@ -57,7 +57,7 @@ pub(super) fn a_faulting_program_dies_alone(context: &mut ThreadContext) -> bool
 
     // `rax` still holds the FAULT argument (1), which survives the dispatch to the `ud2`.
     let this_child =
-        fault.count > before.count && fault.slot == spawned.slot && fault.rax == behaviour::FAULT;
+        fault.count > before.count && fault.thread == spawned.thread && fault.rax == behaviour::FAULT;
     let it_was_the_ud2 = fault.vector == u64::from(exception::INVALID_OPCODE);
     let in_user_memory = fault.stack_pointer < usercopy::USER_END;
     let observed = observed_once(&spawned, Status::Faulted(exception::INVALID_OPCODE));
@@ -97,7 +97,7 @@ fn retired_by_protection_fault(
     let fault = trap::last_user_fault();
 
     let this_child =
-        fault.count > before.count && fault.slot == spawned.slot && fault.rax == marker;
+        fault.count > before.count && fault.thread == spawned.thread && fault.rax == marker;
     let trapped = fault.vector == u64::from(exception::GENERAL_PROTECTION);
 
     this_child && trapped
@@ -125,7 +125,8 @@ pub(super) fn a_noncanonical_user_return_stack_retires_only_its_program(
     };
     last_rites_for(&successor);
     let successor_call = trap::last_syscall();
-    let successor_ran = successor_call.count > calls.count && successor_call.slot == successor.slot;
+    let successor_ran =
+        successor_call.count > calls.count && successor_call.thread == successor.thread;
 
     stack_refused && flags_refused && successor_ran && time::expiries() > expiries
 }
@@ -141,7 +142,7 @@ fn invalid_return_is_refused(
     };
     last_rites_for(&spawned);
     let refused = trap::last_invalid_user_return();
-    refused.count > before.count && refused.slot == spawned.slot && names_the_fault(&refused)
+    refused.count > before.count && refused.thread == spawned.thread && names_the_fault(&refused)
 }
 
 // A ring-3 fetch fault in the copy window retires the program; `rax` holds where it jumped.
@@ -157,7 +158,7 @@ pub(super) fn a_program_cannot_aim_at_the_copy_window(context: &mut ThreadContex
     let fault = trap::last_user_fault();
     let (start, end) = usercopy::fault_window();
 
-    let this_child = fault.count > before.count && fault.slot == spawned.slot && fault.rax == start;
+    let this_child = fault.count > before.count && fault.thread == spawned.thread && fault.rax == start;
     let page_fault = fault.vector == u64::from(exception::PAGE_FAULT);
     let not_recovered = trap::user_copy_recoveries() == recoveries_before;
     let real_window = start < end;
@@ -205,7 +206,7 @@ pub(super) fn a_syscall_instruction_never_enters_the_kernel(context: &mut Thread
 
     ended
         && fault.count > faults_before
-        && fault.slot == spawned.slot
+        && fault.thread == spawned.thread
         && fault.rax == behaviour::SYSCALL
         && trap::last_syscall().count == calls_before
 }
@@ -446,13 +447,13 @@ impl AllocatorSnapshot {
     }
 }
 
-// Forty programs through sixteen slots beside a spinner: the worker must reclaim each one.
+// Forty programs beside a spinner: the worker must reclaim each one.
 pub(super) fn a_dead_program_gives_its_memory_back(context: &mut ThreadContext) -> bool {
     waits_until(crate::reaper::is_idle);
     let before = AllocatorSnapshot::capture();
-    let free_slots = thread::free_slots();
+    let live = thread::live();
     STOP_SPINNING.store(0, Ordering::Release);
-    if thread::spawn("reap-pressure", light_spinner, 0).is_err() {
+    if thread::spawn(context, "reap-pressure", light_spinner, 0).is_err() {
         return false;
     }
 
@@ -466,9 +467,9 @@ pub(super) fn a_dead_program_gives_its_memory_back(context: &mut ThreadContext) 
         ran += 1;
     }
     STOP_SPINNING.store(1, Ordering::Release);
-    let settled = yields_until(context, || thread::free_slots() == free_slots);
+    waits_until(|| thread::live() == live && crate::reaper::is_idle());
 
-    ran == 40 && settled && AllocatorSnapshot::capture().has_same_ownership(&before)
+    ran == 40 && AllocatorSnapshot::capture().has_same_ownership(&before)
 }
 
 // Guest time stretches with host load, so these waits have no budget: a hang is the harness's timeout.
@@ -509,7 +510,7 @@ pub(super) fn a_program_drives_its_own_ring(context: &mut ThreadContext) -> bool
     let echoed = last_rites_for(&echoing);
     let call = trap::last_syscall();
     let crossed = call.count > calls_before
-        && call.slot == echoing.slot
+        && call.thread == echoing.thread
         && call.stack_pointer < usercopy::USER_END;
     // The witness sets `AC` before its calls; the handler must still have run with SMAP on.
     let smap_held = call.flags & ACCESS_CHECK != 0 && trap::smap_survived_the_last_syscall();

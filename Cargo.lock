@@ -617,6 +617,7 @@ dependencies = [
  "stack-layout",
  "timebase",
  "trap-cause",
+ "wake-state",
  "world-tree",
  "wost",
  "x86-apic",

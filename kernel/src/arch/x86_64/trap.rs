@@ -49,25 +49,25 @@ fn on_user_entry(context: &mut ThreadContext, registers: &mut UserRegisters<'_>,
                 address,
                 rip: registers.instruction_pointer(),
             }));
-            thread::retire()
+            thread::retire(context)
         }
         UserEntry::Interrupted => thread::preempt(context),
     }
     if crate::world::current_is_dying() {
-        thread::retire()
+        thread::retire(context)
     }
     thread::refresh_clock();
 }
 
 fn refuse_invalid_user_return(
-    _: &mut ThreadContext,
+    context: &mut ThreadContext,
     registers: &UserRegisters<'_>,
     _: interrupt::UserReturnError,
 ) -> ! {
     #[cfg(feature = "selftest")]
     LAST_INVALID_USER_RETURN.record(registers);
     let _ = registers;
-    thread::retire()
+    thread::retire(context)
 }
 
 // Nothing here logs: a fault may arrive under a held lock, and the console lock could deadlock.

@@ -31,18 +31,13 @@ pub(crate) fn holds_leaf() -> bool {
 }
 
 // Thread locks move with their thread when it is preempted, so their ranks are kept per thread.
-static THREAD_RANKS: [AtomicU64; task::MAX_TASKS] = [const { AtomicU64::new(0) }; task::MAX_TASKS];
-
 fn thread_ranks() -> &'static AtomicU64 {
-    &THREAD_RANKS[task::current()]
+    task::current_ranks()
 }
 
 pub(crate) fn forget_held_ranks(_panic: &PanicToken) {
     percpu::current().set_held_ranks(HeldRanks::empty());
-    // A processor running no thread has no thread ranks to forget.
-    if let Some(ranks) = THREAD_RANKS.get(task::current()) {
-        ranks.store(0, Ordering::Relaxed);
-    }
+    thread_ranks().store(0, Ordering::Relaxed);
 }
 
 fn admit(held: HeldRanks, rank: u8, leaf: bool) -> Option<HeldRanks> {
@@ -152,6 +147,12 @@ impl<L: Level, T> SpinLock<L, T> {
         context: &'lock mut Held<M>,
     ) -> SpinLockGuard<'lock, L, T> {
         let _ = context;
+        self.spin(false)
+    }
+
+    // Takes the rank alone, with no token, for scheduler locks that trap code takes and leaves nest
+    // under; the rank word orders it, and a switch or flush wait under any spin lock panics.
+    pub fn lock_ranked(&self) -> SpinLockGuard<'_, L, T> {
         self.spin(false)
     }
 

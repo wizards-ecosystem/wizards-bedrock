@@ -18,7 +18,7 @@ pub(super) fn yields_until(context: &mut ThreadContext, done: impl Fn() -> bool)
     })
 }
 
-pub(super) fn every_enabled_state_component_survives_a_switch() -> bool {
+pub(super) fn every_enabled_state_component_survives_a_switch(context: &mut ThreadContext) -> bool {
     const MINE: xstate::Probe = xstate::Probe {
         x87: 0x1234_5678_7654_3210,
         xmm: 0xA5A5_1234_5678_A5A5,
@@ -38,7 +38,7 @@ pub(super) fn every_enabled_state_component_survives_a_switch() -> bool {
 
     EXTENDED_INTRUDER_RAN.store(0, Ordering::Release);
     EXTENDED_INTRUDER_SAW_OWN.store(0, Ordering::Release);
-    if thread::spawn("extended-intruder", clobber_extended_state, 0).is_err() {
+    if thread::spawn(context, "extended-intruder", clobber_extended_state, 0).is_err() {
         return false;
     }
     if !runs_until(500, || EXTENDED_INTRUDER_RAN.load(Ordering::Acquire) == 1) {
@@ -68,7 +68,7 @@ fn clobber_extended_state(context: &mut ThreadContext, _: usize) {
     EXTENDED_INTRUDER_RAN.store(1, Ordering::Release);
 }
 
-pub(super) fn thread_local_storage_follows_the_thread() -> bool {
+pub(super) fn thread_local_storage_follows_the_thread(context: &mut ThreadContext) -> bool {
     const MINE: u64 = 0x0000_1234_5678_0000;
 
     let restore = task::read_thread_base();
@@ -84,7 +84,7 @@ pub(super) fn thread_local_storage_follows_the_thread() -> bool {
             !task::set_thread_base(0x0000_8000_0000_0000) && task::read_thread_base() == MINE;
 
         BASE_INTRUDER_RAN.store(0, Ordering::Release);
-        if thread::spawn("base-intruder", set_another_thread_base, 0).is_err()
+        if thread::spawn(context, "base-intruder", set_another_thread_base, 0).is_err()
             || !runs_until(500, || BASE_INTRUDER_RAN.load(Ordering::Acquire) == 1)
         {
             return false;
@@ -160,13 +160,13 @@ fn churn_and_report(context: &mut ThreadContext, seed: usize) {
 
 pub(super) fn registers_survive_a_switch(context: &mut ThreadContext) -> bool {
     CHURN_VERDICT.store(0, Ordering::Release);
-    let free = thread::free_slots();
-    if thread::spawn("churn", churn_and_report, 0x9E37_79B9_7F4A_7C15).is_err() {
+    let free = thread::live();
+    if thread::spawn(context, "churn", churn_and_report, 0x9E37_79B9_7F4A_7C15).is_err() {
         return false;
     }
 
     let boot_survived = churn(context, 0xD1B5_4A32_D192_ED03);
-    let exited = yields_until(context, || thread::free_slots() == free);
+    let exited = yields_until(context, || thread::live() == free);
 
     boot_survived && exited && CHURN_VERDICT.load(Ordering::Acquire) == 1
 }
@@ -192,20 +192,23 @@ fn inspect_reused_extended_state(_: &mut ThreadContext, _: usize) {
     REUSED_SLOT_STATE_CLEARED.store(usize::from(cleared), Ordering::Release);
 }
 
-pub(super) fn an_exited_slot_is_reused(context: &mut ThreadContext) -> bool {
+// A successor's record and stack are fresh arena frames, zeroed when the last owner's returned.
+pub(super) fn an_exited_threads_state_never_reaches_its_successor(
+    context: &mut ThreadContext,
+) -> bool {
     if !xstate::is_enabled() {
         return true;
     }
-    let free = thread::free_slots();
+    let free = thread::live();
     REUSED_SLOT_SECRET_WRITTEN.store(0, Ordering::Release);
     REUSED_SLOT_STATE_CLEARED.store(0, Ordering::Release);
-    let secret_slot = thread::spawn("state owner", leave_extended_state, 0).ok();
-    let secret_returned = yields_until(context, || thread::free_slots() == free);
-    let clean_slot = thread::spawn("state successor", inspect_reused_extended_state, 0).ok();
-    let clean_returned = yields_until(context, || thread::free_slots() == free);
+    let secret = thread::spawn(context, "state owner", leave_extended_state, 0).is_ok();
+    let secret_returned = yields_until(context, || thread::live() == free);
+    let clean = thread::spawn(context, "state successor", inspect_reused_extended_state, 0).is_ok();
+    let clean_returned = yields_until(context, || thread::live() == free);
 
-    secret_slot.is_some()
-        && secret_slot == clean_slot
+    secret
+        && clean
         && secret_returned
         && clean_returned
         && REUSED_SLOT_SECRET_WRITTEN.load(Ordering::Acquire) == 1
@@ -233,14 +236,14 @@ pub(super) fn a_spinner_cannot_starve_another(context: &mut ThreadContext) -> bo
 
     STOP_SPINNING.store(0, Ordering::Release);
     LIGHT_SPINS.store(0, Ordering::Release);
-    let free = thread::free_slots();
-    if thread::spawn("spinner", light_spinner, 0).is_err() {
+    let free = thread::live();
+    if thread::spawn(context, "spinner", light_spinner, 0).is_err() {
         return false;
     }
 
     let progressed = runs_until(PATIENCE_MS, || LIGHT_SPINS.load(Ordering::Relaxed) > 0);
     STOP_SPINNING.store(1, Ordering::Release);
-    let exited = yields_until(context, || thread::free_slots() == free);
+    let exited = yields_until(context, || thread::live() == free);
 
     progressed && exited
 }

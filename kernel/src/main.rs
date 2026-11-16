@@ -226,10 +226,11 @@ fn boot_continue(context: &mut ThreadContext, stack: usize) -> ! {
     }
     processors::bring_up(context, processors, processor_table);
     world::start_root(context);
+    thread::adopt_boot(context);
     input::init();
     routing::report_keyboard(masked);
-    input::start_poller();
-    queue::start_worker();
+    input::start_poller(context);
+    queue::start_worker(context);
 
     dev::with_console(|console| {
         for line in banner::LINES {
@@ -245,13 +246,13 @@ fn boot_continue(context: &mut ThreadContext, stack: usize) -> ! {
     user::keep(module);
 
     // After interrupts are on, because a halting thread needs them to wake.
-    thread::start_idle();
+    thread::start_idle(context);
 
     #[cfg(feature = "selftest")]
     selftest::run(context);
 
     match user::run(context) {
-        Ok(program) => info!("user: program running in slot {}", program.slot),
+        Ok(program) => info!("user: program running as thread {:#x}", program.thread),
         Err(reason) => {
             warn!("user: no program: {reason}");
             if matches!(reason, user::SpawnError::NoInterruptAdmission) {

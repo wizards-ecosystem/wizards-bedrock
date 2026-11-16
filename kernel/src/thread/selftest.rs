@@ -1,15 +1,12 @@
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use super::{State, THREADS};
-
 pub(super) static RETIREMENTS: AtomicUsize = AtomicUsize::new(0);
 
-pub(crate) fn free_slots() -> usize {
-    let threads = THREADS.lock_leaf();
-    threads.queue.slots[1..=threads.spawnable]
-        .iter()
-        .filter(|slot| matches!(slot.state, State::Free | State::Exited))
-        .count()
+// Threads made and not yet reaped.
+pub(super) static LIVE: AtomicUsize = AtomicUsize::new(0);
+
+pub(crate) fn live() -> usize {
+    LIVE.load(Ordering::Acquire)
 }
 
 pub(crate) fn retirements() -> usize {

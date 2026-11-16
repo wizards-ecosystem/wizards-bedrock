@@ -1,23 +1,22 @@
-use core::sync::atomic::AtomicUsize;
+use crate::thread::{self, ThreadContext, WaitLinks, WaitList};
 
-use crate::thread::{self, NO_WAITER, ThreadContext};
-
-// Waiters are thread slots linked under the scheduler lock, so a wake allocates nothing.
+// Waiters are threads linked through their own records under this list's lock, so a wake
+// allocates nothing.
 #[derive(Debug)]
 pub(crate) struct WaitQueue {
-    head: AtomicUsize,
+    links: WaitList,
 }
 
 impl WaitQueue {
     pub(crate) const fn new() -> Self {
         Self {
-            head: AtomicUsize::new(NO_WAITER),
+            links: WaitList::new(WaitLinks::new()),
         }
     }
 
-    // `ready` runs under the scheduler lock, so it must only read state.
+    // `ready` runs under the list's lock, so it must only read state.
     pub(crate) fn wait_unless(&self, context: &mut ThreadContext, ready: impl Fn() -> bool) {
-        thread::wait_on(context, &self.head, None, ready);
+        thread::wait_on(context, &self.links, None, ready);
     }
 
     // As `wait_unless`, but the wait also ends at `until` on the kernel clock.
@@ -27,11 +26,11 @@ impl WaitQueue {
         until: Option<u64>,
         ready: impl Fn() -> bool,
     ) {
-        thread::wait_on(context, &self.head, until, ready);
+        thread::wait_on(context, &self.links, until, ready);
     }
 
     // Safe from a trap handler.
     pub(crate) fn wake_all(&self) -> usize {
-        thread::wake_waiters(&self.head)
+        thread::wake_waiters(&self.links)
     }
 }

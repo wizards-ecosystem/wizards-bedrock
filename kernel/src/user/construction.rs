@@ -288,7 +288,7 @@ fn build(
         objects,
     );
     // The process takes the space only once its thread is bound to it.
-    let arrange = |slot, bound| {
+    let arrange = |thread, bound| {
         let Some(space) = construction.space.take() else {
             return Err(bound);
         };
@@ -297,7 +297,7 @@ fn build(
             return Err(bound);
         };
         held.commit(
-            slot,
+            thread,
             Space {
                 space,
                 authority: Some(Authority::Bound(bound)),
@@ -305,8 +305,9 @@ fn build(
         );
         Ok(())
     };
-    let slot = match thread::spawn_in_space(name, cross, binding, clock, process, arrange) {
-        Ok(slot) => slot,
+    let spawned = thread::spawn_in_space(context, name, cross, binding, clock, process, arrange);
+    let thread = match spawned {
+        Ok(thread) => thread.id(),
         Err(failure) => {
             construction.retain_authority(failure.authority);
             assert!(process.destroy(), "a process that never ran was borrowed");
@@ -315,7 +316,7 @@ fn build(
     };
 
     Ok(Spawned {
-        slot,
+        thread,
         observation,
         birth: endpoint,
     })

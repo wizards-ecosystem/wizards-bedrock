@@ -227,8 +227,8 @@ pub(crate) fn read_key(context: &mut ThreadContext) -> Keystroke {
     }
 }
 
-pub(crate) fn start_poller() {
-    match crate::thread::spawn("keyboard-poll", poll_forever, 0) {
+pub(crate) fn start_poller(context: &mut ThreadContext) {
+    match crate::thread::spawn(context, "keyboard-poll", poll_forever, 0) {
         Ok(_) if crate::time::is_calibrated() && interrupt::are_enabled() => {
             info!("keyboard: polled every {POLL_INTERVAL_MS} ms");
             info!("{}", Record::Fact(Fact::KeyboardPolled));

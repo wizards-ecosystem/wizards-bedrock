@@ -179,19 +179,14 @@ chosen later.
 What exists today that each phase must replace or build on; `docs/architecture.md` has the detail.
 
 Phase 7:
-- A process is an object in the root world with an observation and a reaper-run teardown, but its
-  thread is a slot of the kernel's fixed task table, with a static save area and a stack from the
-  16-slot arena (`kernel/src/thread.rs`, `wost/src/arch/x86_64/task.rs`), and the reaper's queue is
-  bounded by those slots. Thread records and stacks need to live in the world's arena.
 - The root world exists with its arena, record and object pools, and each process with its handle
   table, ring and address space lives in it (`kernel/src/world.rs`, `kernel/src/handle.rs`,
-  `kernel/src/queue.rs`), but threads still come from the kernel's fixed task table. Child worlds
-  are created, inspected and killed with their own arenas, keys and limits
-  (`kernel/src/world/create.rs`, `kernel/src/world/teardown.rs`), but no program can be spawned
-  into one, so every process still belongs to the root world. Teardown stops a world's threads
-  through the fixed task table (`thread::stop_world`). User page tables are arena `Table` frames of
-  the world named only by their links, and a shared ring, buffer 0 or time page keeps its holder
-  count in an object frame of the world.
+  `kernel/src/queue.rs`). Child worlds are created, inspected and killed with their own arenas,
+  keys and limits (`kernel/src/world/create.rs`, `kernel/src/world/teardown.rs`), and the kernel
+  spawns programs into them. Teardown stops a world's threads through the list that links them in
+  their records (`thread::stop_world`). User page tables are arena `Table` frames of the world
+  named only by their links, and a shared ring, buffer 0 or time page keeps its holder count in an
+  object frame of the world.
 - Memory objects own their arena frames and seal read-only, or for execution against a code
   quota (`kernel/src/memory.rs`). Spawn loads each segment as one, and a program maps and unmaps
   them with `Map` and `Unmap` against the mapping records of its space
@@ -199,9 +194,8 @@ Phase 7:
 - The kernel parses ELF and loads one borrowed Limine module (`kernel/src/user/load.rs`,
   `wost/src/boot/limine_glue.rs`). The user-space loader replaces it and needs every module as owned
   frames; the kernel keeps its mapper checks.
-- Threads are capped by a 32-slot task table and a 16-slot stack arena, and one `Binding` serves
-  one thread (`kernel/src/thread.rs`, `wost/src/arch/x86_64/task.rs`). Processes need many threads
-  per root.
+- One `Binding` serves one thread (`wost/src/arch/x86_64/task.rs`). Processes need many threads per
+  root.
 - Each process has one fixed ring, timers expire only on kernel entry, and the time page is global
   (`kernel/src/queue.rs`, `kernel/src/timepage.rs`): every process reads the one root world clock.
   Time needs a clock per world, the recorded mode and the raw time right.
@@ -216,15 +210,13 @@ Phase 7:
   need both.
 
 Phase 8:
-- Stack reuse is safe only on one processor: `exit` frees a slot still running on its stack
-  (`kernel/src/thread.rs`). Phase 8 needs an on-CPU flag the next thread clears.
-- There is one run queue and one idle thread (`kernel/src/thread.rs`). Phase 8 needs per-CPU queues
-  and timers.
 - A kernel-space unmap or rollback under the kernel's space spin lock cannot wait for its
   shootdown, so once another processor is online it refuses by panic (`wost/src/arch/x86_64/paging/`
   `{map,device}.rs`, `kernel/src/mem.rs`). Phase 8 needs those waits moved outside the lock.
-- Other processors start only to park: they run no thread (`kernel/src/processors.rs`). Phase 8
-  needs an idle thread per processor and a reschedule vector to wake one.
+- Each processor has a run queue, but only the boot processor has an idle thread and schedules;
+  the others start only to park (`kernel/src/thread.rs`, `kernel/src/processors.rs`). Phase 8 needs
+  their idle threads, their timers, wake placement across queues, stealing and a reschedule vector
+  to wake one.
 
 Phase 9:
 - One VT-d unit, one domain and one function (`wost/src/arch/x86_64/vtd.rs`, `kernel/src/iommu.rs`).

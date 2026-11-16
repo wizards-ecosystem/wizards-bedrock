@@ -306,8 +306,9 @@ from every set it joined, credits the parent and dissolves the arena back, so no
 `world::kill` turns a Live world Dying under its life lock, so no child joins it after, stops its
 arena from earmarking or donating, and hands it to the reaper. The teardown
 (`kernel/src/world/teardown.rs`) kills every descendant in its frozen set, each of which tears
-down by itself; wakes its threads, each of which retires at its next return to ring 3, and waits
-until they are off the processor and every process's own teardown has released it; closes the pin
+down by itself; wakes its threads through the list that links them in their records, each of
+which retires at its next return to ring 3, and waits until the reaper has released every one,
+record and stack, and every process's own teardown has released it; closes the pin
 word and waits for the counted pins to drain; takes the record, leaves every ancestor's set,
 credits the parent's budgets, releases every object page and bumps the node's generation; and then
 dissolves the arena 512 frame records at a time, each frame zeroed and credited once to the
@@ -408,50 +409,69 @@ they take every kernel-half shootdown.
 | `0xfffffe0000000000` | kernel thread stack arena |
 | below `0x0000800000000000` (`USER_END`) | user half; mappings end one page lower (`USER_MAPPING_END`) |
 
-Kernel stacks are 32 KiB above an unmapped 4 KiB guard, laid out by `libs/stack-layout` in an
-arena of sixteen slots (`kernel/src/thread.rs`); the boot thread uses the same geometry. A stack
-inside the bootloader's 2 MiB direct map cannot be guarded, which is why the boot thread leaves
-the bootloader's stack. Each `TSS` or switch write of a stack top re-walks that stack's leaves in
+Kernel stacks are 32 KiB above an unmapped 4 KiB guard, laid out by `libs/stack-layout`: the boot
+thread's at the base of the stack arena, every other thread's in a slot of the task stack window
+(section 5). A stack inside the bootloader's 2 MiB direct map cannot be guarded, which is why the
+boot thread leaves the bootloader's stack. Each `TSS` or switch write of a stack top re-walks that stack's leaves in
 the loaded `CR3`. Every map and unmap call refuses the entry window, so the guard pages under the
 entry and fault stacks stay absent.
 
 ## 5. Threads, scheduling, locks and time
 
-`wost/src/arch/x86_64/task.rs` owns thread slots and the context switch, a private naked function
-that saves callee-saved registers and swaps stacks. The kernel names threads by slot and never
-holds a context value. Every switch passes through `task::prepare`, which installs `RSP0`, the
-address-space root, extended state and `FS_BASE` for the next thread.
+`wost/src/arch/x86_64/task.rs` owns a thread's switch record and the context switch, a private
+naked function that saves callee-saved registers and swaps stacks. A `Task` is one record frame
+(saved stack pointer, extended state, FS base, bound roots, exclusion ledger, thread-lock ranks)
+and a guarded 32 KiB kernel stack of eight frames, all taken from the thread's world arena and
+mapped into a slot of the task stack window (`paging/stack.rs`), whose page tables are built at
+boot for as many slots as memory could ever fill. The boot thread alone has a static record,
+because it runs before any arena exists. Each record has an `on_cpu` flag: a claim sets it before
+a switch, and the next thread on that processor clears it once the switch is done. No claim,
+binding, retirement or release succeeds while it is set, so no processor reaches a record or
+stack another still stands on. Every switch passes through `task::prepare`, which installs
+`RSP0`, the address-space root, extended state and `FS_BASE` for the next thread.
 
-`kernel/src/thread.rs` is the policy: names, states and EEVDF entities over the same slots, with
-the arithmetic in `libs/eevdf` and a 3 ms slice. If the policy ever returns nobody while every
-thread is a candidate, the kernel takes the first candidate. The idle thread sits outside the
-policy, runs only when nothing else can, halts, and emits the reports calls left behind. The
-other kernel threads are the keyboard poller and the service worker. A ring 0 frame is preempted
-at trap exit, after end-of-interrupt, and only when it had interrupts enabled. Every spin lock
-clears that flag, so critical sections need no preempt count. A ring 3 thread is preempted in its
-handoff, as a thread.
+`kernel/src/thread.rs` is the policy. A thread is an object in its world's thread pool (kernel
+threads in the root world), named by world, index and generation, with its name, entry, owner,
+world clock, a `libs/wake-state` wake word and its scheduling links. Each processor has its own
+run queue and idle thread behind a run-queue lock; the queue links ready threads through their
+records, with the arithmetic in `libs/eevdf` and a 3 ms slice. If the policy ever returns nobody
+while every thread is a candidate, the kernel takes the first candidate. The idle thread sits
+outside the policy, runs only when nothing else can, halts, and emits the reports calls left
+behind. The other kernel threads are the keyboard poller and the service worker. A ring 0 frame is
+preempted at trap exit, after end-of-interrupt, and only when it had interrupts enabled. Every
+spin lock clears that flag, so critical sections need no preempt count. A ring 3 thread is
+preempted in its handoff, as a thread. Every lock is dropped before a switch.
 
-A `WaitQueue` (`kernel/src/wait.rs`) is a list of thread slots linked through
-`Threads::next_waiter` under the scheduler lock, so a wake from a handler allocates nothing. A
-waiter checks its condition and links itself under that lock with interrupts off, so no wake can
-fall between the check and the block. A wait may also end at a deadline.
+A `WaitQueue` (`kernel/src/wait.rs`) is a list of threads linked through their records under the
+queue's own lock, so a wake from a handler allocates nothing. A waiter checks its condition, links
+itself and moves its wake word from running to parking under that lock, then blocks under its run
+queue's lock only if no waker claimed the wait in between. A waker unlinks the thread and claims
+the wait sequence it registered with, so a stale link never ends a later wait; a thread it claims
+after the block waits until `on_cpu` is clear and is placed on its last processor's queue. A wait
+may also end at a deadline, through its processor's list of sleepers. An exiting thread marks its
+word dead and joins the reaper's list, linked through its record; the reaper frees the record and
+unmaps the stack only once the word is dead and `on_cpu` clear, after its process's teardown, and
+returns the frames when the stack's shootdown completes.
 
 `wost/src/sync.rs` has two lock kinds, and every lock names its rank as its first type
 parameter: a `libs/lock-order` level, declared once per crate, whose number orders it. `wost`
 declares only `Leaf`, the highest rank; `kernel/src/rank.rs` declares the storage, IOMMU, console
 and serial thread locks, then a world pin, the per-object lock (a handle table, a memory object's
-frames, a world's life), the kernel address space and the scheduler, as one chain whose ranks
-a constant assertion keeps ascending. `SpinLock` clears the interrupt flag while held and restores
+frames, a world's life), the kernel address space, the reaper's list or a world's thread list,
+wait lists and run queues, as one chain whose ranks a constant assertion keeps ascending.
+`SpinLock` clears the interrupt flag while held and restores
 the flag it found; setting the flag or switching threads while one is held panics.
 `SpinLock::lock` borrows a `Held<M>` token mutably for the guard's life and compiles only when the
 lock's level is declared after `M`. The thread's own token is `ThreadContext`, which is
 `Held<Unlocked>`, so no blocking call compiles under the guard. `lock_leaf` takes no token and is
-for take, mutate and return with no call-out. Each processor's per-CPU block holds a word of the
+for take, mutate and return with no call-out. `lock_ranked` takes the rank alone with no token,
+for the scheduler's locks that trap code takes and leaf locks nest under. Each processor's per-CPU block holds a word of the
 ranks it holds: a spin lock is taken only when its rank is above every one held, and a leaf guard
 also holds `Leaf`, so nothing at all is taken under it. A violation panics before the lock is
 waited on, and a user copy under a leaf guard panics too. `ThreadLock` is for long work such as
 console output: it leaves interrupts on and refuses trap context and any held `SpinLock`. Its
-holder can be preempted, so thread-lock ranks are kept in a word per thread slot, and they rank
+holder can be preempted, so thread-lock ranks are kept in a word in the thread's task record, or
+in the processor's block on a processor that runs no thread, and they rank
 below every spin lock. `ThreadContext` is a zero-sized, non-`Send`, non-`Sync` token, and every call
 that may block takes one. `wost` mints it in two places only: `boot::enter`, which hands it to the
 kernel's entry function, and `task::thread_start`, which begins every thread on its own stack and
@@ -833,16 +853,16 @@ opens the SMAP window, for one copy. Each first walks every page and requires ef
 permission, checks the range against the user limit by comparison, and recovers a fault at a
 linker fixup that only the trap adapter writes.
 
-A retiring thread hands its process to the reaper (`kernel/src/reaper.rs`), a FIFO of process and
-world teardowns the service worker serves, and leaves its slot `Retired`, so no path running on that stack frees or reuses it.
-The reaper runs the teardown steps of `kernel/src/process/teardown.rs` in order: P0 fixes the
-status and writes it to the observation; P1 waits until the thread is retired and off the
-processor; P2 ends every queued operation with `CANCELLED` and waits for a running one; P3 returns
+Every exiting thread joins the reaper's list (`kernel/src/reaper.rs`), which the service worker
+serves in order with the world teardowns, so no path running on that stack frees or reuses it. The
+reaper waits until the thread is dead and `on_cpu` is clear, then runs its process's teardown steps
+of `kernel/src/process/teardown.rs` in order: P0 fixes the status and writes it to the observation;
+P1 confirms the thread is off its processor; P2 ends every queued operation with `CANCELLED` and waits for a running one; P3 returns
 the table and ring to the world's pools, the table releasing every object its entries held; P4
-clears and reclaims the address space; P5 frees the thread slot and writes the ending as an
-`exit` or `fault` boot record, once. A step that must wait leaves the process at the tail and the
-reaper moves to the next one, so one stuck teardown never delays another. A kernel thread that
-exits leaves its slot `Exited`, reusable once another thread runs.
+clears and reclaims the address space; P5 releases the process and writes the ending as an
+`exit` or `fault` boot record, once. Then the reaper frees the thread's record and stack, as it
+does at once for a kernel thread. A step that must wait leaves the thread at the tail and the
+reaper moves to the next one, so one stuck teardown never delays another.
 
 ## 8. DMA isolation and PCI
 

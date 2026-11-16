@@ -18,7 +18,7 @@ use crate::handle::Table;
 use crate::memory::{CodeQuota, MemoryObject};
 use crate::process::{Observation, Process};
 use crate::queue::Queue;
-use crate::thread::ThreadContext;
+use crate::thread::{Thread, ThreadContext};
 use crate::{info, random, rank, thread, timepage, warn};
 
 pub(crate) use create::{Refusal, Request, create};
@@ -73,6 +73,8 @@ pub(crate) struct World {
     pub(crate) queues: QueuePool,
     pub(crate) endpoints: EndpointPool,
     pub(crate) processes: ProcessPool,
+    pub(crate) threads: ThreadPool,
+    pub(crate) members: thread::MemberList,
     pub(crate) observations: ObservationPool,
     pub(crate) memories: MemoryPool,
 }
@@ -81,6 +83,7 @@ pub(crate) type TablePool = Pool<Table, 16>;
 pub(crate) type QueuePool = Pool<Queue, 2>;
 pub(crate) type EndpointPool = Pool<Endpoint, 4>;
 pub(crate) type ProcessPool = Pool<Process, 4>;
+pub(crate) type ThreadPool = Pool<Thread, 4>;
 pub(crate) type ObservationPool = Pool<Observation, 16>;
 pub(crate) type MemoryPool = Pool<MemoryObject, 16>;
 
@@ -104,6 +107,8 @@ impl World {
             queues: Pool::new(),
             endpoints: Pool::new(),
             processes: Pool::new(),
+            threads: Pool::new(),
+            members: SpinLock::new(thread::Members::EMPTY),
             observations: Pool::new(),
             memories: Pool::new(),
         }
@@ -199,7 +204,7 @@ fn create_root(context: &mut ThreadContext) -> Result<NodeRef, RootRefusal> {
     let arena = pool::reserve_root(context, MARGIN_DIVISOR).map_err(RootRefusal::Arena)?;
     let limits = Limits {
         descendants: DESCENDANTS as u32,
-        threads: thread::CAPACITY as u32,
+        threads: u32::MAX,
         handles: ROOT_HANDLES,
     };
     let root = registry::prepare(context, arena, &key, Path::ROOT, pool::full_mask(), limits)

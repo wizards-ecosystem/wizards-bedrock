@@ -144,6 +144,10 @@ fn seed_frames(space: &mut Space, map: &MemoryMap) -> usize {
     ignored
 }
 
+pub(crate) fn managed_frames() -> usize {
+    FRAMES.lock_leaf().space.managed_count()
+}
+
 pub(crate) fn is_allocatable(start: u64, len: u64) -> bool {
     let Some(end) = start.checked_add(len) else {
         return false;

@@ -51,7 +51,7 @@ pub(crate) struct Launch {
 
 #[derive(Debug)]
 pub(crate) struct Spawned {
-    pub(crate) slot: usize,
+    pub(crate) thread: u64,
     #[cfg_attr(
         not(feature = "selftest"),
         expect(

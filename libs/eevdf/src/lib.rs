@@ -1,6 +1,8 @@
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
+use core::borrow::Borrow;
+
 // Linux's `NICE_0_LOAD`: at this weight one unit of real time is one unit of virtual time.
 pub const BASE_WEIGHT: u32 = 1024;
 
@@ -100,15 +102,14 @@ impl Entity {
 }
 
 // Offsets are taken from the first entity and the result floored so someone is eligible.
-pub fn average_vruntime<'entity>(
-    entities: impl IntoIterator<Item = &'entity Entity>,
-) -> Option<u64> {
+pub fn average_vruntime<E: Borrow<Entity>>(entities: impl IntoIterator<Item = E>) -> Option<u64> {
     let mut entities = entities.into_iter();
     let first = entities.next()?;
-    let origin = first.vruntime;
+    let origin = first.borrow().vruntime;
 
     let (mut weighted, mut weight) = (0i128, 0i128);
     for entity in core::iter::once(first).chain(entities) {
+        let entity = entity.borrow();
         let offset = entity.vruntime.wrapping_sub(origin) as i64;
         weighted += i128::from(offset) * i128::from(entity.weight);
         weight += i128::from(entity.weight);
@@ -117,12 +118,13 @@ pub fn average_vruntime<'entity>(
     Some(origin.wrapping_add(offset as u64))
 }
 
-pub fn pick<'entity, K: Copy>(
-    entities: impl IntoIterator<Item = (K, &'entity Entity)>,
+pub fn pick<K: Copy, E: Borrow<Entity>>(
+    entities: impl IntoIterator<Item = (K, E)>,
     average: u64,
 ) -> Option<K> {
     let mut best: Option<(K, u64)> = None;
     for (key, entity) in entities {
+        let entity = entity.borrow();
         if !entity.is_eligible(average) {
             continue;
         }
