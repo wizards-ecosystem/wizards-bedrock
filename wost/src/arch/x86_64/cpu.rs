@@ -45,12 +45,15 @@ const CR4_DE: u64 = 1 << 3;
 
 const CR4_MCE: u64 = 1 << 6;
 
+const CR4_PGE: u64 = 1 << 7;
+
 const CR4_PCE: u64 = 1 << 8;
 
 const CR4_FSGSBASE: u64 = 1 << 16;
 
-// A bootloader may leave these set; each would hand ring 3 a counter, a register or a breakpoint.
-const CR4_CLEARED: u64 = CR4_DE | CR4_PCE | CR4_FSGSBASE;
+// A bootloader may leave these set: each hands ring 3 a counter, a register or a breakpoint, or
+// keeps a global translation alive across every `CR3` load.
+const CR4_CLEARED: u64 = CR4_DE | CR4_PGE | CR4_PCE | CR4_FSGSBASE;
 
 pub(super) const FLAGS_RESERVED: u64 = 1 << 1;
 

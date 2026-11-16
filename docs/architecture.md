@@ -181,8 +181,10 @@ fault, and `task::enter_user` refuses while either is set. The calls are in sect
 
 `cpu::establish_control_state` and `cpu::enable_protections` run after the IDT is installed, so a
 bad bootloader mapping becomes a reported fault. The first sets `CR0.NE`, `CR4.MCE` and `CR4.TSD`,
-clears `CR0.EM` and `CR4.DE`, `PCE` and `FSGSBASE`, writes zero to `IA32_TSC_AUX` where `RDTSCP` or
-`RDPID` exists, and resets `RFLAGS`; bits the kernel does not own stay as the bootloader set them.
+clears `CR0.EM` and `CR4.DE`, `PGE`, `PCE` and `FSGSBASE`, writes zero to `IA32_TSC_AUX` where
+`RDTSCP` or `RDPID` exists, and resets `RFLAGS`; bits the kernel does not own stay as the bootloader
+set them. With `PGE` clear no global translation survives a `CR3` load, so a shootdown's reload
+flushes everything the bootloader's tables left.
 With `CR4.TSD` set, `RDTSC`, `RDTSCP`, `TPAUSE` and `UMWAIT` raise #GP in ring 3 before they retire,
 and the fault path retires the program; the kernel never emulates them. `RDPID` cannot be trapped
 and reads the zeroed `IA32_TSC_AUX`. The second sets `CR0.WP` and `EFER.NXE` and enables SMEP, SMAP
