@@ -33,6 +33,7 @@ members = [
     "libs/trap-cause",
     "libs/vtd",
     "libs/wake-state",
+    "libs/world-tree",
     "libs/x86-apic",
     "libs/x86-cpuid",
     "libs/x86-paging",
@@ -74,6 +75,7 @@ default-members = [
     "libs/trap-cause",
     "libs/vtd",
     "libs/wake-state",
+    "libs/world-tree",
     "libs/x86-apic",
     "libs/x86-cpuid",
     "libs/x86-paging",
@@ -120,6 +122,7 @@ tlb-generation = { path = "libs/tlb-generation" }
 trap-cause = { path = "libs/trap-cause" }
 vtd = { path = "libs/vtd" }
 wake-state = { path = "libs/wake-state" }
+world-tree = { path = "libs/world-tree" }
 x86-apic = { path = "libs/x86-apic" }
 x86-cpuid = { path = "libs/x86-cpuid" }
 x86-paging = { path = "libs/x86-paging" }
