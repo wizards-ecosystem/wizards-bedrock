@@ -129,6 +129,17 @@ impl Reservation {
         if !self.used.is_zero() || !self.mask.is_within(parent.mask) {
             return false;
         }
+        // Checked first, so a parent that cannot hold the whole return refuses all of it.
+        let fits = (0..MAX_COLOURS).all(|colour| {
+            parent
+                .reserved
+                .get(colour)
+                .checked_add(self.reserved.get(colour))
+                .is_some()
+        });
+        if !fits {
+            return false;
+        }
         for colour in 0..MAX_COLOURS {
             parent.reserved.increase(colour, self.reserved.get(colour));
         }
@@ -180,6 +191,7 @@ impl<const WORDS: usize> FrameSpace<WORDS> {
         count: usize,
         align: usize,
     ) -> Option<usize> {
+        let hint = self.hint;
         let first = self.allocate_contiguous(count, align)?;
         let reserved_intact = (0..colours.count())
             .all(|colour| self.free_in(colours, colour) >= pool.unused.get(colour));
@@ -189,6 +201,8 @@ impl<const WORDS: usize> FrameSpace<WORDS> {
         for frame in first..first + count {
             self.release(frame);
         }
+        // A refused allocation leaves even the search hint as it found it.
+        self.hint = hint;
         None
     }
 
