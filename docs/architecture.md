@@ -578,7 +578,11 @@ once, by a claim on that wait. `models/Shootdown.tla` checks `libs/tlb-generatio
 with two concurrent unmaps: a frame is freed only when every CPU that holds its translation is off
 the space with a slot seen below the flush, and every flush wait ends. `models/Pin.tla` checks the
 counted pin on a world node: no pinned world's frames are reused, and no pin is counted after the
-pin word closes. Each `*.cfg` named after a mutation must violate its named invariant.
+pin word closes. `models/Call.tla` checks the `libs/channel-state` call cell over two calls on one
+cell, racing reply, close of the reply right, cancel, timeout and the death of either side: each
+call has exactly one outcome, a reply right succeeds at most once and only on the call it names, a
+received call is never peer closed, and each moved handle is in exactly one place. Each `*.cfg`
+named after a mutation must violate its named invariant.
 `cargo xtask model-check` runs them with the digest-pinned `tools/tla/tla2tools.jar`.
 
 ## 13. What the kernel trusts

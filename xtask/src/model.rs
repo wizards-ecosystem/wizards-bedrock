@@ -45,6 +45,8 @@ const RUNS: &[(&str, &str, Option<&str>)] = &[
     ),
     ("Pin.tla", "Pin.cfg", None),
     ("Pin.tla", "Pin.no-reload.cfg", Some("NoReuseWhilePinned")),
+    ("Call.tla", "Call.cfg", None),
+    ("Call.tla", "Call.unchecked-reply.cfg", Some("ReplyOnce")),
 ];
 
 pub(crate) fn verify(paths: &Paths) -> Result<()> {

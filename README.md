@@ -87,7 +87,7 @@ wost/            the privileged framework, the only crate that writes unsafe
 libs/            hardware-free no_std libraries, tested on the host
 xtask/           build, image, QEMU and VMware runners, the gate
 boot/            limine.conf and the digest-pinned Limine UEFI binary
-models/          TLA+ models of the ring, wakeup, shootdown and pin protocols
+models/          TLA+ models of the ring, call, wakeup, shootdown and pin protocols
 tools/tla/       the digest-pinned TLC jar
 supply-chain/    license inventory, third-party notices and license texts
 docs/            architecture, conventions, roadmap and decisions
