@@ -180,33 +180,69 @@ A check that cannot fail still reads as evidence. Four rules keep a check able t
 ## Proofs
 
 A proven crate is a `libs/` crate that Verus checks in place. Its `Cargo.toml` takes
-`vstd.workspace = true` and sets `[package.metadata.verus] verify = true`. `cargo xtask verify`
-checks every such crate with the build `tools/verus/VERSION` pins, and a plain build erases all
-ghost code.
+`vstd.workspace = true` and sets `[package.metadata.verus] verify = true`, which is all it takes
+to join: `cargo xtask verify` checks every crate so marked with the build `tools/verus/VERSION`
+pins. A plain build erases all ghost code.
 
 How a proof is laid out:
 
 - `src/proof.rs`, reached as `pub mod proof`, holds the crate's one `verus! {}` module of
-  specifications: the type invariant, the spec functions, each named for the statement it serves,
-  and the lemmas. Exec code names them as `proof::name`. A public function's `ensures` names only public
-  specs and constants, so a private constant appears there as its literal value.
+  specifications: the type invariants, the spec functions, each named for the statement it serves,
+  and the lemmas. Exec code names them as `proof::name`. A spec function that reads the fields of
+  a type in another module needs those fields `pub(crate)`; a type in the crate root needs nothing.
+- A public function's `ensures` names only public specs and constants, so a private constant
+  appears there as its literal value.
 - A loop-free function stays plain Rust under `#[verus_spec(...)]`, with proof steps in `proof!`.
   Types, constants and impl blocks carry `#[verus_verify]`; on a type it makes Verus handle the
-  derived `Debug`, which it cannot check.
-- Proofs hold for a 32-bit and a 64-bit `usize`, so `bit_vector` steps state their shift bounds
-  with `usize::BITS`. The `global size_of usize` directive is not used: its erased form fails
-  `unused_braces`.
+  derived `Debug`, which it cannot check. Constants in a nested module sit in that module's own
+  `verus! {}`.
+- A `pub const` of a type with private fields is an `exec const` with an `ensures` inside
+  `verus! {}`, or carries `#[verus_spec(ensures ...)]`. A spec cannot read it, so a spec restates
+  its value.
 - A function with a loop is written whole inside `verus! {}` beside its plain siblings, because
   stable Rust refuses an attribute on a loop. `cargo fmt` does not format a macro body, so code
   there is formatted by hand in rustfmt's style: four-space indent, 100 columns, trailing commas in
-  clause lists, and `requires`, `ensures`, `invariant` and `decreases` each on its own line.
+  clause lists, and `requires`, `ensures`, `invariant` and `decreases` each on its own line. Clippy
+  does lint that code, and a `proof {}` block may not end a block that returns nothing.
 - Every function in a proven crate is verified: `cargo xtask verify` passes
   `--no-external-by-default`, so an item outside `verus! {}` with no attribute is still checked.
   The one exclusion is `mod fmt;`, marked `#[cfg_attr(verus_only, verifier::external)]` in the
-  crate root, which holds the `Display` and `Error` impls Verus cannot check. Nothing else in a
-  proven crate is marked external. `--no-cheating` refuses `assume`, `admit` and `external_body`.
+  crate root, which holds the `Display`, `Error` and hand-written `Debug` impls Verus cannot check.
+  Nothing else in a proven crate is marked external. `--no-cheating` refuses `assume`, `admit` and
+  `external_body`.
 - A `use` that only ghost code needs, such as `use vstd::prelude::*;` for `int` and
   `use_type_invariant`, carries `#[cfg(verus_only)]`; a plain build would find it unused.
+- Proofs hold for a 32-bit and a 64-bit `usize`, so `bit_vector` steps state their shift bounds
+  with `usize::BITS`. The `global size_of usize` directive is not used: its erased form fails
+  `unused_braces`.
+
+How state with an invariant changes:
+
+- A `&mut self` postcondition names the result as `final(self)` and the start as `old(self)`.
+- Verus checks a type invariant after every field assignment and after every call that borrows a
+  field, and such a call must be `no_unwind`. State whose invariant ties several fields together
+  changes through one function that takes `&mut` to each field; before the call, a lemma over the
+  new values shows they satisfy the invariant. Before the next field assignment the method calls
+  `use_type_invariant` again.
+- A loop forgets what its invariant does not say: a value the loop leaves alone is stated as
+  `*self == *old(self)`, and a fact proven before the loop and needed after it is in the invariant.
+
+What keeps a proof stable:
+
+- After changing one element of a sequence, assert the changed element and `assert forall` the
+  unchanged ones in the terms the invariant uses. Give each conjunct of a quantified fact its own
+  trigger.
+- After a field assignment, spec functions of the new value are not linked to those of the old
+  one; keep a `let ghost` copy and assert the equalities. A `choose` over `self` differs between
+  two values with equal fields, so such a spec is defined over the field:
+  `seen_in(entries, space)`.
+- `bit_vector` sees only its own assertion: it names no spec function and no `let` binding, which
+  it takes as `requires` instead, and it has no `usize::MAX`. A shift amount is a `u64` in code and
+  spec alike: `1u64 << (bit as u64)`.
+- Verus rejects `if let` chains and an unparenthesised `matches` beside `&&`, and reads `!has(...)`
+  as its own `has` operator, so no spec function is named `has`.
+- While iterating, `cargo verus focus -p CRATE -- --verify-function NAME --expand-errors` checks
+  one function. It refuses `--no-cheating`, so a full `cargo xtask verify` decides.
 
 The coding rules a provable crate follows:
 

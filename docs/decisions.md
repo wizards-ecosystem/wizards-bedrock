@@ -686,6 +686,15 @@ number and is added here, as one entry or as an amending id on the entry it chan
   newer glibc than the test host has. That host's g++ 12 has no `<format>` header, so Z3 is
   compiled with `tools/verus/format`, a stand-in that renders the `{}` fields of Z3's error
   messages; the Z3 tree itself is the pinned commit, unmodified.
+- **D-510** A host test that a Verus proof states for every input is deleted, and a test stays
+  only for what no proof states: `tlb-generation`'s enumerated catch-up test and `frame-space`'s
+  free-count test went, while the search that finds a run straddling the hint keeps its test,
+  because the proof shows a found run is free but not that every free run is found.
+- **D-511** A proven type whose invariant ties several fields together changes them through one
+  `no_unwind` function that borrows each field, with a lemma over the new values proven before the
+  call, because Verus checks a type invariant after every field write and allows no temporary
+  break. The same holds for a `FrameSpace` bitmap and its counters and a `Reservation`'s reserved
+  and used counts.
 
 ## Conventions
 
