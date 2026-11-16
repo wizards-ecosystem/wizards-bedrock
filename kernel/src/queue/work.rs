@@ -500,9 +500,14 @@ pub(crate) fn request_reap() {
     FILE_WORK.waiters.wake_all();
 }
 
+pub(crate) fn request_reports() {
+    FILE_WORK.waiters.wake_all();
+}
+
 fn work_forever(context: &mut ThreadContext, _: usize) {
     let mut retry_reap = false;
     loop {
+        crate::thread::report();
         if retry_reap {
             if crate::time::is_calibrated() {
                 crate::thread::sleep_ms(context, 1);
@@ -526,6 +531,7 @@ fn work_forever(context: &mut ThreadContext, _: usize) {
             retry_reap
                 || FILE_WORK.queued.load(Ordering::Acquire) > 0
                 || REAP_REQUESTS.load(Ordering::Acquire) > 0
+                || crate::thread::reports_pending()
         });
     }
 }

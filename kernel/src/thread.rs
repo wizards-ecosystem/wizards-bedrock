@@ -528,16 +528,25 @@ fn notify(target: usize) {
 
 static REPORTED: AtomicU64 = AtomicU64::new(0);
 
-// From an idle thread, since a switch cannot log, and before a verdict; `true` when the count grew.
-pub(crate) fn report_processors() -> bool {
+// What syscalls and switches cannot log, reported by the service worker.
+pub(crate) fn reports_pending() -> bool {
+    crate::user::reports_pending()
+        || RAN.load(Ordering::Acquire) != REPORTED.load(Ordering::Acquire)
+}
+
+pub(crate) fn report() {
+    crate::user::report();
+    report_processors();
+}
+
+pub(crate) fn report_processors() {
     let ran = RAN.load(Ordering::Acquire);
     if REPORTED.swap(ran, Ordering::AcqRel) == ran {
-        return false;
+        return;
     }
     let processors = ran.count_ones() as usize;
     crate::info!("threads: threads ran on {processors} processors");
     crate::info!("{}", Record::Ran(Ran { processors }));
-    true
 }
 
 fn charge(thread: ThreadRef, now: u64) {
@@ -894,12 +903,11 @@ fn steal(context: &mut ThreadContext) -> bool {
     true
 }
 
+// It runs only when nothing else can, so it never logs: a thread lock it held could wait forever.
 fn idle_loop(context: &mut ThreadContext, _: usize) {
     loop {
-        // Syscall handlers defer reporting because they cannot take the console lock.
-        if crate::user::report_execution() || crate::user::report_refusals() || report_processors()
-        {
-            continue;
+        if reports_pending() {
+            crate::queue::request_reports();
         }
         if steal(context) {
             yield_now(context);

@@ -38,7 +38,7 @@ pub(crate) use selftest::TestQueue;
 pub(crate) use call::{CallCell, Caller, abandon, close_call};
 use ring::write_u32;
 use work::FILE_WORK;
-pub(crate) use work::{request_reap, start_worker, worker_is_ready};
+pub(crate) use work::{request_reap, request_reports, start_worker, worker_is_ready};
 
 const PUBLICATION_WORDS: usize = 4;
 

@@ -26,22 +26,20 @@ static REPORTED: AtomicBool = AtomicBool::new(false);
 static EXECUTED: AtomicBool = AtomicBool::new(false);
 static EXECUTION_REPORTED: AtomicBool = AtomicBool::new(false);
 
-pub(crate) fn report_execution() -> bool {
-    if !EXECUTED.load(Ordering::Acquire) || EXECUTION_REPORTED.swap(true, Ordering::AcqRel) {
-        return false;
-    }
-    info!("user: ring 3 call observed");
-    true
+pub(crate) fn reports_pending() -> bool {
+    (EXECUTED.load(Ordering::Acquire) && !EXECUTION_REPORTED.load(Ordering::Acquire))
+        || (REFUSED_CALLS.load(Ordering::Acquire) != 0 && !REPORTED.load(Ordering::Acquire))
 }
 
-pub(crate) fn report_refusals() -> bool {
-    let refused = REFUSED_CALLS.load(Ordering::Acquire);
-    if refused == 0 || REPORTED.swap(true, Ordering::AcqRel) {
-        return false;
+pub(crate) fn report() {
+    if EXECUTED.load(Ordering::Acquire) && !EXECUTION_REPORTED.swap(true, Ordering::AcqRel) {
+        info!("user: ring 3 call observed");
     }
-    let number = LAST_REFUSED.load(Ordering::Acquire);
-    warn!("user: refused {refused} call(s), last was {number:#x}");
-    true
+    let refused = REFUSED_CALLS.load(Ordering::Acquire);
+    if refused != 0 && !REPORTED.swap(true, Ordering::AcqRel) {
+        let number = LAST_REFUSED.load(Ordering::Acquire);
+        warn!("user: refused {refused} call(s), last was {number:#x}");
+    }
 }
 
 #[cfg(feature = "selftest")]

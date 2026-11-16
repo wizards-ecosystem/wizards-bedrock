@@ -439,7 +439,8 @@ world clock, a `libs/wake-state` wake word and its scheduling links. Each proces
 run queue and idle thread behind a run-queue lock; the queue links ready threads through their
 records, with the arithmetic in `libs/eevdf` and a 3 ms slice. If the policy ever returns nobody
 while every thread is a candidate, the kernel takes the first candidate. The idle thread sits
-outside the policy, runs only when nothing else can, halts, and emits the reports calls left
+outside the policy, runs only when nothing else can and halts. It takes no thread lock, since one
+it held could wait forever, so it wakes the service worker to log what calls and switches left
 behind. The other kernel threads are the keyboard poller and the service worker. A ring 0 frame is
 preempted at trap exit, after end-of-interrupt, and only when it had interrupts enabled. Every
 spin lock clears that flag, so critical sections need no preempt count. A ring 3 thread is
@@ -731,7 +732,7 @@ The `0x80` gate dispatches on `rax` (`kernel/src/user/call.rs`, numbers in `nati
 | 2 | `ThreadBase` | sets `FS_BASE` to `rdi`; `-EINVAL` outside user space |
 | 3 | `RingWait` | returns at once when nothing is in flight, else sleeps until an operation is due and serves it |
 
-An unknown number answers `-ENOSYS` (`-38`) and is counted for the idle thread to report. Calls
+An unknown number answers `-ENOSYS` (`-38`) and is counted for the service worker to report. Calls
 run in the calling thread's context with interrupts on. `RingWait` blocks on the ring's wait queue
 until a completion is posted or the earliest deadline passes, and file work goes to the service
 worker (section 9).
@@ -853,7 +854,7 @@ the kernel target's flags and no LTO. It links a static `ET_EXEC` at `0x400000` 
 header 0 is the text load. `xtask/src/image/witness.rs` refuses an image with a dynamic section or
 interpreter, an empty, misaligned or writable and executable load, more than 8 loads, or a load
 past 2 GiB. The loader maps each segment at its `p_vaddr`; only stacks move per program. The
-idle thread logs `user: ring 3 call observed` once after the first call from CPL 3.
+service worker logs `user: ring 3 call observed` once after the first call from CPL 3.
 
 `copy_from_user` and `copy_to_user` (`wost/src/arch/x86_64/usercopy.rs`) are the only code that
 opens the SMAP window, for one copy. Each first walks every page and requires effective `USER`
