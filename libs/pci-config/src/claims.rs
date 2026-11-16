@@ -24,7 +24,7 @@ impl FunctionAuthority {
         self.lease.at
     }
 
-    pub const fn bar_registers(&self) -> usize {
+    pub(crate) const fn bar_registers(&self) -> usize {
         self.registers
     }
 }
@@ -96,7 +96,7 @@ impl<const N: usize> FunctionClaims<N> {
             .any(|held| *held == authority.lease)
     }
 
-    pub fn is_claimed(&self, at: Address) -> bool {
+    fn is_claimed(&self, at: Address) -> bool {
         let at = at.function_base();
         self.slots.iter().flatten().any(|held| held.at == at)
     }

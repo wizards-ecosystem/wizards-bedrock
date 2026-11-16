@@ -7,17 +7,17 @@
 
 use core::fmt;
 
-pub const MAGIC: [u8; 4] = [0x7F, b'E', b'L', b'F'];
+const MAGIC: [u8; 4] = [0x7F, b'E', b'L', b'F'];
 
-pub const CLASS_64: u8 = 2;
+const CLASS_64: u8 = 2;
 
-pub const LITTLE_ENDIAN: u8 = 1;
+const LITTLE_ENDIAN: u8 = 1;
 
 pub const HEADER_BYTES: usize = 64;
 
 pub const PROGRAM_HEADER_BYTES: usize = 56;
 
-pub const MACHINE_X86_64: u16 = 62;
+const MACHINE_X86_64: u16 = 62;
 
 const CURRENT_VERSION: u32 = 1;
 

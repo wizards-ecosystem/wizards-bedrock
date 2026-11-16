@@ -17,9 +17,9 @@ pub const IOSQES: u32 = 6;
 
 pub const IOCQES: u32 = 4;
 
-pub const MAX_TRANSFER_BLOCKS: u32 = u16::MAX as u32 + 1;
+const MAX_TRANSFER_BLOCKS: u32 = u16::MAX as u32 + 1;
 
-pub const SUPPORTED_BLOCK_BYTES: u32 = 512;
+const SUPPORTED_BLOCK_BYTES: u32 = 512;
 
 const NAMESPACE_SIZE_BYTES: usize = 8;
 const LBA_FORMAT_BYTES: usize = 4;
@@ -111,7 +111,7 @@ pub mod register {
     pub const AQA: usize = 0x24;
     pub const ASQ: usize = 0x28;
     pub const ACQ: usize = 0x30;
-    pub const DOORBELLS: usize = 0x1000;
+    pub(crate) const DOORBELLS: usize = 0x1000;
 }
 
 pub mod configuration {
@@ -129,8 +129,7 @@ pub mod status {
 // These prove nothing about where they were read, so hardware authority must keep the mapping.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct DisabledRegisters {
-    cc: u32,
-    csts: u32,
+    _private: (),
 }
 
 impl DisabledRegisters {
@@ -138,11 +137,7 @@ impl DisabledRegisters {
         if cc & configuration::ENABLE != 0 || csts & status::READY != 0 {
             return Err(ControllerStateError::Active { cc, csts });
         }
-        Ok(Self { cc, csts })
-    }
-
-    pub const fn bits(self) -> (u32, u32) {
-        (self.cc, self.csts)
+        Ok(Self { _private: () })
     }
 }
 

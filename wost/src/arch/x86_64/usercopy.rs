@@ -71,7 +71,6 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         faulting_address: cpu::faulting_address(),
     };
     let rule = trap_cause::RecoveryRule {
-        fault: trap_cause::RecoveryFault::SupervisorData,
         fault_addresses: 0..USER_END,
         instruction_addresses: start..end,
     };

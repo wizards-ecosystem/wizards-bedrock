@@ -47,7 +47,7 @@ impl Channel {
         Self { shift, size }
     }
 
-    pub const fn encode(self, intensity: u8) -> u32 {
+    const fn encode(self, intensity: u8) -> u32 {
         let size = self.size as u32;
         let shift = self.shift as u32;
         if size == 0 || shift >= u32::BITS || size > u32::BITS - shift {

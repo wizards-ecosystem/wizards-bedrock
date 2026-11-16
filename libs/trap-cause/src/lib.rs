@@ -143,7 +143,7 @@ impl PageFault {
         self.0 & (1 << 1) != 0
     }
 
-    pub const fn from_user(self) -> bool {
+    const fn was_user(self) -> bool {
         self.0 & (1 << 2) != 0
     }
 
@@ -186,7 +186,7 @@ impl fmt::Debug for PageFault {
             } else {
                 "read"
             },
-            if self.from_user() { "user" } else { "kernel" }
+            if self.was_user() { "user" } else { "kernel" }
         )?;
         if self.reserved_bit_set() {
             formatter.write_str(", reserved bit set in a table entry")?;
@@ -213,15 +213,10 @@ pub struct RecoveryAttempt {
 
 impl RecoveryAttempt {
     pub fn is_admitted_by(&self, rule: &RecoveryRule) -> bool {
-        let class_matches = match rule.fault {
-            RecoveryFault::SupervisorData => self.page_fault.is_supervisor_data_access(),
-            RecoveryFault::SupervisorWriteProtection => self.page_fault.bits() == 0b11,
-        };
-
         self.vector == u64::from(exception::PAGE_FAULT)
             && self.frame_error_code == self.page_fault.bits()
             && self.code_selector & 0b11 == 0
-            && class_matches
+            && self.page_fault.is_supervisor_data_access()
             && rule.fault_addresses.contains(&self.faulting_address)
             && rule
                 .instruction_addresses
@@ -229,15 +224,8 @@ impl RecoveryAttempt {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum RecoveryFault {
-    SupervisorData,
-    SupervisorWriteProtection,
-}
-
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct RecoveryRule {
-    pub fault: RecoveryFault,
     pub fault_addresses: Range<u64>,
     pub instruction_addresses: Range<u64>,
 }

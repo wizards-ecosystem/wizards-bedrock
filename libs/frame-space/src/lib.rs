@@ -83,7 +83,7 @@ impl<const WORDS: usize> FrameSpace<WORDS> {
         frame < Self::FRAME_COUNT && self.free[frame / FRAMES_PER_WORD] & bit(frame) != 0
     }
 
-    pub const fn is_managed(&self, frame: usize) -> bool {
+    const fn is_managed(&self, frame: usize) -> bool {
         frame < Self::FRAME_COUNT && self.managed[frame / FRAMES_PER_WORD] & bit(frame) != 0
     }
 

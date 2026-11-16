@@ -19,42 +19,28 @@ fn attempt(bits: u64, faulting_address: u64, instruction_pointer: u64) -> Recove
     }
 }
 
-fn user_copy_rule() -> RecoveryRule {
-    RecoveryRule {
-        fault: RecoveryFault::SupervisorData,
-        fault_addresses: 0x2000..0x3000,
-        instruction_addresses: 0x8000..0x8002,
-    }
-}
-
-fn write_protection_rule() -> RecoveryRule {
-    RecoveryRule {
-        fault: RecoveryFault::SupervisorWriteProtection,
-        fault_addresses: 0xd00d..0xd00e,
-        instruction_addresses: 0x9000..0x9001,
-    }
-}
-
 #[test]
 fn recovery_requires_cr2_inside_the_owned_interval() {
-    let cases = [(0b10, user_copy_rule()), (0b11, write_protection_rule())];
-    for (bits, rule) in cases {
-        let start = rule.fault_addresses.start;
-        let end = rule.fault_addresses.end;
-        for address in [start, end - 1] {
-            assert!(attempt(bits, address, rule.instruction_addresses.start).is_admitted_by(&rule));
-        }
-        for address in [start - 1, end, u64::MAX] {
-            assert!(
-                !attempt(bits, address, rule.instruction_addresses.start).is_admitted_by(&rule),
-                "CR2 {address:#x}"
-            );
-        }
-
-        let mut empty = rule.clone();
-        empty.fault_addresses = start..start;
-        assert!(!attempt(bits, start, rule.instruction_addresses.start).is_admitted_by(&empty));
-        empty.fault_addresses = end..start;
-        assert!(!attempt(bits, start, rule.instruction_addresses.start).is_admitted_by(&empty));
+    const BITS: u64 = 0b10;
+    let rule = RecoveryRule {
+        fault_addresses: 0x2000..0x3000,
+        instruction_addresses: 0x8000..0x8002,
+    };
+    let start = rule.fault_addresses.start;
+    let end = rule.fault_addresses.end;
+    for address in [start, end - 1] {
+        assert!(attempt(BITS, address, rule.instruction_addresses.start).is_admitted_by(&rule));
     }
+    for address in [start - 1, end, u64::MAX] {
+        assert!(
+            !attempt(BITS, address, rule.instruction_addresses.start).is_admitted_by(&rule),
+            "CR2 {address:#x}"
+        );
+    }
+
+    let mut empty = rule.clone();
+    empty.fault_addresses = start..start;
+    assert!(!attempt(BITS, start, rule.instruction_addresses.start).is_admitted_by(&empty));
+    empty.fault_addresses = end..start;
+    assert!(!attempt(BITS, start, rule.instruction_addresses.start).is_admitted_by(&empty));
 }

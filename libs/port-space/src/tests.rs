@@ -24,7 +24,7 @@ fn a_refused_multi_span_reservation_takes_nothing() {
         for (index, &(base, len)) in SPANS.iter().enumerate() {
             if index != refused {
                 assert!(
-                    space.is_available(base, len),
+                    space.reserve(base, len),
                     "conflict {refused} stranded span {index}"
                 );
             }
@@ -36,9 +36,10 @@ fn a_refused_multi_span_reservation_takes_nothing() {
 fn a_request_that_overlaps_itself_is_refused() {
     let mut space = PortSpace::new();
     assert!(!space.reserve_all(&[(0x60, 4), (0x62, 2)]));
-    assert!(space.is_available(0x60, 4), "nothing was recorded");
-
-    assert!(space.reserve_all(&[(0x60, 2), (0x62, 2)]));
+    assert!(
+        space.reserve_all(&[(0x60, 2), (0x62, 2)]),
+        "nothing was recorded"
+    );
 
     let mut reversed = PortSpace::new();
     assert!(reversed.reserve_all(&[(0x62, 2), (0x60, 2)]));

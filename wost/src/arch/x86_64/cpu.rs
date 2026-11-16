@@ -159,7 +159,7 @@ const UMIP_SUPPORTED: u32 = 1 << 2;
 const NX_SUPPORTED: u32 = 1 << 20;
 
 impl Protections {
-    pub fn supported() -> Self {
+    fn supported() -> Self {
         let structured = if max_leaf(0) >= 7 {
             cpuid(7, 0)
         } else {

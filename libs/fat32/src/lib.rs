@@ -11,7 +11,7 @@ pub const SECTOR_BYTES: usize = 512;
 
 const ENTRY_BYTES: usize = 32;
 
-pub const FIRST_DATA_CLUSTER: u32 = 2;
+const FIRST_DATA_CLUSTER: u32 = 2;
 
 const ENTRY_MASK: u32 = 0x0FFF_FFFF;
 
@@ -187,7 +187,7 @@ impl Bpb {
         self.root_cluster
     }
 
-    pub const fn first_data_sector(self) -> u64 {
+    const fn first_data_sector(self) -> u64 {
         self.reserved_sectors as u64 + self.fats as u64 * self.sectors_per_fat as u64
     }
 

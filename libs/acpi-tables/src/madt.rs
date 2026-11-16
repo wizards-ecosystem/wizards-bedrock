@@ -237,10 +237,6 @@ impl<const IO_APICS: usize> MadtInterrupts<IO_APICS> {
             .map_or(u32::from(irq), |(gsi, _)| gsi)
     }
 
-    pub fn flags_for(&self, irq: u8) -> u16 {
-        self.override_for(irq).map_or(0, |(_, flags)| flags)
-    }
-
     pub fn override_for(&self, irq: u8) -> Option<(u32, u16)> {
         self.overrides.get(usize::from(irq)).copied().flatten()
     }

@@ -184,7 +184,7 @@ impl HeaderType {
         self.layout() == 1
     }
 
-    pub const fn bar_registers(self) -> Option<usize> {
+    pub(crate) const fn bar_registers(self) -> Option<usize> {
         match self.layout() {
             0 => Some(BARS),
             1 => Some(BRIDGE_BARS),

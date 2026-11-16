@@ -69,10 +69,6 @@ impl PortSpace {
         true
     }
 
-    pub fn is_available(&self, port: usize, length: usize) -> bool {
-        self.span(port, length).is_some()
-    }
-
     fn span(&self, port: usize, length: usize) -> Option<Range<usize>> {
         let span = bounded_span(port, length)?;
         span.clone()

@@ -3,8 +3,6 @@
 
 pub const PAGE_SIZE: u64 = 4096;
 
-const WORD: u64 = 8;
-
 // A one-page guard assumes no `alloca` or SSE spills.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct StackLayout {
@@ -99,50 +97,6 @@ impl Slot {
 
     pub const fn stack_top(&self) -> u64 {
         self.stack_base + self.stack_len
-    }
-
-    pub const fn usage_at(&self, pointer: u64) -> Option<StackUsage> {
-        if pointer < self.stack_base || pointer > self.stack_top() {
-            return None;
-        }
-        Some(StackUsage {
-            capacity: self.stack_len,
-            used: self.stack_top() - pointer,
-        })
-    }
-
-    pub const fn span_below(&self, pointer: u64, clearance: u64) -> Option<core::ops::Range<u64>> {
-        if self.usage_at(pointer).is_none() {
-            return None;
-        }
-        let Some(limit) = pointer.checked_sub(clearance) else {
-            return None;
-        };
-        let end = limit - limit % WORD;
-        if end <= self.stack_base {
-            return None;
-        }
-        Some(self.stack_base..end)
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct StackUsage {
-    capacity: u64,
-    used: u64,
-}
-
-impl StackUsage {
-    pub const fn capacity(self) -> u64 {
-        self.capacity
-    }
-
-    pub const fn used(self) -> u64 {
-        self.used
-    }
-
-    pub const fn headroom(self) -> u64 {
-        self.capacity - self.used
     }
 }
 

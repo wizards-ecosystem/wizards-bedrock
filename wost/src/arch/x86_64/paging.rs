@@ -322,7 +322,7 @@ pub struct Binding {
 }
 
 impl Binding {
-    pub const fn roots(&self) -> AddressSpaceRoots {
+    pub(crate) const fn roots(&self) -> AddressSpaceRoots {
         self.roots
     }
 }

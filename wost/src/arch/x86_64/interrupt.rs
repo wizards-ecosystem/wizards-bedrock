@@ -148,7 +148,7 @@ impl TrapFrame {
         self.raw.stack_pointer
     }
 
-    pub const fn stack_selector(&self) -> u64 {
+    pub(crate) const fn stack_selector(&self) -> u64 {
         self.raw.stack_selector
     }
 
@@ -195,7 +195,7 @@ static TRAP_DEPTH: AtomicUsize = AtomicUsize::new(0);
 
 static LIVE_FRAME: AtomicPtr<RawTrapFrame> = AtomicPtr::new(core::ptr::null_mut());
 
-pub fn in_trap() -> bool {
+pub(crate) fn in_trap() -> bool {
     TRAP_DEPTH.load(Ordering::Relaxed) != 0
 }
 

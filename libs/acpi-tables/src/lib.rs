@@ -236,9 +236,9 @@ pub struct Sdt {
 impl Sdt {
     pub const LEN: usize = 36;
 
-    pub const XSDT: [u8; 4] = *b"XSDT";
+    const XSDT: [u8; 4] = *b"XSDT";
 
-    pub const RSDT: [u8; 4] = *b"RSDT";
+    const RSDT: [u8; 4] = *b"RSDT";
 
     pub const MADT: [u8; 4] = *b"APIC";
 

@@ -10,8 +10,6 @@ use x86_paging::{Entry, MAX_PHYSICAL};
 pub struct PhysicalAddress(u64);
 
 impl PhysicalAddress {
-    pub const ZERO: Self = Self(0);
-
     pub const fn new(address: u64) -> Option<Self> {
         if address < MAX_PHYSICAL {
             Some(Self(address))

@@ -372,7 +372,7 @@ impl PageRun {
         self.cache
     }
 
-    pub const fn is_allocatable(self) -> bool {
+    const fn is_allocatable(self) -> bool {
         self.allocatable
     }
 }

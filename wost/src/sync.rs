@@ -42,10 +42,6 @@ impl Once {
     pub fn claim(&self) -> bool {
         !self.0.swap(true, Ordering::AcqRel)
     }
-
-    pub fn is_claimed(&self) -> bool {
-        self.0.load(Ordering::Acquire)
-    }
 }
 
 impl Default for Once {

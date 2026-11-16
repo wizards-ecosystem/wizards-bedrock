@@ -56,8 +56,4 @@ impl Gate {
         gate.attributes |= 0b11 << 5;
         gate
     }
-
-    pub const fn privilege(self) -> u8 {
-        (self.attributes >> 5) & 0b11
-    }
 }

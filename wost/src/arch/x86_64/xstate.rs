@@ -22,7 +22,7 @@ const AVX_INDEX: u32 = 2;
 // `CPUID.0DH.i:ECX` bit 1: the component starts on a 64-byte boundary in the compacted form.
 const ALIGNED_TO_64: u32 = 1 << 1;
 
-pub const CEILING: usize = 1024;
+pub(crate) const CEILING: usize = 1024;
 
 static BYTES: AtomicUsize = AtomicUsize::new(0);
 
