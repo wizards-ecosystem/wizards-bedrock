@@ -87,8 +87,13 @@ impl Installation {
         command
             .current_dir(run.path())
             .args(["-no-user-config", "-accel", "tcg", "-machine", MACHINE_TYPE])
-            // The hypervisor leaf authenticates the otherwise writable ACPI handoff bytes.
-            .args(["-cpu", "max,hypervisor=on,tcg-cpuid=on", "-m", "512M"]);
+            // The hypervisor leaf authenticates the ACPI handoff; leaf 4 gives TCG cache colours.
+            .args([
+                "-cpu",
+                "max,hypervisor=on,tcg-cpuid=on,x-vendor-cpuid-only=off",
+                "-m",
+                "512M",
+            ]);
         if remapping == Remapping::Present {
             // Caching mode caches not-present DMA entries, so every mapping change is invalidated.
             command.args(["-device", "intel-iommu,intremap=on,eim=on,caching-mode=on"]);

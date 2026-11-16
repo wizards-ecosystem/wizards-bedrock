@@ -589,10 +589,12 @@ settle with no panic, record the ring 3 call and consume an injected key, and de
 without x2APIC and without an IOMMU. `README.md` lists the steps and the tasks outside the gate.
 
 The gate judges a boot only by boot records (`libs/boot-record`), the panic record and the exit
-code. A boot record is one serial line, `[info ] record v1 <kind> <key>=<value>...`, that the
+code. A boot record is one serial line, `[info ] record v2 <kind> <key>=<value>...`, that the
 kernel writes beside the sentence a person reads. The kinds are `verdict` (`passed`, `failed`,
-`expected`), `fact` (`name`, from a closed list) and `protections` (`wp`, `smep`, `smap`, `umip`,
-`nx`, each `0` or `1`). Every field is required and in order, and numbers are canonical decimal.
+`expected`), `fact` (`name`, from a closed list), `protections` (`wp`, `smep`, `smap`, `umip`,
+`nx`, each `0` or `1`) and `memory` (`colours`, the cache colour count). The self-test boot
+requires more than one colour: its `-cpu` line sets `x-vendor-cpuid-only=off`, so QEMU's
+AMD-branded TCG processor answers `CPUID` leaf 4. Every field is required and in order, and numbers are canonical decimal.
 A line that opens as a record but has an unknown version, kind, field or fact fails the boot.
 Each boot names the records it requires (`xtask/src/qemu/boot.rs`, `xtask/src/qemu/serial.rs`),
 and `qualify-vmware` reads a VMware transcript the same way. The `FAILED` sentences of a

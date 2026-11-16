@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, ensure};
-use boot_record::{Fact, Protections, Record, Verdict};
+use boot_record::{Fact, Memory, Protections, Record, Verdict};
 use panic_record::OPEN_PREFIX;
 
 // QEMU exits with `(value << 1) | 1`, so the kernel's 0x10 arrives as 33.
@@ -67,6 +67,7 @@ pub(super) struct Selftest {
     records: Records,
     failed: Vec<String>,
     verdict: Option<Verdict>,
+    colours: Option<usize>,
 }
 
 impl Default for Selftest {
@@ -75,6 +76,7 @@ impl Default for Selftest {
             records: Records::new(SELFTEST_REQUIRED),
             failed: Vec::new(),
             verdict: None,
+            colours: None,
         }
     }
 }
@@ -95,6 +97,7 @@ impl Selftest {
         }
         match read_record(line)? {
             Some(Record::Verdict(verdict)) => self.verdict = Some(verdict),
+            Some(Record::Memory(Memory { colours })) => self.colours = Some(colours),
             Some(record) => self.records.observe(record),
             None => {}
         }
@@ -116,6 +119,14 @@ impl Selftest {
         ensure!(
             exit == Some(SELFTEST_PASSED),
             "the self-test verdict record contradicts its debug-exit status ({exit:?})"
+        );
+        // Sibling worlds with disjoint colour masks need more than one colour to exist.
+        let colours = self
+            .colours
+            .context("the self-test kernel never wrote its `memory` record")?;
+        ensure!(
+            colours > 1,
+            "the self-test machine has {colours} cache colour, so colour masks cannot differ"
         );
         self.records.require_all("self-test")
     }

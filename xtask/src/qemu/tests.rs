@@ -1,4 +1,4 @@
-use boot_record::{Record, Verdict};
+use boot_record::{Memory, Record, Verdict};
 
 use super::serial::{SELFTEST_PASSED, SELFTEST_REQUIRED, Selftest};
 
@@ -9,9 +9,10 @@ fn a_valid_serial_pass_must_match_debug_exit() {
         failed: 0,
         expected: 76,
     });
+    let colours = Record::Memory(Memory { colours: 32 });
     let passing = || {
         let mut selftest = Selftest::default();
-        for record in SELFTEST_REQUIRED.iter().chain([&verdict]) {
+        for record in SELFTEST_REQUIRED.iter().chain([&colours, &verdict]) {
             selftest.observe(&format!("[info ] {record}")).unwrap();
         }
         selftest

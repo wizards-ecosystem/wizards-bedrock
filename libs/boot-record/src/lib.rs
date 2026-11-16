@@ -8,7 +8,7 @@
 use core::fmt;
 
 // Bumped with any change to the grammar, the kinds, their fields or the fact names.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 // The kernel writes each record as one `info` line, and nothing else it logs opens this way.
 const LEVEL: &str = "[info ] ";
@@ -20,6 +20,7 @@ pub enum Record {
     Verdict(Verdict),
     Fact(Fact),
     Protections(Protections),
+    Memory(Memory),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -42,6 +43,11 @@ pub struct Protections {
     pub smap: bool,
     pub umip: bool,
     pub nx: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Memory {
+    pub colours: usize,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -172,6 +178,9 @@ impl Record {
                 umip: words.flag("umip")?,
                 nx: words.flag("nx")?,
             }),
+            "memory" => Self::Memory(Memory {
+                colours: words.count("colours")?,
+            }),
             _ => return Err(Error::UnknownKind),
         };
         words.end()?;
@@ -201,6 +210,7 @@ impl fmt::Display for Record {
                 u8::from(protections.umip),
                 u8::from(protections.nx)
             ),
+            Self::Memory(Memory { colours }) => write!(formatter, "memory colours={colours}"),
         }
     }
 }

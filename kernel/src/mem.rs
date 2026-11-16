@@ -1,5 +1,6 @@
 use core::fmt;
 
+use boot_record::{Memory, Record};
 use stack_layout::StackLayout;
 use wost::arch::current::cpu;
 #[cfg(feature = "selftest")]
@@ -45,6 +46,12 @@ pub(crate) fn init(memory: Result<BootMemory, HandoffError>, _dma: EarlyDmaBound
         return;
     }
     info!("memory: {report}");
+    info!(
+        "{}",
+        Record::Memory(Memory {
+            colours: report.colours
+        })
+    );
 }
 
 static SPACE: SpinLock<Option<AddressSpace>> = SpinLock::new(None);

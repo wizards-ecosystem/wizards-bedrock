@@ -15,6 +15,7 @@ fn every_record_reads_back_and_a_malformed_one_is_refused() {
             umip: false,
             nx: true,
         }),
+        Record::Memory(Memory { colours: 64 }),
     ]
     .into_iter()
     .chain(Fact::ALL.map(Record::Fact));
@@ -24,35 +25,35 @@ fn every_record_reads_back_and_a_malformed_one_is_refused() {
     }
 
     for (body, error) in [
-        ("v2 fact name=settled", Error::UnknownVersion),
+        ("v1 fact name=settled", Error::UnknownVersion),
         ("v01 fact name=settled", Error::Malformed),
         ("1 fact name=settled", Error::Malformed),
-        ("v1 omen name=settled", Error::UnknownKind),
-        ("v1 fact name=unheard-of", Error::UnknownFact),
-        ("v1 fact", Error::Malformed),
-        ("v1 fact name=", Error::Malformed),
-        ("v1 fact title=settled", Error::Malformed),
-        ("v1 fact name=settled ", Error::Malformed),
-        ("v1  fact name=settled", Error::Malformed),
-        ("v1 verdict passed=76 failed=0", Error::Malformed),
+        ("v2 omen name=settled", Error::UnknownKind),
+        ("v2 fact name=unheard-of", Error::UnknownFact),
+        ("v2 fact", Error::Malformed),
+        ("v2 fact name=", Error::Malformed),
+        ("v2 fact title=settled", Error::Malformed),
+        ("v2 fact name=settled ", Error::Malformed),
+        ("v2  fact name=settled", Error::Malformed),
+        ("v2 verdict passed=76 failed=0", Error::Malformed),
         (
-            "v1 verdict failed=0 passed=76 expected=76",
+            "v2 verdict failed=0 passed=76 expected=76",
             Error::Malformed,
         ),
         (
-            "v1 verdict passed=+76 failed=0 expected=76",
+            "v2 verdict passed=+76 failed=0 expected=76",
             Error::Malformed,
         ),
         (
-            "v1 verdict passed=076 failed=0 expected=76",
+            "v2 verdict passed=076 failed=0 expected=76",
             Error::Malformed,
         ),
         (
-            "v1 verdict passed=76 failed=0 expected=99999999999999999999999",
+            "v2 verdict passed=76 failed=0 expected=99999999999999999999999",
             Error::Malformed,
         ),
         (
-            "v1 protections wp=1 smep=2 smap=1 umip=1 nx=1",
+            "v2 protections wp=1 smep=2 smap=1 umip=1 nx=1",
             Error::Malformed,
         ),
     ] {
@@ -61,9 +62,9 @@ fn every_record_reads_back_and_a_malformed_one_is_refused() {
     }
 
     for line in [
-        "[warn ] record v1 fact name=settled",
+        "[warn ] record v2 fact name=settled",
         "[info ] recorded v1",
-        "record v1",
+        "record v2",
     ] {
         assert_eq!(Record::parse(line), None, "{line}");
     }
