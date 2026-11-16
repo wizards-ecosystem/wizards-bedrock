@@ -3,6 +3,12 @@
 
 pub const MAX_CPUS: u32 = 64;
 
+pub const MAX_SEQUENCE: u64 = u64::MAX >> STATE_BITS;
+
+const STATE_BITS: u32 = 3;
+
+const STATE_MASK: u64 = (1 << STATE_BITS) - 1;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum State {
     Running,
@@ -14,7 +20,7 @@ pub enum State {
 }
 
 impl State {
-    pub const fn word(self) -> u8 {
+    const fn code(self) -> u64 {
         match self {
             Self::Running => 0,
             Self::Parking => 1,
@@ -25,8 +31,8 @@ impl State {
         }
     }
 
-    pub const fn from_word(word: u8) -> Option<Self> {
-        match word {
+    const fn from_code(code: u64) -> Option<Self> {
+        match code {
             0 => Some(Self::Running),
             1 => Some(Self::Parking),
             2 => Some(Self::Woken),
@@ -38,29 +44,67 @@ impl State {
     }
 }
 
+// The state in the low bits and the sequence of the thread's latest wait above them.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Word(u64);
+
+impl Word {
+    pub const fn from_bits(bits: u64) -> Self {
+        Self(bits)
+    }
+
+    pub const fn bits(self) -> u64 {
+        self.0
+    }
+
+    pub const fn state(self) -> Option<State> {
+        State::from_code(self.0 & STATE_MASK)
+    }
+
+    pub const fn sequence(self) -> u64 {
+        self.0 >> STATE_BITS
+    }
+
+    const fn with(self, state: State) -> Self {
+        Self((self.0 & !STATE_MASK) | state.code())
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Event {
     Park,
     Block,
     Resume,
-    Claim,
+    Claim { sequence: u64 },
     Place,
     Exit,
 }
 
-// The caller moves its atomic from `word` to the returned state by compare-exchange.
+// Applied by compare-exchange; a claim names its wait's sequence, so a late claim does nothing.
 #[must_use]
-pub const fn step(word: u8, event: Event) -> Option<State> {
-    let Some(state) = State::from_word(word) else {
+pub const fn step(word: Word, event: Event) -> Option<Word> {
+    let Some(state) = word.state() else {
         return None;
     };
     match (state, event) {
-        (State::Running, Event::Park) => Some(State::Parking),
-        (State::Parking, Event::Block) => Some(State::Blocked),
-        (State::Woken, Event::Resume) | (State::Waking, Event::Place) => Some(State::Running),
-        (State::Parking, Event::Claim) => Some(State::Woken),
-        (State::Blocked, Event::Claim) => Some(State::Waking),
-        (State::Running, Event::Exit) => Some(State::Dead),
+        (State::Running, Event::Park) => {
+            if word.sequence() >= MAX_SEQUENCE {
+                return None;
+            }
+            let parked = (word.sequence() + 1) << STATE_BITS;
+            Some(Word(parked | State::Parking.code()))
+        }
+        (State::Parking, Event::Block) => Some(word.with(State::Blocked)),
+        (State::Woken, Event::Resume) | (State::Waking, Event::Place) => {
+            Some(word.with(State::Running))
+        }
+        (State::Parking, Event::Claim { sequence }) if sequence == word.sequence() => {
+            Some(word.with(State::Woken))
+        }
+        (State::Blocked, Event::Claim { sequence }) if sequence == word.sequence() => {
+            Some(word.with(State::Waking))
+        }
+        (State::Running, Event::Exit) => Some(word.with(State::Dead)),
         _ => None,
     }
 }

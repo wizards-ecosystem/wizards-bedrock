@@ -15,9 +15,12 @@ enum Waker {
 }
 
 #[test]
-fn a_claim_after_registration_never_leaves_the_thread_blocked() {
+fn a_claim_after_registration_never_leaves_the_thread_blocked_and_a_late_claim_does_nothing() {
     for schedule in 0u32..16 {
-        let mut word = step(State::Running.word(), Event::Park).unwrap().word();
+        let mut word = step(Word::default(), Event::Park).unwrap();
+        let claim = Event::Claim {
+            sequence: word.sequence(),
+        };
         let mut waiter = Waiter::Block;
         let mut waker = Waker::Claim;
         let mut off_cpu = false;
@@ -29,22 +32,17 @@ fn a_claim_after_registration_never_leaves_the_thread_blocked() {
             turn += 1;
             if (waker_turn && waker != Waker::Done) || waiter == Waiter::Done {
                 match waker {
-                    Waker::Claim => match step(word, Event::Claim) {
-                        Some(State::Woken) => {
-                            word = State::Woken.word();
-                            waker = Waker::Done;
-                        }
-                        Some(State::Waking) => {
-                            word = State::Waking.word();
-                            waker = Waker::Place;
-                        }
-                        other => {
-                            panic!("schedule {schedule:#06b}: claim from {word} gave {other:?}")
-                        }
-                    },
+                    Waker::Claim => {
+                        word = step(word, claim).unwrap();
+                        waker = match word.state() {
+                            Some(State::Woken) => Waker::Done,
+                            Some(State::Waking) => Waker::Place,
+                            other => panic!("schedule {schedule:#06b}: claim gave {other:?}"),
+                        };
+                    }
                     Waker::Place => {
                         assert!(off_cpu, "schedule {schedule:#06b}: placed while on a CPU");
-                        word = step(word, Event::Place).unwrap().word();
+                        word = step(word, Event::Place).unwrap();
                         placed = true;
                         waker = Waker::Done;
                     }
@@ -54,14 +52,14 @@ fn a_claim_after_registration_never_leaves_the_thread_blocked() {
                 match waiter {
                     Waiter::Block => match step(word, Event::Block) {
                         Some(blocked) => {
-                            word = blocked.word();
+                            word = blocked;
                             off_cpu = true;
                             waiter = Waiter::Done;
                         }
                         None => waiter = Waiter::Resume,
                     },
                     Waiter::Resume => {
-                        word = step(word, Event::Resume).unwrap().word();
+                        word = step(word, Event::Resume).unwrap();
                         resumed = true;
                         waiter = Waiter::Done;
                     }
@@ -70,13 +68,20 @@ fn a_claim_after_registration_never_leaves_the_thread_blocked() {
             }
         }
         assert_eq!(
-            State::from_word(word),
+            word.state(),
             Some(State::Running),
             "schedule {schedule:#06b} leaves the thread runnable"
         );
         assert!(
             resumed != placed,
             "schedule {schedule:#06b}: the wait completes exactly once"
+        );
+
+        let next = step(word, Event::Park).unwrap();
+        assert_eq!(
+            step(next, claim),
+            None,
+            "schedule {schedule:#06b}: a claim on the finished wait reaches the next one"
         );
     }
 }
