@@ -2,6 +2,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use world_tree::{NodeRef, Status};
 use wost::mm::pool::Earmark;
+use wost::mm::slab::Removal;
 use wost::sync::{Leaf, SpinLock};
 
 use crate::arena::Local;
@@ -109,7 +110,25 @@ impl ObservationRef {
 impl Drop for ObservationRef {
     fn drop(&mut self) {
         if let Some(world) = registry::hold(self.world) {
-            let _ = world.observations.destroy(self.observation);
+            end(&world, self.observation);
         }
+    }
+}
+
+// The teardown's hold is covered by a strong reference of its own, so whichever of it and the
+// spawner lets go last removes the observation.
+pub(crate) fn observe(world: &World, local: Local<Observation>, with: impl FnOnce(&Observation)) {
+    if world.observations.acquire(local).is_err() {
+        return;
+    }
+    if let Some(observation) = world.observations.hold(local) {
+        with(&observation);
+    }
+    end(world, local);
+}
+
+fn end(world: &World, local: Local<Observation>) {
+    if let Err(Removal::Borrowed) = world.observations.destroy(local) {
+        panic!("an observation's last reference went while a hold borrowed it");
     }
 }

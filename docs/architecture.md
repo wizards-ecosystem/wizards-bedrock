@@ -641,7 +641,9 @@ code, `CR2` (for a page fault, read before interrupts reopen; zero otherwise) an
 process state machine (`libs/world-tree`) takes Running to Exited once, then to Released.
 
 The observation (`kernel/src/process/observation.rs`) is an object in the spawner's world that the
-spawner holds strongly and the process names only weakly. The status lands there once: an exit
+spawner holds strongly and the process names only weakly. The teardown takes a strong reference
+of its own for each write, so whichever of it and the spawner lets go last removes the
+observation. The status lands there once: an exit
 becomes `Exited(status)`, a fault `Faulted(vector)`, and an end with no recorded reason `Killed`.
 A second write is refused. Nothing yet reads it back into ring 3.
 

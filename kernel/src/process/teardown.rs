@@ -2,6 +2,7 @@ use world_tree::{ProcessStep, Progress};
 use wost::arch::current::paging::ReclaimError;
 use wost::arch::current::task;
 
+use super::observation::observe;
 use super::{Authority, Process, ProcessRef, Space, status_of};
 use crate::thread::ThreadContext;
 use crate::world::World;
@@ -43,10 +44,10 @@ pub(crate) fn step(here: ProcessRef, context: &mut ThreadContext) -> Progress {
         return Progress::Pending;
     }
     #[cfg(feature = "selftest")]
-    if let (observation, Some(rites)) = rites
-        && let Some(observation) = world.observations.hold(observation)
-    {
-        observation.keep_rites(rites);
+    if let (observation, Some(rites)) = rites {
+        observe(&world, observation, |observation| {
+            observation.keep_rites(rites);
+        });
     }
     Progress::Done
 }
@@ -62,9 +63,9 @@ fn exit(world: &World, process: &Process) -> Progress {
         }
         status
     };
-    if let Some(observation) = world.observations.hold(process.observation) {
+    observe(world, process.observation, |observation| {
         observation.record(status);
-    }
+    });
     Progress::Done
 }
 
