@@ -2,12 +2,13 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail, ensure};
+use boot_record::{Fact, Record};
 use panic_record::OPEN_PREFIX;
 
 use crate::cargo::Profile;
 use crate::image::{self, Kernel};
 use crate::paths::{self, Paths, RunDirectory};
-use crate::qemu::Verdict;
+use crate::qemu::read_record;
 use crate::qemu::storage::{NAMESPACE_BYTES, write_namespace};
 use crate::sha256;
 
@@ -21,8 +22,6 @@ const VMX_NAME: &str = "bedrock.vmx";
 const DISPLAY_NAME: &str = "The Wizard's Bedrock";
 const SERIAL_PREFIX: &str = "serial-";
 const SERIAL_SUFFIX: &str = ".log";
-const SETTLED: &str = "[info ] kernel: reading the keyboard, uptime ";
-const USER_CALL: &str = "[info ] user: ring 3 call observed";
 const HEADS: u64 = 255;
 const SECTORS_PER_TRACK: u64 = 63;
 
@@ -111,12 +110,19 @@ pub(crate) fn qualify(paths: &Paths, kernel: Kernel) -> Result<()> {
         !text.contains(OPEN_PREFIX),
         "the VMware transcript contains a kernel panic"
     );
+    let records = text
+        .lines()
+        .filter_map(|line| read_record(line).transpose())
+        .collect::<Result<Vec<_>>>()?;
     match kernel {
         Kernel::SelfTest => {
-            let verdicts = text
-                .lines()
-                .filter_map(Verdict::parse)
-                .collect::<Result<Vec<_>>>()?;
+            let verdicts = records
+                .iter()
+                .filter_map(|record| match *record {
+                    Record::Verdict(verdict) => Some(verdict),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
             let [verdict] = verdicts.as_slice() else {
                 bail!(
                     "the VMware transcript has {} self-test verdicts",
@@ -132,10 +138,11 @@ pub(crate) fn qualify(paths: &Paths, kernel: Kernel) -> Result<()> {
             );
         }
         Kernel::Shipped => {
-            for record in [SETTLED, USER_CALL] {
+            for fact in [Fact::Settled, Fact::UserCall] {
+                let record = Record::Fact(fact);
                 ensure!(
-                    text.lines().any(|line| line.starts_with(record)),
-                    "the VMware transcript never reports {record:?}"
+                    records.contains(&record),
+                    "the VMware transcript never writes `{record}`"
                 );
             }
         }
@@ -192,7 +199,7 @@ fn print_checklist(kernel: Kernel) {
     match kernel {
         Kernel::SelfTest => {
             println!("[xtask] this is the self-test kernel; it needs no input:");
-            println!("        look for `selftest: verdict` in the fresh serial log");
+            println!("        look for `record v1 verdict` in the fresh serial log");
         }
         Kernel::Shipped => {
             println!("[xtask] this is the shipped kernel, verify its fresh serial log:");

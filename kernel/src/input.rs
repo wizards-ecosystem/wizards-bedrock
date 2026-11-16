@@ -1,5 +1,6 @@
 // Nothing here draws or logs: a producer may be a trap handler, and a glyph can cost a scroll.
 
+use boot_record::{Fact, Record};
 use ps2_keys::{Arriving, Decoder, KeyEvent, KeyState, SetProbe, Shift, us};
 use wost::arch::current::interrupt;
 use wost::sync::SpinLock;
@@ -230,6 +231,7 @@ pub(crate) fn start_poller() {
     match crate::thread::spawn("keyboard-poll", poll_forever, 0) {
         Ok(_) if crate::time::is_calibrated() && interrupt::are_enabled() => {
             info!("keyboard: polled every {POLL_INTERVAL_MS} ms");
+            info!("{}", Record::Fact(Fact::KeyboardPolled));
         }
         Ok(_) => info!("keyboard: clockless poller yields between bounded drains"),
         Err(reason) => warn!("keyboard: no poller: {reason}; input is lost"),

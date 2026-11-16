@@ -5,6 +5,7 @@ members = [
     "kernel",
     "libs/acpi-tables",
     "libs/address",
+    "libs/boot-record",
     "libs/eevdf",
     "libs/elf64",
     "libs/entropy",
@@ -41,6 +42,7 @@ members = [
 default-members = [
     "libs/acpi-tables",
     "libs/address",
+    "libs/boot-record",
     "libs/eevdf",
     "libs/elf64",
     "libs/entropy",
@@ -82,6 +84,7 @@ repository = "https://github.com/wizards-ecosystem/wizards-bedrock"
 [workspace.dependencies]
 acpi-tables = { path = "libs/acpi-tables" }
 address = { path = "libs/address" }
+boot-record = { path = "libs/boot-record" }
 eevdf = { path = "libs/eevdf" }
 elf64 = { path = "libs/elf64" }
 entropy = { path = "libs/entropy" }

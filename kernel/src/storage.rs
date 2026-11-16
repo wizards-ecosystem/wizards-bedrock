@@ -1,5 +1,6 @@
 use core::sync::atomic::Ordering;
 
+use boot_record::{Fact, Record};
 use wost::arch::current::pci as platform_pci;
 
 use crate::{devfs, fs, info, interrupts, iommu, mem, nvme, pci, thread, tmpfs, vfs, warn};
@@ -48,7 +49,10 @@ pub(crate) fn survey_the_bus(
         Selection::Seeking if storage == 0 => {
             info!("pci: no nvme controller; nothing to claim");
         }
-        Selection::Seeking => info!("nvme: no usable controller"),
+        Selection::Seeking => {
+            info!("nvme: no usable controller");
+            info!("{}", Record::Fact(Fact::NvmeNone));
+        }
         Selection::Halted => {
             warn!("nvme: selection stopped because a candidate could not be retired");
         }
@@ -168,7 +172,10 @@ fn isolate_candidate(stage: &mut CandidateStage) {
     };
     match outcome {
         iommu::EstablishOutcome::Established => {}
-        iommu::EstablishOutcome::Unavailable => warn!("storage: no DMA isolation"),
+        iommu::EstablishOutcome::Unavailable => {
+            warn!("storage: no DMA isolation");
+            info!("{}", Record::Fact(Fact::StorageUnisolated));
+        }
         iommu::EstablishOutcome::Quarantined => {
             quarantine_isolation(stage);
             return;
@@ -399,6 +406,7 @@ fn retire_candidate(mut device: pci::Device, ordinal: usize) -> Selection {
         }
     }
     info!("nvme: candidate {ordinal} retired cleanly; trying next");
+    info!("{}", Record::Fact(Fact::NvmeCandidateRetired));
     Selection::Seeking
 }
 
@@ -491,6 +499,7 @@ fn mount_the_volume() {
         }
         Some(Ok((clusters, cluster_bytes))) => {
             info!("fat32: mounted — {clusters} clusters of {cluster_bytes} bytes");
+            info!("{}", Record::Fact(Fact::Fat32Mounted));
         }
     }
 
@@ -556,19 +565,27 @@ pub(crate) fn survey_the_filesystems() {
     match listed {
         Ok(()) => {
             info!("tmpfs: {files} file(s) and {directories} directory(ies) at the root");
+            info!("{}", Record::Fact(Fact::TmpfsListed));
         }
         Err(reason) => warn!("tmpfs: the root would not list: {reason}"),
     }
 
+    let mut resolved = 0;
     for device in devfs::DEVICES {
         match vfs::resolve(vfs::Directory::Dev, device.name()) {
-            Ok(vfs::Node::Device(found)) => info!(
-                "devfs: {} is {}",
-                core::str::from_utf8(found.name()).unwrap_or("?"),
-                found.describes()
-            ),
+            Ok(vfs::Node::Device(found)) => {
+                info!(
+                    "devfs: {} is {}",
+                    core::str::from_utf8(found.name()).unwrap_or("?"),
+                    found.describes()
+                );
+                resolved += usize::from(found == device);
+            }
             Ok(_) => warn!("devfs: a device resolved to something with bytes in it"),
             Err(reason) => warn!("devfs: a device would not resolve: {reason}"),
         }
+    }
+    if resolved == devfs::DEVICES.len() {
+        info!("{}", Record::Fact(Fact::DevfsResolved));
     }
 }

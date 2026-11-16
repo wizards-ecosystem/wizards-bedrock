@@ -209,10 +209,9 @@ Phase 7:
 - Each process has one fixed ring, timers expire only on kernel entry, and the time page is global
   (`kernel/src/queue.rs`, `kernel/src/timepage.rs`). Channels need their own transport, and time
   needs per-world clock modes and the trap on direct clock reads.
-- The ring 3 witness is hand-encoded machine code (`xtask/src/image/program.rs`), and the gate
-  matches kernel log sentences by hand (`xtask/src/qemu/boot.rs`, `xtask/src/qemu/serial.rs`).
-  Phase 7 needs witness programs built by cargo that import the ABI from `libs/`, and a few machine
-  records both sides share. No ring 3 program faults on a kernel address to witness isolation,
+- The ring 3 witness is hand-encoded machine code that restates `libs/native-abi` as literals
+  (`xtask/src/image/program.rs`). Phase 7 needs witness programs built by cargo that import the ABI
+  from `libs/`, and records of how each program ended. No ring 3 program faults on a kernel address to witness isolation,
   issues `RingWait` or `ThreadBase`, or executes `syscall`, so those witnesses must cover all
   three.
 - Collection searches zombies from slot 0, so one whose reclaim is refused blocks every later

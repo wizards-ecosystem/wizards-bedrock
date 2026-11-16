@@ -1,5 +1,6 @@
 use alloc::vec::Vec;
 
+use boot_record::{Fact, Record};
 use wost::arch::current::interrupt;
 use wost::arch::current::paging::{self, ReleasableDevice};
 use wost::sync::SpinLock;
@@ -22,6 +23,7 @@ pub(crate) fn report_keyboard(masked: Option<ExternalControllersMasked>) {
         }
         KeyboardLine::Owned if interrupt::are_enabled() => {
             info!("keyboard: PCI interrupt isolation keeps every io-apic line masked; polling");
+            info!("{}", Record::Fact(Fact::KeyboardLinesMasked));
         }
         KeyboardLine::Owned => {
             info!("keyboard: interrupts stayed off; a poller thread drains it instead");

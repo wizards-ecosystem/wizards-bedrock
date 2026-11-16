@@ -1,5 +1,6 @@
 use core::fmt;
 
+use boot_record::{Fact, Record};
 use nvme::{
     Capabilities, Capacity, DisabledRegisters, DmaPublication, DmaState as DmaFlightState,
     NamespaceError, PollLimit, TransferError, register, status,
@@ -479,6 +480,7 @@ pub(crate) fn start(
         controller.block_bytes,
         controller.capabilities().doorbell_bytes()
     );
+    info!("{}", Record::Fact(Fact::NvmeUp));
     Ok(controller)
 }
 

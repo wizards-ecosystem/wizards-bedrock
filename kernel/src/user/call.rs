@@ -1,5 +1,6 @@
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+use boot_record::{Fact, Record};
 use native_abi::Call;
 use native_abi::entry::{self, offset};
 use native_abi::error::{EINVAL, ENOSYS};
@@ -29,6 +30,7 @@ pub(crate) fn report_execution() -> bool {
         return false;
     }
     info!("user: ring 3 call observed");
+    info!("{}", Record::Fact(Fact::UserCall));
     true
 }
 

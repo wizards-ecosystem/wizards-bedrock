@@ -1,5 +1,7 @@
 use core::hint::spin_loop;
 
+use boot_record::{Record, Verdict};
+
 use crate::arch::current::debug_exit;
 use crate::thread::ThreadContext;
 use crate::{error, info, time};
@@ -12,9 +14,6 @@ mod processes;
 mod rings;
 mod storage;
 mod threads;
-
-// The verdict line is parsed by `xtask`; bump this with any change to its grammar.
-const VERDICT_VERSION: usize = 1;
 
 type Check = (&'static str, fn(&mut ThreadContext) -> bool);
 
@@ -170,15 +169,11 @@ pub(crate) fn run(context: &mut ThreadContext) {
         }
     }
     let expected = CHECKS.len();
-    let passed = expected - failed;
-    if failed == 0 {
-        info!(
-            "selftest: verdict v{VERDICT_VERSION} PASS passed={passed} failed={failed} expected={expected}"
-        );
-    } else {
-        error!(
-            "selftest: verdict v{VERDICT_VERSION} FAIL passed={passed} failed={failed} expected={expected}"
-        );
-    }
+    let verdict = Verdict {
+        passed: expected - failed,
+        failed,
+        expected,
+    };
+    info!("{}", Record::Verdict(verdict));
     debug_exit::report(debug_exit::Verdict::from_passed(failed == 0));
 }

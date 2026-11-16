@@ -18,6 +18,7 @@ selftest = ["wost/selftest"]
 [dependencies]
 noto-sans-mono-bitmap.workspace = true
 acpi-tables.workspace = true
+boot-record.workspace = true
 eevdf.workspace = true
 elf64.workspace = true
 fat32.workspace = true

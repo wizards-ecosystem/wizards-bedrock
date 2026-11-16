@@ -14,6 +14,7 @@ workspace = true
 [dependencies]
 acpi-tables.workspace = true
 anyhow.workspace = true
+boot-record.workspace = true
 elf64.workspace = true
 fatfs.workspace = true
 fscommon.workspace = true

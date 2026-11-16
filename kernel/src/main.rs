@@ -40,6 +40,7 @@ mod wait;
 use core::fmt::Write;
 use core::sync::atomic::{AtomicBool, Ordering};
 
+use boot_record::{Fact, Protections, Record};
 use wost::arch::current::{cpu, segment, task, xstate};
 use wost::boot::BootInfo;
 use wost::sync::SpinLock;
@@ -73,7 +74,10 @@ fn kernel_main(boot: BootInfo, mut context: ThreadContext) -> ! {
         early_dma.retained_non_requesters()
     );
     match early_dma.retained_non_requesters() {
-        0 => info!("iommu: entry DMA fence policy strict"),
+        0 => {
+            info!("iommu: entry DMA fence policy strict");
+            info!("{}", Record::Fact(Fact::DmaFenceStrict));
+        }
         1 => info!(
             "iommu: entry DMA fence retained VMware 440BX 00:00.0 as the qualified non-requester"
         ),
@@ -96,6 +100,16 @@ fn kernel_main(boot: BootInfo, mut context: ThreadContext) -> ! {
     }
     let protections = cpu::enable_protections();
     info!("cpu: protections {protections}");
+    info!(
+        "{}",
+        Record::Protections(Protections {
+            write_protect: protections.write_protect,
+            smep: protections.smep,
+            smap: protections.smap,
+            umip: protections.umip,
+            nx: protections.nx,
+        })
+    );
 
     // Before any second thread exists, because every switch saves and restores from here on.
     match xstate::init() {
@@ -109,7 +123,10 @@ fn kernel_main(boot: BootInfo, mut context: ThreadContext) -> ! {
                 ""
             }
         ),
-        None => warn!("cpu: extended state unavailable; ring 3 stays closed"),
+        None => {
+            warn!("cpu: extended state unavailable; ring 3 stays closed");
+            info!("{}", Record::Fact(Fact::ExtendedStateAbsent));
+        }
     }
 
     let dma_non_requester = early_dma.take_non_requester();
@@ -213,12 +230,18 @@ fn boot_continue(context: &mut ThreadContext, stack: usize) -> ! {
 
     match user::run() {
         Ok(program) => info!("user: program running in slot {}", program.slot),
-        Err(reason) => warn!("user: no program: {reason}"),
+        Err(reason) => {
+            warn!("user: no program: {reason}");
+            if matches!(reason, user::SpawnError::NoInterruptAdmission) {
+                info!("{}", Record::Fact(Fact::RingThreeClosedToInterrupts));
+            }
+        }
     }
     info!(
         "kernel: reading the keyboard, uptime {} ms",
         time::uptime_ms()
     );
+    info!("{}", Record::Fact(Fact::Settled));
     echo_keystrokes(context)
 }
 
@@ -227,6 +250,7 @@ fn echo_keystrokes(context: &mut ThreadContext) -> ! {
     loop {
         let keystroke = input::read_key(context);
         info!("input: key consumed");
+        info!("{}", Record::Fact(Fact::KeyConsumed));
         debug!("key: {:?} {:?}", keystroke.event.key, keystroke.event.state);
         if let Some(character) = keystroke.character {
             dev::with_console(|console| {

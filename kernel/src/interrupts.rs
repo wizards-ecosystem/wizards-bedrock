@@ -1,5 +1,6 @@
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
+use boot_record::{Fact, Record};
 use wost::arch::current::{apic, cpu, interrupt, pic};
 
 use crate::arch::current::vector;
@@ -57,6 +58,9 @@ pub(crate) fn start(external_controllers: Option<&ExternalControllersMasked>) {
         Ok(local) => info!("apic: {local}"),
         Err(reason) => {
             warn!("local apic: {reason}; interrupts stay off");
+            if matches!(reason, apic::InitError::NoExtendedMode) {
+                info!("{}", Record::Fact(Fact::X2apicAbsent));
+            }
             return;
         }
     }
@@ -104,8 +108,10 @@ fn apply_speculation_controls() {
                 info!(
                     "cpu: user isolation paired roots: forced for self-test; shared proof retained: {reason}"
                 );
+                info!("{}", Record::Fact(Fact::IsolationPairedForced));
             } else {
                 info!("cpu: user isolation shared kernel mappings: {reason}");
+                info!("{}", Record::Fact(Fact::IsolationShared));
             }
         }
         None => {

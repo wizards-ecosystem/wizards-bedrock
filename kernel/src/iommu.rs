@@ -5,6 +5,7 @@ use acpi_tables::{
     Bdf, BusRange, DmaCoverage, DmaHandoff, DmaHandoffError, Dmar, RequesterInventory,
     RequesterInventoryError, Sdt,
 };
+use boot_record::{Fact, Record};
 use pci_config::{
     Address, EnableError, HandoffFencePolicy, QualifiedNonRequester, QuiescedIsaRequester,
 };
@@ -660,6 +661,7 @@ pub(crate) fn establish(device: &pci::Device) -> EstablishOutcome {
                 "iommu: translation on for {at} through the unit at {register_base:#x}: {}-level walks, retargeted without dropping the default-deny boundary, cap {:#x}, ecap {:#x}",
                 facts.levels, facts.capability, facts.extended
             );
+            info!("{}", Record::Fact(Fact::IommuTranslating));
             EstablishOutcome::Established
         }
         Retargeting::Refused(reason) => {

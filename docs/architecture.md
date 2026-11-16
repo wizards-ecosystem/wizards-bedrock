@@ -522,8 +522,18 @@ Checks that need a machine are compiled into the kernel under the `selftest` fea
 (`kernel/src/selftest.rs`) and report a verdict through QEMU's `isa-debug-exit` port. The feature
 never ships in an image. `cargo xtask ci` is the gate: formatting, clippy, host tests, the supply
 chain and vendored digests, the self-test kernel in release and debug, a shipped boot that must
-settle with no panic, log the ring 3 call and consume an injected key, and degraded boots without
-x2APIC and without an IOMMU. `README.md` lists the steps and the tasks outside the gate.
+settle with no panic, record the ring 3 call and consume an injected key, and degraded boots
+without x2APIC and without an IOMMU. `README.md` lists the steps and the tasks outside the gate.
+
+The gate judges a boot only by boot records (`libs/boot-record`), the panic record and the exit
+code. A boot record is one serial line, `[info ] record v1 <kind> <key>=<value>...`, that the
+kernel writes beside the sentence a person reads. The kinds are `verdict` (`passed`, `failed`,
+`expected`), `fact` (`name`, from a closed list) and `protections` (`wp`, `smep`, `smap`, `umip`,
+`nx`, each `0` or `1`). Every field is required and in order, and numbers are canonical decimal.
+A line that opens as a record but has an unknown version, kind, field or fact fails the boot.
+Each boot names the records it requires (`xtask/src/qemu/boot.rs`, `xtask/src/qemu/serial.rs`),
+and `qualify-vmware` reads a VMware transcript the same way. The `FAILED` sentences of a
+self-test name failures for the message only.
 
 ## 12. Models
 

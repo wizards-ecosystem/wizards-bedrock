@@ -3,11 +3,9 @@ use std::process::Command;
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail, ensure};
+use boot_record::{Fact, Protections, Record};
 
-use super::serial::{
-    FULL_PROTECTIONS, KEY_CONSUMED, NVME_FALLBACK, Records, SETTLED, SHIPPED_ISOLATION,
-    STRICT_DMA_HANDOFF, USER_CALL, require_no_panic,
-};
+use super::serial::{FULL_PROTECTIONS, Records, read_record, require_no_panic};
 use super::{Control, Event, Installation, Machine, Remapping};
 use crate::paths::RunDirectory;
 
@@ -21,39 +19,48 @@ const KEYBOARD_IRQ: u8 = 1;
 // No x2APIC and no optional SMEP, SMAP or UMIP; the last `-cpu` wins.
 const DEGRADED_CPU: &str = "qemu64,-x2apic,-smep,-smap,-umip,hypervisor=on,tcg-cpuid=on";
 
-const SHIPPED_REQUIRED: &[&str] = &[
-    STRICT_DMA_HANDOFF,
-    SHIPPED_ISOLATION,
+const SHIPPED_REQUIRED: &[Record] = &[
+    Record::Fact(Fact::DmaFenceStrict),
+    Record::Fact(Fact::IsolationShared),
     FULL_PROTECTIONS,
-    NVME_FALLBACK,
-    "[info ] iommu: translation on for ",
-    "[info ] nvme: up ",
-    "[info ] fat32: mounted ",
-    "[info ] keyboard: PCI interrupt isolation keeps every io-apic line masked; polling",
-    "[info ] keyboard: polled every 10 ms",
-    USER_CALL,
+    Record::Fact(Fact::NvmeCandidateRetired),
+    Record::Fact(Fact::IommuTranslating),
+    Record::Fact(Fact::NvmeUp),
+    Record::Fact(Fact::Fat32Mounted),
+    Record::Fact(Fact::KeyboardLinesMasked),
+    Record::Fact(Fact::KeyboardPolled),
+    Record::Fact(Fact::UserCall),
 ];
 
-const NO_X2APIC_REQUIRED: &[&str] = &[
-    STRICT_DMA_HANDOFF,
-    SHIPPED_ISOLATION,
-    "[warn ] local apic: this processor has no x2apic mode, and xapic needs page tables; interrupts stay off",
-    "[info ] tmpfs: 1 file(s) and 1 directory(ies) at the root",
-    "[info ] devfs: storage is a block device",
-    "[info ] devfs: console is a character device",
-    "[info ] cpu: protections wp nx",
-    "[warn ] cpu: extended state unavailable; ring 3 stays closed",
-    "[warn ] user: no program: maskable interrupts are not admitted; ring 3 is closed",
+const NO_X2APIC_REQUIRED: &[Record] = &[
+    Record::Fact(Fact::DmaFenceStrict),
+    Record::Fact(Fact::IsolationShared),
+    Record::Fact(Fact::X2apicAbsent),
+    Record::Fact(Fact::TmpfsListed),
+    Record::Fact(Fact::DevfsResolved),
+    Record::Protections(Protections {
+        write_protect: true,
+        smep: false,
+        smap: false,
+        umip: false,
+        nx: true,
+    }),
+    Record::Fact(Fact::ExtendedStateAbsent),
+    Record::Fact(Fact::RingThreeClosedToInterrupts),
 ];
 
 // The first candidate's clean retirement proves the refusal path returns its lease exactly.
-const UNISOLATED_REQUIRED: &[&str] = &[
-    STRICT_DMA_HANDOFF,
-    SHIPPED_ISOLATION,
-    "[warn ] storage: no DMA isolation",
-    NVME_FALLBACK,
-    "[info ] nvme: no usable controller",
+const UNISOLATED_REQUIRED: &[Record] = &[
+    Record::Fact(Fact::DmaFenceStrict),
+    Record::Fact(Fact::IsolationShared),
+    Record::Fact(Fact::StorageUnisolated),
+    Record::Fact(Fact::NvmeCandidateRetired),
+    Record::Fact(Fact::NvmeNone),
 ];
+
+const SETTLED: Record = Record::Fact(Fact::Settled);
+
+const KEY_CONSUMED: Record = Record::Fact(Fact::KeyConsumed);
 
 #[derive(Debug)]
 struct Boot {
@@ -70,7 +77,7 @@ impl Boot {
         command: Command,
         control: Control,
         kernel: &'static str,
-        required: &'static [&'static str],
+        required: &'static [Record],
     ) -> Result<Self> {
         Ok(Self {
             machine: Machine::launch(command, control)?,
@@ -84,9 +91,12 @@ impl Boot {
 
     fn observe(&mut self, line: &str) -> Result<()> {
         require_no_panic(line, self.kernel)?;
-        self.records.observe(line);
-        self.settled |= line.starts_with(SETTLED);
-        self.key_consumed |= self.key_injected && line.starts_with(KEY_CONSUMED);
+        let Some(record) = read_record(line)? else {
+            return Ok(());
+        };
+        self.records.observe(record);
+        self.settled |= record == SETTLED;
+        self.key_consumed |= self.key_injected && record == KEY_CONSUMED;
         Ok(())
     }
 
@@ -96,7 +106,7 @@ impl Boot {
             match self.machine.next(deadline)? {
                 Event::Line(line) => self.observe(&line)?,
                 Event::Exited(status) => bail!("the {} kernel exited ({status})", self.kernel),
-                Event::TimedOut => bail!("the {} kernel never reached {SETTLED:?}", self.kernel),
+                Event::TimedOut => bail!("the {} kernel never wrote `{SETTLED}`", self.kernel),
             }
         }
         Ok(())

@@ -21,7 +21,7 @@ use crate::qmp::Qmp;
 
 pub(crate) use self::boot::{boot_check, degraded_check};
 pub(crate) use self::selftest::run_selftest;
-pub(crate) use self::serial::Verdict;
+pub(crate) use self::serial::read_record;
 
 const DEFAULT_INSTALLATION: Option<&str> = if cfg!(windows) {
     Some(r"C:\Program Files\qemu")
