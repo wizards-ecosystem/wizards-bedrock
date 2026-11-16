@@ -5,6 +5,7 @@ use ring_proto::SharedLayout;
 
 use super::direct::DirectSpan;
 use super::frame::{Segment, release_sealed_run, seal_run};
+use super::pool::ArenaFrame;
 use super::{PhysicalAddress, direct_pointer};
 use crate::arch::current::paging::Flush;
 use crate::arch::current::shared_memory;
@@ -45,7 +46,7 @@ impl USegment {
     // `map_shared` writes no `OWNED` and `map_user` takes a `USegment`: one mapping path per run.
     #[must_use]
     pub fn share(self) -> Shared {
-        Shared(Arc::new(SharedAllocation(self)))
+        Shared(Arc::new(SharedAllocation::Run(self)))
     }
 
     pub(crate) fn commit_mapping(self) {
@@ -110,8 +111,36 @@ impl Drop for SealedSegment {
     }
 }
 
+// Ring 3 may write these bytes through its mapping, so the kernel reaches them only by copies.
 #[derive(Debug)]
-pub(super) struct SharedAllocation(pub(super) USegment);
+pub(super) enum SharedAllocation {
+    Run(USegment),
+    Arena(ArenaFrame),
+}
+
+impl SharedAllocation {
+    pub(super) fn address(&self) -> PhysicalAddress {
+        match self {
+            Self::Run(run) => run.address(),
+            Self::Arena(frame) => frame.address(),
+        }
+    }
+
+    pub(super) fn len(&self) -> u64 {
+        match self {
+            Self::Run(run) => run.len(),
+            Self::Arena(_) => frame_space::FRAME_SIZE,
+        }
+    }
+}
+
+impl ArenaFrame {
+    // Zeroed when taken, so ring 3 sees only zeros and what the kernel writes afterwards.
+    #[must_use]
+    pub fn share(self) -> Shared {
+        Shared(Arc::new(SharedAllocation::Arena(self)))
+    }
+}
 
 #[derive(Debug)]
 pub(crate) struct SharedKeepalive {
@@ -130,7 +159,7 @@ impl Shared {
         self,
         layout: SharedLayout<WORDS>,
     ) -> Result<SharedRing<WORDS>, Self> {
-        if usize::try_from(self.0.0.len()).ok() != Some(layout.bytes()) {
+        if usize::try_from(self.0.len()).ok() != Some(layout.bytes()) {
             return Err(self);
         }
         Ok(SharedRing {
@@ -145,7 +174,7 @@ pub struct SharedBytes(Arc<SharedAllocation>);
 
 impl SharedBytes {
     pub fn address(&self) -> PhysicalAddress {
-        self.0.0.address()
+        self.0.address()
     }
 
     #[expect(
@@ -153,7 +182,7 @@ impl SharedBytes {
         reason = "shared allocations cannot contain zero frames"
     )]
     pub fn len(&self) -> u64 {
-        self.0.0.len()
+        self.0.len()
     }
 
     #[must_use = "a refused shared-memory write changed no bytes"]
@@ -181,7 +210,7 @@ pub struct SharedRing<const WORDS: usize> {
 
 impl<const WORDS: usize> SharedRing<WORDS> {
     pub fn address(&self) -> PhysicalAddress {
-        self.allocation.0.address()
+        self.allocation.address()
     }
 
     #[expect(
@@ -189,7 +218,7 @@ impl<const WORDS: usize> SharedRing<WORDS> {
         reason = "shared allocations cannot contain zero frames"
     )]
     pub fn len(&self) -> u64 {
-        self.allocation.0.len()
+        self.allocation.len()
     }
 
     #[must_use = "a refused ring-payload write changed no bytes"]

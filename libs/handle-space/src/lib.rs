@@ -1,52 +1,32 @@
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
+#[cfg(test)]
+mod tests;
+
 // Always set, so zero is never a handle.
 const RESERVED_BITS: u32 = 2;
 
-pub const RESERVED: u32 = 0b11;
+pub const RESERVED: u64 = 0b11;
 
 const INDEX_BITS: u32 = 18;
 
-const GENERATION_BITS: u32 = 32 - INDEX_BITS - RESERVED_BITS;
+const GENERATION_BITS: u32 = 64 - INDEX_BITS - RESERVED_BITS;
 
 pub const SLOTS: u32 = 1 << INDEX_BITS;
 
-const GENERATIONS: u32 = 1 << GENERATION_BITS;
+const GENERATIONS: u64 = 1 << GENERATION_BITS;
 
-pub const fn next_table_identity(identity: u64) -> Option<u64> {
-    identity.checked_add(1)
-}
-
-// Usually makes the same slot look different in another table; never an authority.
+// XORed into every value a table issues; derived from the world key once per process.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Mixer(u32);
-
-// Odd, so multiplying by it is a bijection over `u32`.
-const MULTIPLIER: u32 = 0x9E37_79B9;
-
-// Added after the multiply, so table zero is not a fixed point.
-const ADDEND: u32 = 0x7F4A_7C15;
+pub struct Mixer(u64);
 
 impl Mixer {
-    pub const fn new(seed: u32) -> Self {
-        Self(seed & !RESERVED)
+    pub const fn from_derived(bytes: [u8; 8]) -> Self {
+        Self(u64::from_le_bytes(bytes) & !RESERVED)
     }
 
-    pub const fn for_table(id: u32) -> Self {
-        let mixed = Self::new(id.wrapping_mul(MULTIPLIER).wrapping_add(ADDEND));
-        if mixed.is_identity() {
-            Self::new(MULTIPLIER)
-        } else {
-            mixed
-        }
-    }
-
-    const fn is_identity(self) -> bool {
-        self.0 == 0
-    }
-
-    pub const fn bits(self) -> u32 {
+    pub const fn bits(self) -> u64 {
         self.0
     }
 }
@@ -54,11 +34,11 @@ impl Mixer {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Slot {
     index: u32,
-    generation: u32,
+    generation: u64,
 }
 
 impl Slot {
-    pub const fn new(index: u32, generation: u32) -> Option<Self> {
+    pub const fn new(index: u32, generation: u64) -> Option<Self> {
         if index >= SLOTS || generation >= GENERATIONS {
             return None;
         }
@@ -69,29 +49,55 @@ impl Slot {
         self.index
     }
 
-    pub const fn generation(self) -> u32 {
+    pub const fn generation(self) -> u64 {
         self.generation
     }
 
-    pub const fn encode(self, mixer: Mixer) -> u32 {
-        let base = (self.generation << INDEX_BITS) | self.index;
+    pub const fn encode(self, mixer: Mixer) -> u64 {
+        let base = (self.generation << INDEX_BITS) | self.index as u64;
         ((base << RESERVED_BITS) | RESERVED) ^ mixer.bits()
     }
 
     // `Some` proves only that the encoding is well formed.
-    pub const fn decode(value: u32, mixer: Mixer) -> Option<Self> {
+    pub const fn decode(value: u64, mixer: Mixer) -> Option<Self> {
         let base = value ^ mixer.bits();
         if base & RESERVED != RESERVED {
             return None;
         }
         let base = base >> RESERVED_BITS;
-        Self::new(base & (SLOTS - 1), base >> INDEX_BITS)
+        Self::new((base & (SLOTS as u64 - 1)) as u32, base >> INDEX_BITS)
     }
 }
 
-// Wraps rather than saturating, which would make the last generation reusable.
-pub const fn next_generation(generation: u32) -> u32 {
-    generation.wrapping_add(1) % GENERATIONS
+// A slot whose generation would reach the limit retires instead of repeating one.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Entry {
+    Free(u64),
+    Live(u64),
+    Retired,
+}
+
+impl Entry {
+    pub const fn fill(self) -> Option<(Self, u64)> {
+        match self {
+            Self::Free(generation) => Some((Self::Live(generation), generation)),
+            Self::Live(_) | Self::Retired => None,
+        }
+    }
+
+    pub const fn empty(self, generation: u64) -> Option<Self> {
+        match self {
+            Self::Live(live) if live == generation => match generation.checked_add(1) {
+                Some(next) if next < GENERATIONS => Some(Self::Free(next)),
+                _ => Some(Self::Retired),
+            },
+            Self::Free(_) | Self::Live(_) | Self::Retired => None,
+        }
+    }
+
+    pub const fn is_live(self, generation: u64) -> bool {
+        matches!(self, Self::Live(live) if live == generation)
+    }
 }
 
 #[derive(Debug)]
@@ -138,5 +144,12 @@ impl Quota {
             return None;
         }
         Some(bits + 1)
+    }
+
+    pub const fn drop_live(bits: u64) -> Option<u64> {
+        if Self::live(bits) == 0 {
+            return None;
+        }
+        Some(bits - 1)
     }
 }

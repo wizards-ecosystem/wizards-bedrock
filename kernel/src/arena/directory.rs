@@ -1,7 +1,7 @@
 use core::mem;
 
 use object_pool::PAGES;
-use wost::mm::pool::{ArenaFrame, ArenaId};
+use wost::mm::pool::{ArenaFrame, ArenaId, Earmark, FrameKind};
 use wost::mm::slab::ObjectPage;
 
 const BITS: u32 = 6;
@@ -155,10 +155,6 @@ impl<E> Directory<E> {
     }
 
     // A `None` floor retires the ordinal, so no later page reuses its generations.
-    #[expect(
-        dead_code,
-        reason = "only object destruction closes pages, and it starts with the handle tables"
-    )]
     pub(super) fn vacate(&mut self, ordinal: u32, floor: Option<u32>) -> Option<E> {
         let next = self.free;
         let entry = self.entry_mut(ordinal)?;
@@ -212,4 +208,48 @@ fn new_node<E>(frame: ArenaFrame) -> ObjectPage<Node<E>, 1> {
 fn node_mut<E>(page: &mut ObjectPage<Node<E>, 1>) -> &mut Node<E> {
     page.get_mut(0, 0)
         .unwrap_or_else(|| panic!("a directory node page lost its node"))
+}
+
+// A dense run of blocks, one object page each, built whole from an earmark and never shrunk.
+#[derive(Debug)]
+pub(crate) struct Pages<B> {
+    directory: Directory<ObjectPage<B, 1>>,
+}
+
+impl<B> Pages<B> {
+    pub(crate) fn frames_for(count: u32) -> u32 {
+        let mut frames = count;
+        let mut depth = 0;
+        while u64::from(count) > span(depth) {
+            depth += 1;
+        }
+        for level in 1..=depth {
+            frames += u64::from(count).div_ceil(span(level)) as u32;
+        }
+        frames
+    }
+
+    pub(crate) fn build(earmark: &mut Earmark, count: u32, make: impl Fn() -> B) -> Self {
+        let mut directory = Directory::EMPTY;
+        for _ in 0..count {
+            let mut frames = Frames::none();
+            for _ in 0..=directory.nodes_to_open() {
+                let Some(frame) = earmark.take(FrameKind::ArenaObject) else {
+                    panic!("a block run outran the earmark its frames were counted for");
+                };
+                frames.push(frame);
+            }
+            let mut page = ObjectPage::open(frames.pop(), 0);
+            assert!(
+                page.insert(make()).is_ok(),
+                "a fresh block page had no free slot"
+            );
+            directory.open(&mut frames, |_| page);
+        }
+        Self { directory }
+    }
+
+    pub(crate) fn get_mut(&mut self, index: u32) -> Option<&mut B> {
+        self.directory.get_mut(index)?.get_mut(0, 0)
+    }
 }

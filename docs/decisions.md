@@ -450,6 +450,29 @@ number and is added here, as one entry or as an amending id on the entry it chan
   then copy the entry once. A `Shared` allocation becomes either `SharedBytes` or one `SharedRing`
   (D-269), and publication words are accessed by one aligned dword `mov` in assembly, never a Rust
   atomic, because ring 3's plain stores make a Rust atomic over them unsound (D-282).
+- **D-526** Handles are 64 bits with an 18-bit slot and a 44-bit generation, and a slot whose
+  generation would reach the limit retires (amends D-78). Each process's table is an object in its
+  world's arena, and its mixer is derived once from the world key and the process ordinal and
+  stored, so a value is a function of the key, the process, the slot and the generation and
+  reveals no other table's allocation order. A retired slot stays charged to the quota.
+- **D-527** Ring version 2 is one page of 64-byte submissions and 32-byte completions, and buffer 0
+  is a separate data page beside it: arena frames are not contiguous, a submission names a byte
+  range by buffer and offset, and a completion carries a second value. Each opcode reads only its
+  own fields, and a nonzero field it does not use or any flag is refused with `DENIED`. `Random`
+  takes its range from the buffer fields like `OpenAt` and `Read`.
+- **D-528** A handle entry names its object by a copyable `ObjectRef`, and only `acquire` and
+  `release` change what keeps an object alive: a handle holds one strong reference, `Duplicate`
+  takes another before it installs, and `Close` or the table's teardown releases it. The table's
+  entries sit behind one object lock, so a strong-count change from the object's pool leaf can run
+  under it.
+- **D-529** File work names its queue by world and `Local`, and a queue cannot be destroyed while
+  an operation holds its pending entry, so the pending entry is the running item's durable count.
+  A process's table and ring are destroyed by the collector after the queue is quiet; a hold that
+  still borrows either refuses that step without changing anything, and the next collection
+  retries it.
+- **D-530** An `ArenaFrame` can back a shared mapping, so the ring page and buffer 0 are frames of
+  the process's world. The mapping keeps the frame alive through the same keepalive a shared run
+  uses until mapping records replace it.
 
 ## Processes
 

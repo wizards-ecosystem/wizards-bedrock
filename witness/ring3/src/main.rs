@@ -52,7 +52,6 @@ enum Failure {
     Refused = 7,
     WrongValue = 8,
     Unanswered = 9,
-    WideHandle = 10,
     IdleWait = 11,
     TimerServedEarly = 12,
     NotWoken = 13,
@@ -111,10 +110,14 @@ fn echo() -> Result<(), Failure> {
 
 // The entry block, not the image, supplies the authority the duplicate names.
 fn duplicate(bootstrap: u64) -> Result<(), Failure> {
-    let handle = u32::try_from(bootstrap).map_err(|_| Failure::WideHandle)?;
     let rights = u64::from(Rights::INSPECT.bits());
-    let completion = exchange(Submission::about(Opcode::Duplicate, TOKEN, handle, rights))?;
-    if completion.value == 0 || completion.value == u64::from(handle) {
+    let completion = exchange(Submission::about(
+        Opcode::Duplicate,
+        TOKEN,
+        bootstrap,
+        rights,
+    ))?;
+    if completion.value == 0 || completion.value == bootstrap {
         return Err(Failure::WrongValue);
     }
     Ok(())

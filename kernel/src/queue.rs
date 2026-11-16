@@ -1,26 +1,34 @@
 // Every entry is copied out once and only the copy is validated; the page is never re-read.
 
-use alloc::sync::Arc;
 use core::num::NonZeroU64;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use native_abi::Rights;
+use native_abi::address::{DATA, RING};
 use native_abi::ring::{COMPLETIONS, Completion, Opcode, SUBMISSIONS, Submission, header, status};
 use ring_proto::{Capacity, Queues, SharedLayout};
+use world_tree::NodeRef;
 use wost::arch::current::paging::{AddressSpace, MapError};
-use wost::mm::{self, SharedRing, USegment};
+use wost::mm::pool::{Earmark, FrameKind};
+use wost::mm::slab::{Hold, Refusal, Removal};
+use wost::mm::{SharedBytes, SharedRing};
 use wost::sync::{Leaf, SpinLock};
-use x86_paging::{Flags, PAGE_SIZE};
+use x86_paging::Flags;
 
-use crate::handle::HandleTable;
+use crate::arena::Local;
+use crate::handle::{Table, TableRef};
 use crate::thread::ThreadContext;
 use crate::timepage::WorldClock;
 use crate::wait::WaitQueue;
+use crate::world::{QueuePool, World, registry};
 
 mod ring;
 #[cfg(feature = "selftest")]
 mod selftest;
 mod work;
+
+#[cfg(feature = "selftest")]
+pub(crate) use selftest::TestQueue;
 
 use ring::write_u32;
 use work::FILE_WORK;
@@ -126,6 +134,7 @@ impl PendingTable {
 #[derive(Debug)]
 struct SharedQueue {
     pages: RingPages,
+    data: SharedBytes,
     protocol: Queues,
 }
 
@@ -142,9 +151,50 @@ pub(crate) struct Queue {
 // The largest `Random` draw held on the stack at once.
 const RANDOM_CHUNK: usize = 256;
 
+// Names a queue by its world and its place in that world's arena.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct QueueRef {
+    world: NodeRef,
+    queue: Local<Queue>,
+}
+
+impl QueueRef {
+    // The ring page and buffer 0, one data frame each, beside the queue object.
+    pub(crate) fn frames_for() -> Option<u32> {
+        QueuePool::frames_for(1)?.checked_add(2)
+    }
+
+    pub(crate) fn create(
+        earmark: &mut Earmark,
+        world_ref: NodeRef,
+        world: &World,
+        queue: Queue,
+    ) -> Self {
+        Self {
+            world: world_ref,
+            queue: world.queues.insert(earmark, queue),
+        }
+    }
+
+    pub(crate) fn hold(self) -> Option<Hold<Queue>> {
+        registry::hold(self.world)?.queues.hold(self.queue)
+    }
+
+    // The process's reference goes; `false` while a hold still borrows the queue.
+    pub(crate) fn destroy(self) -> bool {
+        registry::hold(self.world).is_none_or(|world| {
+            matches!(
+                world.queues.destroy(self.queue),
+                Ok(_) | Err(Removal::Refused(Refusal::Stale))
+            )
+        })
+    }
+}
+
 impl Queue {
-    pub(crate) fn new(clock: &'static WorldClock) -> Option<Arc<Self>> {
-        let run = mm::allocate_contiguous(native_abi::ring::BYTES / PAGE_SIZE as usize, 1)?;
+    pub(crate) fn new(clock: &'static WorldClock, earmark: &mut Earmark) -> Option<Self> {
+        let ring = earmark.take(FrameKind::ArenaData)?;
+        let data = earmark.take(FrameKind::ArenaData)?;
         // Shared, never mapped as owned, so no unmap frees them while a program uses them.
         let layout = SharedLayout::new(
             native_abi::ring::BYTES,
@@ -156,7 +206,7 @@ impl Queue {
             ],
         )
         .ok()?;
-        let mut shared = USegment::zeroed(run)?.share().into_ring(layout).ok()?;
+        let mut shared = ring.share().into_ring(layout).ok()?;
 
         // Written before the pages are ever mapped, so no program sees a ring it cannot read.
         write_u32(&mut shared, header::VERSION, native_abi::ring::VERSION);
@@ -167,34 +217,49 @@ impl Queue {
         let completion = Capacity::new(COMPLETIONS).ok()?;
         let state = Queues::new(submission, completion).ok()?;
 
-        Some(Arc::new(Self {
+        Some(Self {
             ring: SpinLock::new(SharedQueue {
                 pages: shared,
+                data: data.share().into_bytes(),
                 protocol: state,
             }),
             waiters: WaitQueue::new(),
             pending: SpinLock::new(PendingTable::new()),
             served: AtomicUsize::new(0),
             clock,
-        }))
+        })
     }
 
     // `&mut self` skips the leaf guard, which may not span the mapper's allocation.
-    pub(crate) fn install(&mut self, space: &mut AddressSpace, at: u64) -> Result<(), MapError> {
-        space.map_shared_ring(
-            at,
-            &self.ring.get_mut().pages,
-            Flags::WRITABLE.union(Flags::NO_EXECUTE),
-        )
+    pub(crate) fn install(&mut self, space: &mut AddressSpace) -> Result<(), MapError> {
+        let shared = self.ring.get_mut();
+        let flags = Flags::WRITABLE.union(Flags::NO_EXECUTE);
+        space.map_shared_ring(RING, &shared.pages, flags)?;
+        space.map_shared(DATA, &shared.data, flags)
     }
 
-    pub(crate) fn serve(self: &Arc<Self>, table: &Arc<HandleTable>) -> usize {
+    pub(crate) fn serve(
+        &self,
+        context: &mut ThreadContext,
+        here: QueueRef,
+        table: TableRef,
+    ) -> usize {
+        let Some((world, held)) = table.hold() else {
+            return 0;
+        };
         // Read once per call: a tail rewritten mid-service changes only the next call.
         let submission_tail = self.submission_tail();
         let mut served = 0;
 
         while let Some(submission) = self.take(submission_tail) {
-            let Some(completion) = self.admit(submission, table) else {
+            let process = Process {
+                context: &mut *context,
+                world: &world,
+                table: &held,
+                table_ref: table,
+                here,
+            };
+            let Some(completion) = self.admit(process, submission) else {
                 continue;
             };
             self.post(completion);
@@ -212,24 +277,19 @@ impl Queue {
         self.served.load(Ordering::Acquire)
     }
 
-    fn admit(
-        self: &Arc<Self>,
-        submission: Submission,
-        table: &Arc<HandleTable>,
-    ) -> Option<Completion> {
+    fn admit(&self, process: Process<'_, '_>, submission: Submission) -> Option<Completion> {
         let token = submission.token;
+        let Some(used) = Fields::of(submission.opcode) else {
+            return Some(refuse(token, status::UNKNOWN_OPCODE));
+        };
+        if !used.admit(&submission) {
+            return Some(refuse(token, status::DENIED));
+        }
         Some(match submission.opcode {
-            Opcode::Echo => Completion {
-                token,
-                status: status::OK,
-                value: submission.argument,
-            },
-            Opcode::Uptime => Completion {
-                token,
-                status: status::OK,
-                value: self.clock.now_ns(),
-            },
-            Opcode::Duplicate => Self::duplicate(submission, table),
+            Opcode::Echo => answer(token, submission.argument),
+            Opcode::Uptime => answer(token, self.clock.now_ns()),
+            Opcode::Duplicate => Self::duplicate(process, submission),
+            Opcode::Close => Self::close(process, submission),
             Opcode::Timer => {
                 if !crate::time::is_calibrated() {
                     return Some(refuse(token, status::UNAVAILABLE));
@@ -239,18 +299,17 @@ impl Queue {
                 }
                 refuse(token, status::NO_ROOM)
             }
-            Opcode::Cancel => self.cancel(submission),
-            Opcode::OpenAt => return Self::open_at(self, submission, table),
-            Opcode::Read => return Self::read(self, submission, table),
+            Opcode::Cancel => self.cancel(process.here, submission),
+            Opcode::OpenAt => return self.open_at(process, submission),
+            Opcode::Read => return self.read(process, submission),
             Opcode::Random => self.random(submission),
             Opcode::Unknown(_) => refuse(token, status::UNKNOWN_OPCODE),
         })
     }
 
-    fn duplicate(submission: Submission, table: &Arc<HandleTable>) -> Completion {
+    fn duplicate(process: Process<'_, '_>, submission: Submission) -> Completion {
         let token = submission.token;
-        let named = submission.handle;
-        let Ok(reservation) = table.reserve_slot() else {
+        let Ok(reservation) = process.table_ref.reserve_slot() else {
             return refuse(token, status::NO_HANDLE_SLOT);
         };
 
@@ -262,27 +321,39 @@ impl Queue {
             return refuse(token, status::DENIED);
         };
 
-        let Ok((object, held)) = table.resolve(named) else {
+        let Ok((object, held)) = process.table.resolve(process.context, submission.handle) else {
             return refuse(token, status::BAD_HANDLE);
         };
-        if !held.contains(Rights::DUPLICATE) {
+        if !held.contains(Rights::DUPLICATE) || held.attenuate(declared).is_none() {
             return refuse(token, status::DENIED);
         }
+        // A close racing this duplicate may have taken the last reference since the resolve.
+        if !object.acquire(process.world) {
+            return refuse(token, status::BAD_HANDLE);
+        }
+        match reservation.install(process.context, object, held, declared) {
+            Ok(handle) => answer(token, handle),
+            Err(_) => {
+                object.release(process.world);
+                refuse(token, status::DENIED)
+            }
+        }
+    }
 
-        match reservation.install(object, held, declared) {
-            Ok(handle) => Completion {
-                token,
-                status: status::OK,
-                value: u64::from(handle),
-            },
-            Err(_) => refuse(token, status::DENIED),
+    fn close(process: Process<'_, '_>, submission: Submission) -> Completion {
+        let closed = process
+            .table
+            .close(process.context, process.world, submission.handle);
+        match closed {
+            Ok(()) => answer(submission.token, 0),
+            Err(_) => refuse(submission.token, status::BAD_HANDLE),
         }
     }
 
     // Filled in rounds, so a refused write or an unseeded generator stops before the next one.
     fn random(&self, submission: Submission) -> Completion {
         let token = submission.token;
-        let Some((at, len)) = ring::data_bounds(submission.offset, submission.length) else {
+        let Some((at, len)) = ring::buffer_bounds(&submission) else {
             return refuse(token, status::BAD_BUFFER);
         };
         let mut chunk = [0u8; RANDOM_CHUNK];
@@ -297,11 +368,7 @@ impl Queue {
             }
             written += round.len();
         }
-        Completion {
-            token,
-            status: status::OK,
-            value: len as u64,
-        }
+        answer(token, len as u64)
     }
 
     fn defer(&self, submission: Submission) -> Option<u64> {
@@ -333,6 +400,7 @@ impl Queue {
             token: entry.token,
             status,
             value,
+            extra: 0,
         });
         let mut pending = self.pending.lock_leaf();
         let Some(current) = pending.slots.get(index).copied().flatten() else {
@@ -345,7 +413,7 @@ impl Queue {
         pending.slots[index] = None;
     }
 
-    fn cancel(&self, submission: Submission) -> Completion {
+    fn cancel(&self, here: QueueRef, submission: Submission) -> Completion {
         // Truncating a wider word would let a program end an operation it did not name.
         let Ok(target) = u32::try_from(submission.argument) else {
             return refuse(submission.token, status::NOT_FOUND);
@@ -357,13 +425,9 @@ impl Queue {
         };
         self.settle_pending(index, entry, status::CANCELLED, 0);
         // Unclaimed work goes now, so a queued OpenAt returns its slot promise before this reports.
-        drop(FILE_WORK.remove(self, index, entry.id));
+        drop(FILE_WORK.remove(here, index, entry.id));
         self.served.fetch_add(1, Ordering::Release);
-        Completion {
-            token: submission.token,
-            status: status::OK,
-            value: u64::from(entry.token),
-        }
+        answer(submission.token, u64::from(entry.token))
     }
 
     pub(crate) fn expire(&self, now_ns: u64) -> usize {
@@ -392,12 +456,12 @@ impl Queue {
         due
     }
 
-    pub(crate) fn abandon(&self) -> usize {
+    pub(crate) fn abandon(&self, here: QueueRef) -> usize {
         let mut ended = 0;
         while let Some((index, entry)) = self.begin_settlement(|entry| entry.kind.is_cancellable())
         {
             self.settle_pending(index, entry, status::CANCELLED, 0);
-            drop(FILE_WORK.remove(self, index, entry.id));
+            drop(FILE_WORK.remove(here, index, entry.id));
             ended += 1;
         }
 
@@ -442,10 +506,69 @@ impl Queue {
     }
 }
 
+// What one admission may reach: the caller's context, world and table, and this queue's name.
+struct Process<'context, 'held> {
+    context: &'context mut ThreadContext,
+    world: &'held World,
+    table: &'held Table,
+    table_ref: TableRef,
+    here: QueueRef,
+}
+
+// The submission fields an opcode reads; every other field, and every flag, must be zero.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct Fields {
+    handle: bool,
+    offset: bool,
+    argument: bool,
+    bytes: bool,
+}
+
+impl Fields {
+    const fn of(opcode: Opcode) -> Option<Self> {
+        let (handle, offset, argument, bytes) = match opcode {
+            Opcode::Echo | Opcode::Timer | Opcode::Cancel => (false, false, true, false),
+            Opcode::Uptime => (false, false, false, false),
+            Opcode::Duplicate => (true, false, true, false),
+            Opcode::Close => (true, false, false, false),
+            Opcode::OpenAt => (true, false, false, true),
+            Opcode::Read => (true, true, false, true),
+            Opcode::Random => (false, false, false, true),
+            Opcode::Unknown(_) => return None,
+        };
+        Some(Self {
+            handle,
+            offset,
+            argument,
+            bytes,
+        })
+    }
+
+    const fn admit(self, submission: &Submission) -> bool {
+        submission.flags == 0
+            && submission.second == 0
+            && (self.handle || submission.handle == 0)
+            && (self.offset || submission.offset == 0)
+            && (self.argument || submission.argument == 0)
+            && (self.bytes
+                || (submission.length == 0 && submission.buffer == 0 && submission.at == 0))
+    }
+}
+
+fn answer(token: u32, value: u64) -> Completion {
+    Completion {
+        token,
+        status: status::OK,
+        value,
+        extra: 0,
+    }
+}
+
 fn refuse(token: u32, status: u32) -> Completion {
     Completion {
         token,
         status,
         value: 0,
+        extra: 0,
     }
 }

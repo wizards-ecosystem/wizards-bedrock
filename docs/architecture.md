@@ -396,41 +396,53 @@ ring, with four synchronous calls beside it. The constants in this section are t
 
 ### Handles and rights
 
-A handle is a 32-bit value (`libs/handle-space`; the rights are `native_abi::Rights`). Bits 0 and 1 are always set, so zero is never a
-handle. Bits 2 to 19 are an arena index and bits 20 to 31 a generation that refuses stale reuse.
-The value is XORed with a mixer derived from the table's identity, so one slot reads differently
-in two tables. The identity, a non-wrapping `u64`, is the authority boundary: a slot owned by
-another table answers like an empty one.
+A handle is a 64-bit value (`libs/handle-space`; the rights are `native_abi::Rights`). Bits 0 and
+1 are always set, so zero is never a handle. Bits 2 to 19 are the slot index and bits 20 to 63 a
+44-bit generation. A slot whose generation would reach 2^44 retires instead of repeating one. The
+value is XORed with the table's mixer: the first 8 bytes of `entropy::derive(world key, "handle",
+process ordinal)` with bits 0 and 1 cleared, derived once when the table is made and stored in it.
+A handle resolves only in the table that issued it, because each table has its own entries.
 
 The universal rights are `DUPLICATE` (bit 0), `TRANSFER` (1), `WAIT` (2) and `INSPECT` (3). The
 per-type rights are `READ` (8), `WRITE` (9), `EXECUTE` (10), `MAP` (11), `TRAVERSE` (12),
 `ENUMERATE` (13) and `MODIFY` (14). An undefined bit is refused, never masked. The object types are
 an opaque `Channel` identity, a `File` and a `Directory` (`kernel/src/object.rs`).
 
-Every table lives in one global arena (`kernel/src/handle.rs`), a heap vector behind one lock. A
-table commits its whole quota at construction, outside trap context, so ring operations insert
-without allocating; spawn gives each table a quota of 64. Held and promised counts share one atomic
-word. The single global arena is temporary until Phase 7 gives each world its own.
+Each process's table is an object in its world's table pool (`kernel/src/handle.rs`). Its capacity
+is the world's handles limit (64 for the root world), and its entry pages, 64 entries each, are
+arena frames taken when it is made, so a ring operation never allocates for a handle. The entries
+sit behind one object lock (`rank::Object`, taken with a thread context). Held and promised counts
+share one atomic word; a retired slot stays counted, so the quota never promises a slot that no
+longer exists. An entry names its object by `ObjectRef`: a `Local` channel in the same world, or a
+`File` or `Directory` value. A channel is counted: a handle holds one strong reference, a
+`Duplicate` takes another, and `Close` or the table's teardown releases it, so the channel goes
+with its last handle.
 
 A new program's table holds exactly one entry at birth: an opaque `Channel` with the universal
 rights, which has no peer and carries no messages. Every later handle arrives through a ring
-operation that a held handle authorizes. There is no `Close`; handles live until the table dies.
+operation that a held handle authorizes, and `Close` ends one.
 
 ### The ring
 
-Each program has one ring: three kernel-owned pages mapped at `0x0000200000000000` in its own
-space without ownership (`kernel/src/queue.rs`, layout in `native_abi::ring`). The kernel reads ring memory once into a snapshot
-and acts only on copies.
+Each program has one ring, version 2: one page mapped at `0x0000200000000000`, and buffer 0, the
+data page, mapped on its own at `0x0000200000001000` (`kernel/src/queue.rs`, layout in
+`native_abi::ring`). The queue is an object in its world's queue pool, and both pages are arena
+data frames of that world, mapped without ownership and kept alive by the mapping. The kernel
+reads ring memory once into a snapshot and acts only on copies.
 
-| Page | Contents |
+| Offset | Contents |
 |---|---|
-| 0 | header: version (offset 0, `1`), submission count (4), completion count (8), submission head (16, kernel writes), submission tail (20, user writes), completion head (24, user writes), completion tail (28, kernel writes) |
-| 1 | 8 submissions of 32 bytes, then 16 completions of 16 bytes from offset 256 |
-| 2 | data page for paths and read results |
+| 0 | header: version (`2`), submission count (4), completion count (8), submission head (16, kernel writes), submission tail (20, user writes), completion head (24, user writes), completion tail (28, kernel writes); bytes 32 to 63 zero |
+| 64 | 8 submissions of 64 bytes |
+| 576 | 16 completions of 32 bytes |
 
-A submission is opcode (`u32` at 0), token (`u32` at 4), handle (`u32` at 8), length (`u32` at
-12), offset (`u64` at 16) and argument (`u64` at 24). A completion is token (`u32` at 0), status
-(`u32` at 4) and value (`u64` at 8). Each direction has one producer and one consumer: the
+A submission is opcode (`u32` at 0), token (`u32` at 4), handle (`u64` at 8), second (`u64` at
+16), offset (`u64` at 24), argument (`u64` at 32), length (`u32` at 40), buffer (`u32` at 44), at
+(`u64` at 48) and flags (`u64` at 56). A completion is token (`u32` at 0), status (`u32` at 4),
+value (`u64` at 8), extra (`u64` at 16) and a reserved zero `u64`. A byte range names a registered
+buffer by index and a byte offset in it; only buffer 0 exists until programs register more. An
+opcode reads only its own fields: a nonzero field it does not use, or any flag, is refused with
+`DENIED`. Each direction has one producer and one consumer: the
 producer writes the entry and then release-stores the index, and the consumer acquire-loads the
 index and copies the entry once. `wost` accesses each publication word with one aligned 32-bit
 `mov`, because ring 3's plain stores make a Rust atomic over them unsound.
@@ -447,9 +459,10 @@ kernel narrows it with `try_from` and refuses or saturates.
 | 3 | `Duplicate` | needs `DUPLICATE`; completes with a new handle whose rights may only narrow |
 | 4 | `Timer` | completes once world time reaches `argument` nanoseconds past now, rounded up to the precision; the value is that deadline |
 | 5 | `Cancel` | ends the oldest operation whose token is `argument`; the target still completes once, with `CANCELLED` |
-| 6 | `OpenAt` | resolves a path in the data page from a directory handle; completes with a new handle. A path naming the directory itself is `BAD_PATH` |
-| 7 | `Read` | reads file `handle` from `offset` into the data page |
-| 8 | `Random` | fills `length` bytes of the data page from `offset` with generator output; completes with the byte count, or `UNAVAILABLE` before the generator is seeded |
+| 6 | `OpenAt` | resolves the path in `buffer`, `at`, `length` from a directory handle; completes with a new handle. A path naming the directory itself is `BAD_PATH` |
+| 7 | `Read` | reads file `handle` from file offset `offset` into `buffer` at `at`, up to `length` bytes |
+| 8 | `Random` | fills `length` bytes of `buffer` from `at` with generator output; completes with the byte count, or `UNAVAILABLE` before the generator is seeded |
+| 9 | `Close` | ends `handle`; its object goes once no handle or kernel reference holds it |
 
 The statuses are `OK` (0), `UNKNOWN_OPCODE` (1), `NO_HANDLE_SLOT` (2), `BAD_HANDLE` (3), `DENIED`
 (4), `CANCELLED` (5), `NOT_FOUND` (6, a cancel that named nothing in flight), `NO_ROOM` (7),
@@ -458,8 +471,8 @@ volume failure). A pending operation stays
 in its slot until its completion is posted, and ring pages are reclaimed only once the queue is
 quiet. Cancellation is advisory.
 
-`OpenAt` and `Read` move data through the data page, so the kernel validates no user pointer for
-them. A file opened from a directory gets `READ` plus the directory's universal rights. No program
+`OpenAt`, `Read` and `Random` move data through buffer 0, so the kernel validates no user pointer
+for them. A file opened from a directory gets `READ` plus the directory's universal rights. No program
 can hold a directory handle today, because spawn installs only the bootstrap channel.
 
 ### Calls
@@ -508,12 +521,15 @@ the clock as a value; today every process gets the one root clock, `timepage::ro
 this order: interrupts admitted, the boot thread on a guarded stack, NX on, `CR4.TSD` set, extended
 state isolated, the clock calibrated, the random generator seeded, the service worker running, and a
 shared or paired isolation mode. It then builds the address space, loads the image, maps a one-page
-user stack at `0x0000300000000000`, maps the time page and the ring, creates the handle table with
-its birth handle, binds the space and publishes a thread. `ProcessConstruction` owns the space and
+user stack at `0x0000300000000000`, maps the time page, the ring and buffer 0, creates the handle
+table with its birth handle, binds the space and publishes a thread. Before it builds anything it
+earmarks, in the root world's arena, every frame its queue, table and birth channel can need, so a
+full arena refuses the spawn with nothing changed. `ProcessConstruction` owns the space and
 every mapped range until the thread is published, so any refusal rolls back through one owner.
 
 A process today is a thread slot. Its record (`Bootstrap` in `kernel/src/user.rs`) is one thread,
-one address space, one ring and one handle table, in global arrays indexed by slot. There is no
+one address space, and the `TableRef` and `QueueRef` that name its table and ring in the root
+world, in global arrays indexed by slot. There is no
 parent and no fork; the kernel spawns one program at boot. How a program ended is kept by slot
 when it retires: `Exit` stores its status, and a fault stores the vector, error code, `CR2` (for a
 page fault, read before interrupts reopen; zero otherwise) and `RIP`. The service worker writes it
@@ -554,7 +570,9 @@ linker fixup that only the trap adapter writes.
 
 A program that exits or faults becomes a zombie, which the service worker collects. A zombie keeps
 its ring and everything its in-flight operations can reach until `Queue::abandon` has ended each
-with a `CANCELLED` completion; then its handle table, ring and address space are released.
+with a `CANCELLED` completion; then its ring and handle table go back to the world's pools, the
+table releasing every object its entries held, and its address space is released. A hold that
+still borrows the ring or table refuses that step, and the next collection retries it.
 
 ## 8. DMA isolation and PCI
 

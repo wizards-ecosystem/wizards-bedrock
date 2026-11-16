@@ -1,28 +1,25 @@
 use native_abi::ring::{
-    COMPLETION_BYTES, COMPLETIONS_AT, Completion, DATA_AT, DATA_BYTES, ENTRIES_AT,
-    SUBMISSION_BYTES, SUBMISSIONS, Submission, header,
+    COMPLETION_BYTES, COMPLETIONS_AT, Completion, DATA_BYTES, ENTRIES_AT, SUBMISSION_BYTES,
+    SUBMISSIONS, Submission, header,
 };
 
 use super::{Queue, RingPages};
 
 impl Queue {
-    pub(super) fn read_data(&self, offset: u64, length: u32, into: &mut [u8]) -> Option<usize> {
-        let (at, len) = data_bounds(offset, length)?;
+    pub(super) fn read_data(&self, submission: &Submission, into: &mut [u8]) -> Option<usize> {
+        let (at, len) = buffer_bounds(submission)?;
         if len > into.len() {
             return None;
         }
         self.ring
             .lock_leaf()
-            .pages
-            .read_payload_at(DATA_AT + at, &mut into[..len])
+            .data
+            .read_at(at, &mut into[..len])
             .then_some(len)
     }
 
     pub(super) fn write_data(&self, at: usize, bytes: &[u8]) -> bool {
-        self.ring
-            .lock_leaf()
-            .pages
-            .write_payload_at(DATA_AT + at, bytes)
+        self.ring.lock_leaf().data.write_at(at, bytes)
     }
 
     pub(super) fn submission_tail(&self) -> u32 {
@@ -86,9 +83,13 @@ impl Queue {
         load_index(&self.ring.lock_leaf().pages, header::COMPLETION_HEAD)
     }
 }
-pub(super) fn data_bounds(offset: u64, length: u32) -> Option<(usize, usize)> {
-    let at = usize::try_from(offset).ok()?;
-    let len = length as usize;
+// Buffer 0 is the data page; buffers 1 to 15 exist only once a program registers them.
+pub(super) fn buffer_bounds(submission: &Submission) -> Option<(usize, usize)> {
+    if submission.buffer != 0 {
+        return None;
+    }
+    let at = usize::try_from(submission.at).ok()?;
+    let len = submission.length as usize;
     if len == 0 {
         return None;
     }

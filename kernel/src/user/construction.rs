@@ -4,17 +4,19 @@ use native_abi::Rights;
 use wost::arch::current::paging::{ActivateError, AddressSpace, MapError};
 use wost::arch::current::task;
 use wost::arch::current::{cpu, xstate};
+use wost::mm::pool::{self as frames, Earmark, Refused};
 
 use super::call::cross;
 use super::load::{LoadError, load, place_stack};
 use super::reap::slot_has_zombie;
 use super::{
-    BOOTSTRAPS, Bootstrap, BootstrapAuthority, LAUNCHES, Launch, RING, Regions, STACK_BYTES,
+    BOOTSTRAPS, Bootstrap, BootstrapAuthority, LAUNCHES, Launch, Objects, Regions, STACK_BYTES,
     Spawned,
 };
-use crate::handle::{HandleError, HandleTable};
-use crate::timepage::WorldClock;
-use crate::{object, queue, thread};
+use crate::handle::{HandleError, Table, TableRef};
+use crate::queue::{self, Queue, QueueRef};
+use crate::world::{self, registry};
+use crate::{object, thread};
 
 #[derive(Debug)]
 struct ProcessConstruction {
@@ -64,8 +66,7 @@ impl Drop for ProcessConstruction {
 #[derive(Debug)]
 struct PreparedProcess {
     construction: ProcessConstruction,
-    table: alloc::sync::Arc<HandleTable>,
-    ring: alloc::sync::Arc<queue::Queue>,
+    objects: Objects,
     launch: Launch,
 }
 
@@ -97,14 +98,11 @@ impl PreparedProcess {
             space,
             authority: Some(BootstrapAuthority::Bound(bound)),
             regions: core::mem::replace(&mut self.construction.regions, Regions::new()),
-            table: self.table,
-            ring: self.ring,
+            objects: self.objects,
         });
         Ok(())
     }
 }
-
-const HANDLE_QUOTA: usize = 64;
 
 #[derive(Debug)]
 pub(crate) enum SpawnError {
@@ -126,6 +124,8 @@ pub(crate) enum SpawnError {
     NoBootstrap(HandleError),
     NoTimePage(crate::timepage::Error),
     NoRing,
+    NoWorld,
+    NoMemory(Refused),
 }
 
 impl fmt::Display for SpawnError {
@@ -165,6 +165,8 @@ impl fmt::Display for SpawnError {
             Self::NoBootstrap(reason) => write!(formatter, "no bootstrap channel: {reason}"),
             Self::NoTimePage(reason) => write!(formatter, "the time page: {reason}"),
             Self::NoRing => formatter.write_str("no memory for a ring"),
+            Self::NoWorld => formatter.write_str("no root world; ring 3 is closed"),
+            Self::NoMemory(reason) => write!(formatter, "the world's arena refused: {reason}"),
         }
     }
 }
@@ -172,6 +174,7 @@ impl fmt::Display for SpawnError {
 impl core::error::Error for SpawnError {}
 
 pub(crate) fn spawn(
+    context: &mut thread::ThreadContext,
     name: &'static str,
     which: u64,
     argument: u64,
@@ -180,18 +183,36 @@ pub(crate) fn spawn(
     // The one world every process belongs to until worlds are objects.
     let clock = crate::timepage::root();
     let mut construction = ProcessConstruction::new(admitted_space()?);
+    let world_ref = world::root().ok_or(SpawnError::NoWorld)?;
+    let world = registry::hold(world_ref).ok_or(SpawnError::NoWorld)?;
+    let mut earmark = earmark(context, &world)?;
     let (entry, stack) = map_program(&mut construction, which)?;
-    let ring = map_shared(&mut construction, clock)?;
+    clock
+        .install(construction.space()?)
+        .map_err(SpawnError::NoTimePage)?;
+    let mut queue = Queue::new(clock, &mut earmark).ok_or(SpawnError::NoRing)?;
+    queue
+        .install(construction.space()?)
+        .map_err(SpawnError::NoSpace)?;
     let root = construction.space()?.root();
 
-    // Create the bootstrap identity before the thread can observe it.
-    let bootstrap = object::bootstrap_identity();
-    let table = HandleTable::new(HANDLE_QUOTA).map_err(SpawnError::NoBootstrap)?;
+    let objects = Objects {
+        ring: QueueRef::create(&mut earmark, world_ref, &world, queue),
+        table: TableRef::create(&mut earmark, world_ref, &world),
+    };
+    // Created before the thread can observe the table it names.
+    let bootstrap = object::bootstrap_identity(&mut earmark, &world);
+    let (_, table) = objects.table.hold().ok_or(SpawnError::NoWorld)?;
+    let handle = match table.insert(context, bootstrap, Rights::UNIVERSAL) {
+        Ok(handle) => handle,
+        Err(reason) => {
+            bootstrap.release(&world);
+            return Err(SpawnError::NoBootstrap(reason));
+        }
+    };
+    drop(table);
     #[cfg(feature = "selftest")]
-    let table_identity = table.identity_for_test();
-    let handle = table
-        .insert(bootstrap, Rights::UNIVERSAL)
-        .map_err(SpawnError::NoBootstrap)?;
+    let table_identity = objects.table.identity_for_test();
 
     let binding = construction
         .space()?
@@ -200,8 +221,7 @@ pub(crate) fn spawn(
 
     let mut prepared = Some(PreparedProcess {
         construction,
-        table: alloc::sync::Arc::new(table),
-        ring,
+        objects,
         launch: Launch {
             entry,
             stack,
@@ -239,6 +259,24 @@ pub(crate) fn spawn(
         #[cfg(feature = "selftest")]
         observed_table_incarnation: table_identity,
     })
+}
+
+// Every arena frame the process's kernel objects can need, taken before anything is built.
+fn earmark(
+    context: &mut thread::ThreadContext,
+    world: &world::World,
+) -> Result<Earmark, SpawnError> {
+    let frames = world::TablePool::frames_for(1)
+        .zip(QueueRef::frames_for())
+        .zip(world::ChannelPool::frames_for(1))
+        .and_then(|((table, queue), channel)| {
+            table
+                .checked_add(Table::frames_for(world.handles()))?
+                .checked_add(queue)?
+                .checked_add(channel)
+        })
+        .ok_or(SpawnError::NoMemory(Refused::NoMemory))?;
+    frames::earmark(context, world.arena(), frames).map_err(SpawnError::NoMemory)
 }
 
 fn admitted_space() -> Result<AddressSpace, SpawnError> {
@@ -288,21 +326,4 @@ fn map_program(
         "the region ledger keeps one range beyond the loader's for the stack"
     );
     Ok((image.entry, stack))
-}
-
-// The ring's pages stay the ring's and never enter the cleanup ledger.
-fn map_shared(
-    construction: &mut ProcessConstruction,
-    clock: &'static WorldClock,
-) -> Result<alloc::sync::Arc<queue::Queue>, SpawnError> {
-    clock
-        .install(construction.space()?)
-        .map_err(SpawnError::NoTimePage)?;
-
-    let mut ring = queue::Queue::new(clock).ok_or(SpawnError::NoRing)?;
-    alloc::sync::Arc::get_mut(&mut ring)
-        .ok_or(SpawnError::Incomplete)?
-        .install(construction.space()?, RING)
-        .map_err(SpawnError::NoSpace)?;
-    Ok(ring)
 }

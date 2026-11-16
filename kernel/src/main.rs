@@ -236,7 +236,7 @@ fn boot_continue(context: &mut ThreadContext, stack: usize) -> ! {
     #[cfg(feature = "selftest")]
     selftest::run(context);
 
-    match user::run() {
+    match user::run(context) {
         Ok(program) => info!("user: program running in slot {}", program.slot),
         Err(reason) => {
             warn!("user: no program: {reason}");

@@ -1,24 +1,26 @@
 use native_abi::Rights;
 use native_abi::ring::{Opcode, Submission, status};
 
-use super::rings::{post, table};
-use crate::handle::{HandleError, HandleTable};
-use crate::object;
-use crate::queue::Queue;
+use super::rings::post;
+use crate::handle::{HandleError, TestTable};
+use crate::queue::TestQueue;
+use crate::thread::ThreadContext;
 
-pub(super) fn a_completion_cannot_widen_what_was_offered() -> bool {
-    let (Some(queue), Some(table), Some(full_table)) =
-        (Queue::new(crate::timepage::root()), table(8), table(1))
-    else {
+pub(super) fn a_completion_cannot_widen_what_was_offered(context: &mut ThreadContext) -> bool {
+    let (Some(queue), Some(table), Some(full_table)) = (
+        TestQueue::new(context),
+        TestTable::new(context, 8),
+        TestTable::new(context, 1),
+    ) else {
         return false;
     };
     let full = Rights::UNIVERSAL;
     let limited = Rights::DUPLICATE.union(Rights::INSPECT);
     let (Ok(source), Ok(narrow), Ok(sealed), Ok(only)) = (
-        table.insert(object::bootstrap_identity(), full),
-        table.insert(object::bootstrap_identity(), limited),
-        table.insert(object::bootstrap_identity(), Rights::INSPECT),
-        full_table.insert(object::bootstrap_identity(), full),
+        table.insert_channel(context, full),
+        table.insert_channel(context, limited),
+        table.insert_channel(context, Rights::INSPECT),
+        full_table.insert_channel(context, full),
     ) else {
         return false;
     };
@@ -34,12 +36,12 @@ pub(super) fn a_completion_cannot_widen_what_was_offered() -> bool {
             Submission::about(Opcode::Duplicate, 0xF002, sealed, bits(Rights::INSPECT)),
         ],
     );
-    if queue.serve(&table) != 4 {
+    if queue.serve(context, &table) != 4 {
         return false;
     }
     let narrowed = queue.read_completion(1);
     let granted = table
-        .resolve(narrowed.value as u32)
+        .resolve(context, narrowed.value)
         .is_ok_and(|(_, rights)| rights == Rights::INSPECT);
     let refused = [
         (0, 0xF001, status::BAD_HANDLE),
@@ -62,7 +64,7 @@ pub(super) fn a_completion_cannot_widen_what_was_offered() -> bool {
             bits(full),
         )],
     );
-    let served_full = queue.serve(&full_table) == 1;
+    let served_full = queue.serve(context, &full_table) == 1;
     let no_slot = queue.read_completion(4);
 
     served_full
@@ -71,7 +73,7 @@ pub(super) fn a_completion_cannot_widen_what_was_offered() -> bool {
         && no_slot.value == 0
         && narrowed.token == 0x5150
         && narrowed.status == status::OK
-        && narrowed.value as u32 != source
+        && narrowed.value != source
         && granted
         && refused
         // Every refusal gave its promise back: a leak shows later as a table full of nothing.
@@ -81,23 +83,24 @@ pub(super) fn a_completion_cannot_widen_what_was_offered() -> bool {
         && full_table.promised() == 0
 }
 
-pub(super) fn a_handle_reveals_no_foreign_occupancy() -> bool {
-    let (Ok(mine), Ok(theirs)) = (HandleTable::new(4), HandleTable::new(4)) else {
+pub(super) fn a_handle_reveals_no_foreign_occupancy(context: &mut ThreadContext) -> bool {
+    let (Some(mine), Some(theirs)) = (TestTable::new(context, 4), TestTable::new(context, 4))
+    else {
         return false;
     };
-    let Ok(handle) = mine.insert(object::bootstrap_identity(), Rights::UNIVERSAL) else {
+    let Ok(handle) = mine.insert_channel(context, Rights::UNIVERSAL) else {
         return false;
     };
     let Some(slot) = mine.slot_of(handle) else {
         return false;
     };
     let forged = theirs.handle_for(slot);
-    let live_resolve = theirs.resolve(forged).err();
+    let live_resolve = theirs.resolve(context, forged).err();
     let foreign_changed_nothing =
-        mine.resolve(handle).is_ok() && mine.live() == 1 && theirs.live() == 0;
+        mine.resolve(context, handle).is_ok() && mine.live() == 1 && theirs.live() == 0;
 
     drop(mine);
-    let absent_resolve = theirs.resolve(forged).err();
+    let absent_resolve = theirs.resolve(context, forged).err();
 
     live_resolve == Some(HandleError::Stale)
         && live_resolve == absent_resolve

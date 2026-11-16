@@ -19,8 +19,16 @@ pub mod address {
 
     pub const RING: u64 = 0x0000_2000_0000_0000;
 
+    // Buffer 0, the data page beside the ring.
+    pub const DATA: u64 = RING + 0x1000;
+
     // Far from the code, so a stack run-off hits nothing.
     pub const STACK: u64 = 0x0000_3000_0000_0000;
+}
+
+pub mod limits {
+    // Registered buffers per process; index 0 is the data page.
+    pub const BUFFERS: u32 = 16;
 }
 
 pub mod entry {

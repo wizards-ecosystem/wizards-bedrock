@@ -1,6 +1,7 @@
-use alloc::sync::Arc;
-
 use native_abi::Rights;
+
+use crate::arena::Local;
+use crate::world::World;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum ObjectType {
@@ -27,21 +28,12 @@ pub(crate) const fn directory(directory: crate::vfs::Directory) -> ObjectRef {
     ObjectRef::Directory(directory)
 }
 
-#[derive(Debug)]
+// A copy names the object; only `acquire` and `release` change what keeps it alive.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum ObjectRef {
-    Channel(Arc<Channel>),
+    Channel(Local<Channel>),
     File(crate::vfs::File),
     Directory(crate::vfs::Directory),
-}
-
-impl Clone for ObjectRef {
-    fn clone(&self) -> Self {
-        match self {
-            Self::Channel(channel) => Self::Channel(Arc::clone(channel)),
-            Self::File(file) => Self::File(*file),
-            Self::Directory(directory) => Self::Directory(*directory),
-        }
-    }
 }
 
 impl ObjectRef {
@@ -66,11 +58,32 @@ impl ObjectRef {
             Self::Channel(_) | Self::File(_) => None,
         }
     }
+
+    // One more strong reference for a second handle; `false` when the object is already gone.
+    pub(crate) fn acquire(self, world: &World) -> bool {
+        match self {
+            Self::Channel(channel) => world.channels.acquire(channel).is_ok(),
+            Self::File(_) | Self::Directory(_) => true,
+        }
+    }
+
+    pub(crate) fn release(self, world: &World) {
+        match self {
+            Self::Channel(channel) => {
+                let _ = world.channels.destroy(channel);
+            }
+            Self::File(_) | Self::Directory(_) => {}
+        }
+    }
 }
 
 #[derive(Debug)]
 pub(crate) struct Channel;
 
-pub(crate) fn bootstrap_identity() -> ObjectRef {
-    ObjectRef::Channel(Arc::new(Channel))
+// The bootstrap identity: a channel object in the world, held by the table's first entry.
+pub(crate) fn bootstrap_identity(
+    earmark: &mut wost::mm::pool::Earmark,
+    world: &World,
+) -> ObjectRef {
+    ObjectRef::Channel(world.channels.insert(earmark, Channel))
 }

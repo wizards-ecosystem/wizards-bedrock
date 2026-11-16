@@ -1,10 +1,16 @@
-use native_abi::ring::{
-    COMPLETION_BYTES, COMPLETIONS_AT, Completion, DATA_AT, ENTRIES_AT, SUBMISSION_BYTES,
-    SUBMISSIONS, Submission, header,
-};
+use core::ops::Deref;
 
-use super::Queue;
+use native_abi::ring::{
+    COMPLETION_BYTES, COMPLETIONS_AT, Completion, ENTRIES_AT, SUBMISSION_BYTES, SUBMISSIONS,
+    Submission, header,
+};
+use wost::mm::slab::Hold;
+
 use super::ring::publish_index;
+use super::{Queue, QueueRef};
+use crate::handle::TestTable;
+use crate::thread::ThreadContext;
+use crate::world::{self, registry};
 
 impl Queue {
     pub(crate) fn in_flight(&self) -> usize {
@@ -37,10 +43,7 @@ impl Queue {
     }
 
     pub(crate) fn read_data_for_test(&self, at: usize, into: &mut [u8]) -> bool {
-        self.ring
-            .lock_leaf()
-            .pages
-            .read_payload_at(DATA_AT + at, into)
+        self.ring.lock_leaf().data.read_at(at, into)
     }
 
     pub(crate) fn read_completion(&self, slot: usize) -> Completion {
@@ -51,5 +54,52 @@ impl Queue {
             "a self-test completion slot was outside the shared pages"
         );
         Completion::decode(&bytes)
+    }
+}
+
+// A queue in the root world that no program maps, destroyed when the check ends.
+#[derive(Debug)]
+pub(crate) struct TestQueue {
+    queue: QueueRef,
+    held: Option<Hold<Queue>>,
+}
+
+impl TestQueue {
+    pub(crate) fn new(context: &mut ThreadContext) -> Option<Self> {
+        let world_ref = world::root()?;
+        let world = registry::hold(world_ref)?;
+        let frames = QueueRef::frames_for()?;
+        let mut earmark = wost::mm::pool::earmark(context, world.arena(), frames).ok()?;
+        let queue = Queue::new(crate::timepage::root(), &mut earmark)?;
+        let queue = QueueRef::create(&mut earmark, world_ref, &world, queue);
+        Some(Self {
+            queue,
+            held: queue.hold(),
+        })
+    }
+
+    pub(crate) fn serve(&self, context: &mut ThreadContext, table: &TestTable) -> usize {
+        Queue::serve(self, context, self.queue, table.table)
+    }
+
+    pub(crate) fn abandon(&self) -> usize {
+        Queue::abandon(self, self.queue)
+    }
+}
+
+impl Deref for TestQueue {
+    type Target = Queue;
+
+    fn deref(&self) -> &Queue {
+        self.held
+            .as_deref()
+            .unwrap_or_else(|| panic!("a self-test queue vanished while the check held it"))
+    }
+}
+
+impl Drop for TestQueue {
+    fn drop(&mut self) {
+        drop(self.held.take());
+        assert!(self.queue.destroy(), "a self-test queue outlived its check");
     }
 }

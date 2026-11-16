@@ -1,12 +1,13 @@
-use native_abi::address::{RING, STACK};
+use native_abi::address::STACK;
 use wost::arch::current::paging::{AddressSpace, MapError};
 use wost::arch::current::task;
 use wost::mm::PhysicalAddress;
 use wost::sync::{Leaf, SpinLock};
 use x86_paging::PAGE_SIZE;
 
-use crate::handle::HandleTable;
-use crate::{queue, thread};
+use crate::handle::TableRef;
+use crate::queue::QueueRef;
+use crate::thread;
 
 mod call;
 mod construction;
@@ -50,7 +51,7 @@ struct Launch {
     stack: u64,
     argument: u64,
     operand: u64,
-    bootstrap_handle: u32,
+    bootstrap_handle: u64,
     which: u64,
     root: PhysicalAddress,
 }
@@ -111,8 +112,34 @@ struct Bootstrap {
     space: AddressSpace,
     authority: Option<BootstrapAuthority>,
     regions: Regions,
-    table: alloc::sync::Arc<HandleTable>,
-    ring: alloc::sync::Arc<queue::Queue>,
+    objects: Objects,
+}
+
+// A process's table and queue in its world; each goes when its last reference does.
+#[derive(Debug)]
+struct Objects {
+    table: TableRef,
+    ring: QueueRef,
+}
+
+impl Objects {
+    // Idempotent, so a teardown refused by a passing hold retries it whole.
+    #[must_use = "a refused destroy leaves an object for a retry"]
+    fn destroy(&self) -> bool {
+        let ring = self.ring.destroy();
+        let table = self.table.destroy();
+        ring && table
+    }
+}
+
+impl Drop for Objects {
+    fn drop(&mut self) {
+        let destroyed = self.destroy();
+        assert!(
+            destroyed,
+            "a process's objects outlived their last reference"
+        );
+    }
 }
 
 #[derive(Debug)]
@@ -131,8 +158,8 @@ pub(crate) struct Spawned {
     pub(crate) observed_table_incarnation: u64,
 }
 
-pub(crate) fn run() -> Result<Spawned, SpawnError> {
-    spawn("user", 0, BEHAVE, 0)
+pub(crate) fn run(context: &mut thread::ThreadContext) -> Result<Spawned, SpawnError> {
+    spawn(context, "user", 0, BEHAVE, 0)
 }
 
 const BEHAVE: u64 = 0;

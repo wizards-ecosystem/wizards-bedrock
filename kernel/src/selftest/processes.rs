@@ -16,10 +16,12 @@ use crate::{thread, time, user};
 
 const UNSERVED_CALL: usize = 0x0BAD_0BAD;
 
-pub(super) fn an_unserved_call_is_refused_without_stopping_the_machine() -> bool {
+pub(super) fn an_unserved_call_is_refused_without_stopping_the_machine(
+    context: &mut ThreadContext,
+) -> bool {
     let (refused_before, _) = user::refusals();
     let faults_before = trap::last_user_fault().count;
-    let Ok(spawned) = user::spawn_probing() else {
+    let Ok(spawned) = user::spawn_probing(context) else {
         return false;
     };
     let exited = last_rites_for(&spawned, 2_000).is_some_and(|rites| agreed(&rites));
@@ -31,9 +33,9 @@ pub(super) fn an_unserved_call_is_refused_without_stopping_the_machine() -> bool
         && trap::last_user_fault().count == faults_before
 }
 
-pub(super) fn a_faulting_program_dies_alone() -> bool {
+pub(super) fn a_faulting_program_dies_alone(context: &mut ThreadContext) -> bool {
     let before = trap::last_user_fault();
-    let Ok(spawned) = user::spawn_faulting() else {
+    let Ok(spawned) = user::spawn_faulting(context) else {
         return false;
     };
 
@@ -55,11 +57,11 @@ pub(super) fn a_faulting_program_dies_alone() -> bool {
 }
 
 // `rax` still holds the argument only if the trapped `rdtsc` never retired.
-pub(super) fn a_direct_clock_read_retires_its_program() -> bool {
+pub(super) fn a_direct_clock_read_retires_its_program(context: &mut ThreadContext) -> bool {
     const READ_COUNTER: u64 = 8;
 
     let before = trap::last_user_fault();
-    let Ok(spawned) = user::spawn_reading_the_counter() else {
+    let Ok(spawned) = user::spawn_reading_the_counter(context) else {
         return false;
     };
 
@@ -79,19 +81,23 @@ pub(super) fn a_direct_clock_read_retires_its_program() -> bool {
 }
 
 // A refusal is process-local: the timer keeps arriving and a clean successor still crosses.
-pub(super) fn a_noncanonical_user_return_stack_retires_only_its_program() -> bool {
+pub(super) fn a_noncanonical_user_return_stack_retires_only_its_program(
+    context: &mut ThreadContext,
+) -> bool {
     const NESTED_TASK: u64 = 1 << 14;
 
     let expiries = time::expiries();
-    let stack_refused = invalid_return_is_refused(user::spawn_with_invalid_return_stack, |frame| {
-        frame.stack_pointer == usercopy::USER_END
-    });
-    let flags_refused = invalid_return_is_refused(user::spawn_with_invalid_return_flags, |frame| {
-        frame.flags & NESTED_TASK != 0
-    });
+    let stack_refused =
+        invalid_return_is_refused(context, user::spawn_with_invalid_return_stack, |frame| {
+            frame.stack_pointer == usercopy::USER_END
+        });
+    let flags_refused =
+        invalid_return_is_refused(context, user::spawn_with_invalid_return_flags, |frame| {
+            frame.flags & NESTED_TASK != 0
+        });
 
     let calls = trap::last_syscall();
-    let Ok(successor) = user::spawn_for_bootstrap() else {
+    let Ok(successor) = user::spawn_for_bootstrap(context) else {
         return false;
     };
     let successor_retired = last_rites_for(&successor, 2_000).is_some();
@@ -106,11 +112,12 @@ pub(super) fn a_noncanonical_user_return_stack_retires_only_its_program() -> boo
 }
 
 fn invalid_return_is_refused(
-    spawn: fn() -> Result<user::Spawned, user::SpawnError>,
+    context: &mut ThreadContext,
+    spawn: fn(&mut ThreadContext) -> Result<user::Spawned, user::SpawnError>,
     names_the_fault: impl Fn(&trap::Record) -> bool,
 ) -> bool {
     let before = trap::last_invalid_user_return();
-    let Ok(spawned) = spawn() else {
+    let Ok(spawned) = spawn(context) else {
         return false;
     };
     if !runs_until(2_000, || {
@@ -123,11 +130,11 @@ fn invalid_return_is_refused(
 }
 
 // A ring-3 fetch fault in the copy window retires the program; `rax` holds where it jumped.
-pub(super) fn a_program_cannot_aim_at_the_copy_window() -> bool {
+pub(super) fn a_program_cannot_aim_at_the_copy_window(context: &mut ThreadContext) -> bool {
     let recoveries_before = trap::user_copy_recoveries();
     let before = trap::last_user_fault();
 
-    let Ok(spawned) = user::spawn_into_the_copy_window() else {
+    let Ok(spawned) = user::spawn_into_the_copy_window(context) else {
         return false;
     };
     if !runs_until(2000, || {
@@ -163,9 +170,9 @@ fn in_user_code(rip: u64) -> bool {
 const PRESENT_USER_READ: u64 = 0b101;
 
 // The entry enclave's text is present in every user root, shared or paired, as supervisor pages.
-pub(super) fn a_program_cannot_read_the_kernel() -> bool {
+pub(super) fn a_program_cannot_read_the_kernel(context: &mut ThreadContext) -> bool {
     let address = wost::boot::sections().entry_enclave.text.start;
-    let Ok(spawned) = user::spawn_reading_the_kernel(address) else {
+    let Ok(spawned) = user::spawn_reading_the_kernel(context, address) else {
         return false;
     };
     matches!(
@@ -179,12 +186,12 @@ pub(super) fn a_program_cannot_read_the_kernel() -> bool {
 }
 
 // `syscall` is a closed door: it faults where it stands and the kernel is never entered.
-pub(super) fn a_syscall_instruction_never_enters_the_kernel() -> bool {
+pub(super) fn a_syscall_instruction_never_enters_the_kernel(context: &mut ThreadContext) -> bool {
     const SYSCALL: u64 = 12;
 
     let calls_before = trap::last_syscall().count;
     let faults_before = trap::last_user_fault().count;
-    let Ok(spawned) = user::spawn_executing_syscall() else {
+    let Ok(spawned) = user::spawn_executing_syscall(context) else {
         return false;
     };
     let ended = matches!(
@@ -202,16 +209,16 @@ pub(super) fn a_syscall_instruction_never_enters_the_kernel() -> bool {
 }
 
 // Idle, the wait returns at once; with a timer in flight, only that timer's completion wakes it.
-pub(super) fn ring_wait_sleeps_only_while_work_is_in_flight() -> bool {
-    let Ok(spawned) = user::spawn_waiting_on_the_ring() else {
+pub(super) fn ring_wait_sleeps_only_while_work_is_in_flight(context: &mut ThreadContext) -> bool {
+    let Ok(spawned) = user::spawn_waiting_on_the_ring(context) else {
         return false;
     };
     last_rites_for(&spawned, 2_000).is_some_and(|rites| agreed(&rites) && rites.served == 1)
 }
 
 // A user base is read back through `fs`, and a kernel-half or noncanonical one is refused.
-pub(super) fn a_thread_base_is_taken_only_inside_user_memory() -> bool {
-    let Ok(spawned) = user::spawn_setting_its_thread_base() else {
+pub(super) fn a_thread_base_is_taken_only_inside_user_memory(context: &mut ThreadContext) -> bool {
+    let Ok(spawned) = user::spawn_setting_its_thread_base(context) else {
         return false;
     };
     last_rites_for(&spawned, 2_000).is_some_and(|rites| agreed(&rites))
@@ -318,7 +325,7 @@ pub(super) fn a_dead_program_gives_its_memory_back(context: &mut ThreadContext) 
     let mut ran = 0;
     for _ in 0..40 {
         let retirements = thread::retirements();
-        if user::spawn_for_bootstrap().is_err()
+        if user::spawn_for_bootstrap(context).is_err()
             || !runs_until(2000, || {
                 thread::retirements() > retirements && !user::has_zombies()
             })
@@ -347,13 +354,13 @@ fn agreed(rites: &user::LastRites) -> bool {
     rites.ending == Some(Record::Exit(Exit { status: 0 }))
 }
 
-pub(super) fn a_program_drives_its_own_ring() -> bool {
+pub(super) fn a_program_drives_its_own_ring(context: &mut ThreadContext) -> bool {
     const ACCESS_CHECK: u64 = 1 << 18;
 
     let faults_before = trap::last_user_fault().count;
     let calls_before = trap::last_syscall().count;
 
-    let Ok(echoing) = user::run() else {
+    let Ok(echoing) = user::run(context) else {
         return false;
     };
     let Some(echoed) = last_rites_for(&echoing, 2_000) else {
@@ -366,7 +373,7 @@ pub(super) fn a_program_drives_its_own_ring() -> bool {
     // The witness sets `AC` before its calls; the handler must still have run with SMAP on.
     let smap_held = call.flags & ACCESS_CHECK != 0 && trap::smap_survived_the_last_syscall();
 
-    let Ok(duplicating) = user::spawn_duplicating() else {
+    let Ok(duplicating) = user::spawn_duplicating(context) else {
         return false;
     };
     let Some(duplicated) = last_rites_for(&duplicating, 2_000) else {

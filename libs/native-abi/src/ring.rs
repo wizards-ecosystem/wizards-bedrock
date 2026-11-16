@@ -1,21 +1,20 @@
 use crate::PAGE_BYTES;
 
 // Bumped whenever a reader-visible layout changes.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
-pub const BYTES: usize = 3 * PAGE_BYTES;
+// One page; buffer 0, the data page, is a second page mapped on its own.
+pub const BYTES: usize = PAGE_BYTES;
 
-pub const ENTRIES_AT: usize = PAGE_BYTES;
+pub const ENTRIES_AT: usize = 64;
 
 pub const COMPLETIONS_AT: usize = ENTRIES_AT + SUBMISSIONS as usize * SUBMISSION_BYTES;
 
-pub const DATA_AT: usize = 2 * PAGE_BYTES;
-
 pub const DATA_BYTES: usize = PAGE_BYTES;
 
-pub const SUBMISSION_BYTES: usize = 32;
+pub const SUBMISSION_BYTES: usize = 64;
 
-pub const COMPLETION_BYTES: usize = 16;
+pub const COMPLETION_BYTES: usize = 32;
 
 pub const SUBMISSIONS: u32 = 8;
 
@@ -35,15 +34,20 @@ mod submission {
     pub(super) const OPCODE: usize = 0;
     pub(super) const TOKEN: usize = 4;
     pub(super) const HANDLE: usize = 8;
-    pub(super) const LENGTH: usize = 12;
-    pub(super) const OFFSET: usize = 16;
-    pub(super) const ARGUMENT: usize = 24;
+    pub(super) const SECOND: usize = 16;
+    pub(super) const OFFSET: usize = 24;
+    pub(super) const ARGUMENT: usize = 32;
+    pub(super) const LENGTH: usize = 40;
+    pub(super) const BUFFER: usize = 44;
+    pub(super) const AT: usize = 48;
+    pub(super) const FLAGS: usize = 56;
 }
 
 mod completion {
     pub(super) const TOKEN: usize = 0;
     pub(super) const STATUS: usize = 4;
     pub(super) const VALUE: usize = 8;
+    pub(super) const EXTRA: usize = 16;
 }
 
 pub mod status {
@@ -72,6 +76,7 @@ pub enum Opcode {
     OpenAt,
     Read,
     Random,
+    Close,
     Unknown(u32),
 }
 
@@ -86,6 +91,7 @@ impl Opcode {
             6 => Self::OpenAt,
             7 => Self::Read,
             8 => Self::Random,
+            9 => Self::Close,
             other => Self::Unknown(other),
         }
     }
@@ -100,6 +106,7 @@ impl Opcode {
             Self::OpenAt => 6,
             Self::Read => 7,
             Self::Random => 8,
+            Self::Close => 9,
             Self::Unknown(other) => other,
         }
     }
@@ -109,21 +116,29 @@ impl Opcode {
 pub struct Submission {
     pub opcode: Opcode,
     pub token: u32,
-    pub handle: u32,
-    pub length: u32,
+    pub handle: u64,
+    pub second: u64,
     pub offset: u64,
     pub argument: u64,
+    pub length: u32,
+    pub buffer: u32,
+    pub at: u64,
+    pub flags: u64,
 }
 
 impl Submission {
-    pub const fn about(opcode: Opcode, token: u32, handle: u32, argument: u64) -> Self {
+    pub const fn about(opcode: Opcode, token: u32, handle: u64, argument: u64) -> Self {
         Self {
             opcode,
             token,
             handle,
-            length: 0,
+            second: 0,
             offset: 0,
             argument,
+            length: 0,
+            buffer: 0,
+            at: 0,
+            flags: 0,
         }
     }
 
@@ -131,9 +146,15 @@ impl Submission {
         Self::about(opcode, token, 0, argument)
     }
 
+    // A range of a registered buffer: `buffer` is its index, `at` the byte offset in it.
     #[must_use]
-    pub const fn length(self, length: u32) -> Self {
-        Self { length, ..self }
+    pub const fn bytes(self, buffer: u32, at: u64, length: u32) -> Self {
+        Self {
+            buffer,
+            at,
+            length,
+            ..self
+        }
     }
 
     #[must_use]
@@ -145,10 +166,14 @@ impl Submission {
         Self {
             opcode: Opcode::decode(read_u32(bytes, submission::OPCODE)),
             token: read_u32(bytes, submission::TOKEN),
-            handle: read_u32(bytes, submission::HANDLE),
-            length: read_u32(bytes, submission::LENGTH),
+            handle: read_u64(bytes, submission::HANDLE),
+            second: read_u64(bytes, submission::SECOND),
             offset: read_u64(bytes, submission::OFFSET),
             argument: read_u64(bytes, submission::ARGUMENT),
+            length: read_u32(bytes, submission::LENGTH),
+            buffer: read_u32(bytes, submission::BUFFER),
+            at: read_u64(bytes, submission::AT),
+            flags: read_u64(bytes, submission::FLAGS),
         }
     }
 
@@ -161,13 +186,17 @@ impl Submission {
         );
         write(&mut bytes, submission::TOKEN, &self.token.to_le_bytes());
         write(&mut bytes, submission::HANDLE, &self.handle.to_le_bytes());
-        write(&mut bytes, submission::LENGTH, &self.length.to_le_bytes());
+        write(&mut bytes, submission::SECOND, &self.second.to_le_bytes());
         write(&mut bytes, submission::OFFSET, &self.offset.to_le_bytes());
         write(
             &mut bytes,
             submission::ARGUMENT,
             &self.argument.to_le_bytes(),
         );
+        write(&mut bytes, submission::LENGTH, &self.length.to_le_bytes());
+        write(&mut bytes, submission::BUFFER, &self.buffer.to_le_bytes());
+        write(&mut bytes, submission::AT, &self.at.to_le_bytes());
+        write(&mut bytes, submission::FLAGS, &self.flags.to_le_bytes());
         bytes
     }
 }
@@ -177,6 +206,7 @@ pub struct Completion {
     pub token: u32,
     pub status: u32,
     pub value: u64,
+    pub extra: u64,
 }
 
 impl Completion {
@@ -185,6 +215,7 @@ impl Completion {
             token: read_u32(bytes, completion::TOKEN),
             status: read_u32(bytes, completion::STATUS),
             value: read_u64(bytes, completion::VALUE),
+            extra: read_u64(bytes, completion::EXTRA),
         }
     }
 
@@ -193,6 +224,7 @@ impl Completion {
         write(&mut bytes, completion::TOKEN, &self.token.to_le_bytes());
         write(&mut bytes, completion::STATUS, &self.status.to_le_bytes());
         write(&mut bytes, completion::VALUE, &self.value.to_le_bytes());
+        write(&mut bytes, completion::EXTRA, &self.extra.to_le_bytes());
         bytes
     }
 }

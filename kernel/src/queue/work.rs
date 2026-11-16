@@ -1,13 +1,13 @@
-use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use native_abi::Rights;
 use native_abi::ring::{Completion, Submission, status};
 use wost::sync::{Leaf, SpinLock};
 
-use super::ring::data_bounds;
-use super::{Pending, PendingKind, Queue, ReadRequest, WorkPhase, refuse};
-use crate::handle::{HandleTable, SlotReservation};
+use super::ring::buffer_bounds;
+use super::{Pending, PendingKind, Process, Queue, QueueRef, ReadRequest, WorkPhase, refuse};
+use crate::handle::SlotReservation;
+use crate::thread::ThreadContext;
 use crate::vfs;
 use crate::wait::WaitQueue;
 
@@ -15,7 +15,7 @@ const WORK_DEPTH: usize = 8;
 
 #[derive(Debug)]
 pub(super) struct Work {
-    ring: Arc<Queue>,
+    queue: QueueRef,
     pending: usize,
     expected: Pending,
     tag: WorkTag,
@@ -56,7 +56,7 @@ enum WorkClaim {
 
 #[derive(Debug)]
 struct WorkKey {
-    ring: Arc<Queue>,
+    queue: QueueRef,
     pending: usize,
     expected: Pending,
     tag: WorkTag,
@@ -178,7 +178,11 @@ impl FileWorkQueue {
                 let state = self.state.lock_leaf();
                 state.front().map(Work::key)
             }?;
-            match key.ring.begin_work(&key) {
+            let claim = key
+                .queue
+                .hold()
+                .map_or(WorkClaim::Stale, |queue| queue.begin_work(&key));
+            match claim {
                 WorkClaim::Retry => return None,
                 WorkClaim::Stale => {
                     let mut state = self.state.lock_leaf();
@@ -202,12 +206,10 @@ impl FileWorkQueue {
         }
     }
 
-    pub(super) fn remove(&self, ring: &Queue, pending: usize, id: u64) -> Option<Work> {
+    pub(super) fn remove(&self, queue: QueueRef, pending: usize, id: u64) -> Option<Work> {
         let mut state = self.state.lock_leaf();
         let work = state.remove(|work| {
-            core::ptr::eq(work.ring.as_ref(), ring)
-                && work.pending == pending
-                && work.expected.id == id
+            work.queue == queue && work.pending == pending && work.expected.id == id
         });
         self.queued.store(state.len, Ordering::Release);
         work
@@ -237,9 +239,9 @@ fn take_reap_request(requests: &AtomicUsize) -> bool {
 }
 
 impl Work {
-    fn open_at(ring: Arc<Queue>, pending: usize, expected: Pending, request: OpenRequest) -> Self {
+    fn open_at(queue: QueueRef, pending: usize, expected: Pending, request: OpenRequest) -> Self {
         Self {
-            ring,
+            queue,
             pending,
             expected,
             tag: WorkTag::OpenAt,
@@ -247,9 +249,9 @@ impl Work {
         }
     }
 
-    fn read(ring: Arc<Queue>, pending: usize, expected: Pending) -> Self {
+    fn read(queue: QueueRef, pending: usize, expected: Pending) -> Self {
         Self {
-            ring,
+            queue,
             pending,
             expected,
             tag: WorkTag::Read,
@@ -259,7 +261,7 @@ impl Work {
 
     fn key(&self) -> WorkKey {
         WorkKey {
-            ring: Arc::clone(&self.ring),
+            queue: self.queue,
             pending: self.pending,
             expected: self.expected,
             tag: self.tag,
@@ -267,14 +269,14 @@ impl Work {
     }
 
     fn matches(&self, key: &WorkKey) -> bool {
-        Arc::ptr_eq(&self.ring, &key.ring)
+        self.queue == key.queue
             && self.pending == key.pending
             && self.expected == key.expected
             && self.tag == key.tag
     }
 
-    fn remove_queued(self) {
-        let mut pending = self.ring.pending.lock_leaf();
+    fn remove_queued(self, queue: &Queue) {
+        let mut pending = queue.pending.lock_leaf();
         let Some(current) = pending.slots.get(self.pending).copied().flatten() else {
             panic!("refused file work lost its pending entry");
         };
@@ -300,9 +302,10 @@ impl RunningWork {
         request
     }
 
-    fn finish(self, status: u32, value: u64) {
+    // The queue outlives running work: its owner's teardown waits until the pending entry is gone.
+    fn finish(self, queue: &Queue, status: u32, value: u64) {
         let entry = {
-            let mut pending = self.work.ring.pending.lock_leaf();
+            let mut pending = queue.pending.lock_leaf();
             let Some(entry) = pending
                 .slots
                 .get_mut(self.work.pending)
@@ -318,31 +321,29 @@ impl RunningWork {
             *entry
         };
 
-        self.work
-            .ring
-            .settle_pending(self.work.pending, entry, status, value);
-        self.work.ring.served.fetch_add(1, Ordering::Release);
-        self.work.ring.waiters.wake_all();
+        queue.settle_pending(self.work.pending, entry, status, value);
+        queue.served.fetch_add(1, Ordering::Release);
+        queue.waiters.wake_all();
     }
 }
 
 impl Queue {
     pub(super) fn open_at(
-        self: &Arc<Self>,
+        &self,
+        process: Process<'_, '_>,
         submission: Submission,
-        table: &Arc<HandleTable>,
     ) -> Option<Completion> {
         let token = submission.token;
 
-        let Ok(reservation) = table.reserve_slot() else {
+        let Ok(reservation) = process.table_ref.reserve_slot() else {
             return Some(refuse(token, status::NO_HANDLE_SLOT));
         };
         let mut path = [0u8; MAX_PATH];
-        let Some(len) = self.read_data(submission.argument, submission.length, &mut path) else {
+        let Some(len) = self.read_data(&submission, &mut path) else {
             return Some(refuse(token, status::BAD_BUFFER));
         };
 
-        let Ok((object, held)) = table.resolve(submission.handle) else {
+        let Ok((object, held)) = process.table.resolve(process.context, submission.handle) else {
             return Some(refuse(token, status::BAD_HANDLE));
         };
         let Some(directory) = object.as_directory().copied() else {
@@ -356,7 +357,7 @@ impl Queue {
             return Some(refuse(token, status::NO_ROOM));
         };
         let work = Work::open_at(
-            Arc::clone(self),
+            process.here,
             pending,
             expected,
             OpenRequest {
@@ -368,20 +369,20 @@ impl Queue {
             },
         );
         if let Some(work) = FILE_WORK.submit(work) {
-            work.remove_queued();
+            work.remove_queued(self);
             return Some(refuse(token, status::NO_ROOM));
         }
         None
     }
 
     pub(super) fn read(
-        self: &Arc<Self>,
+        &self,
+        process: Process<'_, '_>,
         submission: Submission,
-        table: &Arc<HandleTable>,
     ) -> Option<Completion> {
         let token = submission.token;
 
-        let Ok((object, held)) = table.resolve(submission.handle) else {
+        let Ok((object, held)) = process.table.resolve(process.context, submission.handle) else {
             return Some(refuse(token, status::BAD_HANDLE));
         };
         let Some(file) = object.as_file().copied() else {
@@ -391,7 +392,7 @@ impl Queue {
             return Some(refuse(token, status::DENIED));
         }
 
-        let Some(bounds) = data_bounds(submission.argument, submission.length) else {
+        let Some(bounds) = buffer_bounds(&submission) else {
             return Some(refuse(token, status::BAD_BUFFER));
         };
 
@@ -407,9 +408,9 @@ impl Queue {
         let Some((pending, expected)) = self.defer_read(token, request) else {
             return Some(refuse(token, status::NO_ROOM));
         };
-        let work = Work::read(Arc::clone(self), pending, expected);
+        let work = Work::read(process.here, pending, expected);
         if let Some(work) = FILE_WORK.submit(work) {
-            work.remove_queued();
+            work.remove_queued(self);
             return Some(refuse(token, status::NO_ROOM));
         }
         None
@@ -496,7 +497,7 @@ fn collect_requested_reap() -> bool {
     )
 }
 
-fn work_forever(context: &mut crate::thread::ThreadContext, _: usize) {
+fn work_forever(context: &mut ThreadContext, _: usize) {
     let mut retry_reap = false;
     loop {
         if retry_reap {
@@ -510,7 +511,7 @@ fn work_forever(context: &mut crate::thread::ThreadContext, _: usize) {
             retry_reap = collect_requested_reap();
         }
         if let Some(work) = FILE_WORK.take() {
-            service(work);
+            service(context, work);
             continue;
         }
         // Queued work that `take` refused is being settled by a context this worker preempted.
@@ -526,7 +527,11 @@ fn work_forever(context: &mut crate::thread::ThreadContext, _: usize) {
     }
 }
 
-fn service(mut running: RunningWork) {
+fn service(context: &mut ThreadContext, mut running: RunningWork) {
+    // A queue that is gone took its pending entry with it, so there is nothing to complete.
+    let Some(queue) = running.work.queue.hold() else {
+        return;
+    };
     let (status, value) = match running.work.tag {
         WorkTag::Read => {
             assert!(
@@ -538,7 +543,7 @@ fn service(mut running: RunningWork) {
             match vfs::read(request.file, request.offset, &mut scratch[..request.wanted]) {
                 Ok(read) => {
                     assert!(
-                        running.work.ring.write_data(request.at, &scratch[..read]),
+                        queue.write_data(request.at, &scratch[..read]),
                         "a read bounded at admission did not fit the data area"
                     );
                     (status::OK, read as u64)
@@ -567,7 +572,7 @@ fn service(mut running: RunningWork) {
                         vfs::Error::NotADirectory | vfs::Error::NotFound => status::NO_ENTRY,
                         vfs::Error::Backend(_) | vfs::Error::NoVolume => status::IO,
                     };
-                    return running.finish(status, 0);
+                    return running.finish(&queue, status, 0);
                 }
             };
             let (produced, offered) = match node {
@@ -578,17 +583,17 @@ fn service(mut running: RunningWork) {
                 vfs::Node::Directory(directory) => (crate::object::directory(directory), held),
                 vfs::Node::Device(_) => {
                     drop(reservation);
-                    return running.finish(status::DENIED, 0);
+                    return running.finish(&queue, status::DENIED, 0);
                 }
             };
-            match reservation.install(produced, offered, offered) {
-                Ok(handle) => (status::OK, u64::from(handle)),
+            match reservation.install(context, produced, offered, offered) {
+                Ok(handle) => (status::OK, handle),
                 Err(_) => (status::DENIED, 0),
             }
         }
     };
 
-    running.finish(status, value);
+    running.finish(&queue, status, value);
 }
 
 // Far below a page, because the buffer is on a 32 KiB kernel stack.

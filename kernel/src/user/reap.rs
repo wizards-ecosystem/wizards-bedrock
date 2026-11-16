@@ -4,7 +4,8 @@ use wost::arch::current::task;
 use wost::sync::{Leaf, SpinLock};
 
 use super::{BOOTSTRAPS, Bootstrap, BootstrapAuthority, LAUNCHES};
-use crate::{info, queue, thread, warn};
+use crate::queue::{self, QueueRef};
+use crate::{info, thread, warn};
 
 #[derive(Debug)]
 enum ReclaimRefusal {
@@ -118,9 +119,17 @@ pub(crate) fn orphan(slot: usize) {
         #[cfg(feature = "selftest")]
         {
             let rites = LastRites {
-                table: bootstrap.table.identity_for_test(),
-                handles: bootstrap.table.live(),
-                served: bootstrap.ring.served_count(),
+                table: bootstrap.objects.table.identity_for_test(),
+                handles: bootstrap
+                    .objects
+                    .table
+                    .hold()
+                    .map_or(0, |(_, table)| table.live()),
+                served: bootstrap
+                    .objects
+                    .ring
+                    .hold()
+                    .map_or(0, |ring| ring.served_count()),
                 ending,
             };
             let mut rites_table = RITES.lock_leaf();
@@ -166,7 +175,7 @@ pub(crate) fn collect() -> CollectOutcome {
                 return None;
             }
             let bootstrap = zombies.owners[slot].as_ref()?;
-            Some((slot, alloc::sync::Arc::clone(&bootstrap.ring)))
+            Some((slot, bootstrap.objects.ring))
         });
         if let Some((slot, _)) = found.as_ref() {
             zombies.settling[*slot] = true;
@@ -182,26 +191,28 @@ pub(crate) fn collect() -> CollectOutcome {
     };
 
     // Every outstanding operation completes while the zombie still owns the ring's pages.
-    ring.abandon();
-    if !ring.is_quiet() {
-        return retain_unsettled(slot, &ring);
+    let quiet = ring.hold().is_none_or(|queue| {
+        queue.abandon(ring);
+        queue.is_quiet()
+    });
+    if !quiet {
+        return retain_unsettled(slot, ring);
     }
-    let bootstrap = match take_settled(slot, &ring) {
+    let bootstrap = match take_settled(slot, ring) {
         Ok(bootstrap) => bootstrap,
         Err(outcome) => return outcome,
     };
-    drop(ring);
     settle(slot, bootstrap)
 }
 
-fn retain_unsettled(slot: usize, ring: &alloc::sync::Arc<queue::Queue>) -> CollectOutcome {
+fn retain_unsettled(slot: usize, ring: QueueRef) -> CollectOutcome {
     let broken = {
         let mut zombies = ZOMBIES.lock_leaf();
         let settling = zombies.settling.get(slot).copied().unwrap_or(false);
         let collecting = zombies.collecting.get(slot).copied().unwrap_or(false);
         let broken = match zombies.owners.get(slot).and_then(Option::as_ref) {
             None => Some("the unsettled zombie left its slot"),
-            Some(bootstrap) if !alloc::sync::Arc::ptr_eq(&bootstrap.ring, ring) => {
+            Some(bootstrap) if bootstrap.objects.ring != ring => {
                 Some("a zombie changed owners during settlement")
             }
             Some(_) if !settling || collecting => {
@@ -222,10 +233,7 @@ fn retain_unsettled(slot: usize, ring: &alloc::sync::Arc<queue::Queue>) -> Colle
 }
 
 // Taken out under the guard and reclaimed outside it, because reclaiming reaches the allocator.
-fn take_settled(
-    slot: usize,
-    ring: &alloc::sync::Arc<queue::Queue>,
-) -> Result<Bootstrap, CollectOutcome> {
+fn take_settled(slot: usize, ring: QueueRef) -> Result<Bootstrap, CollectOutcome> {
     let mut zombies = ZOMBIES.lock_leaf();
     let settling = zombies.settling.get(slot).copied().unwrap_or(false);
     let Some(room) = zombies.owners.get_mut(slot) else {
@@ -238,7 +246,7 @@ fn take_settled(
             CollectOutcome::Empty
         });
     };
-    if !alloc::sync::Arc::ptr_eq(&current.ring, ring) {
+    if current.objects.ring != ring {
         return Err(CollectOutcome::Retained);
     }
     if !settling {
@@ -253,24 +261,30 @@ fn take_settled(
 }
 
 fn settle(slot: usize, mut bootstrap: Bootstrap) -> CollectOutcome {
-    let retained = match reclaim(&mut bootstrap) {
-        Ok(()) => {
-            drop(bootstrap);
-            None
-        }
-        Err(refusal) => {
-            match refusal {
-                ReclaimRefusal::TaskRelease => {
-                    warn!("user: task release refused; the zombie remains owned");
-                }
-                ReclaimRefusal::Mapping(reason) => {
-                    warn!("user: mapping cleanup refused: {reason}; the zombie remains owned");
-                }
-                ReclaimRefusal::Tables(reason) => {
-                    warn!("user: table cleanup refused: {reason}; the zombie remains owned");
-                }
+    // A hold that outlived the queue's last operation refuses this once; the next collect retries.
+    let retained = if !bootstrap.objects.destroy() {
+        warn!("user: a table or ring is still borrowed; the zombie remains owned");
+        Some(bootstrap)
+    } else {
+        match reclaim(&mut bootstrap) {
+            Ok(()) => {
+                drop(bootstrap);
+                None
             }
-            Some(bootstrap)
+            Err(refusal) => {
+                match refusal {
+                    ReclaimRefusal::TaskRelease => {
+                        warn!("user: task release refused; the zombie remains owned");
+                    }
+                    ReclaimRefusal::Mapping(reason) => {
+                        warn!("user: mapping cleanup refused: {reason}; the zombie remains owned");
+                    }
+                    ReclaimRefusal::Tables(reason) => {
+                        warn!("user: table cleanup refused: {reason}; the zombie remains owned");
+                    }
+                }
+                Some(bootstrap)
+            }
         }
     };
     let outcome = if retained.is_some() {

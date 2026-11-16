@@ -9,8 +9,9 @@ use wost::arch::current::task;
 use wost::arch::current::{cpu, usercopy};
 
 use super::{BOOTSTRAPS, LAUNCHES, STACK_BYTES};
-use crate::handle::HandleTable;
-use crate::{info, queue, thread, warn};
+use crate::handle::TableRef;
+use crate::queue::QueueRef;
+use crate::{info, thread, warn};
 
 const ENTRY_STACK_BYTES: u64 = (entry::BYTES as u64 + 15) & !15;
 
@@ -61,7 +62,7 @@ pub(crate) fn call(context: &mut thread::ThreadContext, registers: &mut UserRegi
             }));
             thread::retire()
         }
-        Call::RingEnter => registers.set_return(serve_ring(slot)),
+        Call::RingEnter => registers.set_return(serve_ring(context, slot)),
         Call::RingWait => registers.set_return(wait_ring(context, slot)),
         Call::ThreadBase => {
             // Refused, not faulted: `wrmsr` of a non-canonical base is a `#GP` in kernel context.
@@ -82,9 +83,12 @@ pub(crate) fn call(context: &mut thread::ThreadContext, registers: &mut UserRegi
     }
 }
 
-fn serve_ring(slot: usize) -> u64 {
-    // Cloned out before serving: `serve` takes locks that `lock_leaf` forbids under `BOOTSTRAPS`.
-    let Some((ring, table)) = authority_of(slot) else {
+fn serve_ring(context: &mut thread::ThreadContext, slot: usize) -> u64 {
+    // Copied out before serving: `serve` takes locks that `lock_leaf` forbids under `BOOTSTRAPS`.
+    let Some((here, table)) = authority_of(slot) else {
+        return ENOSYS;
+    };
+    let Some(ring) = here.hold() else {
         return ENOSYS;
     };
 
@@ -93,26 +97,18 @@ fn serve_ring(slot: usize) -> u64 {
     let before = ring.served_count();
     // Due work completes before admission, so it never costs a new submission its slot.
     ring.expire(crate::time::now_ns());
-    ring.serve(&table);
+    ring.serve(context, here, table);
     ring.served_since(before) as u64
 }
 
-fn authority_of(
-    slot: usize,
-) -> Option<(
-    alloc::sync::Arc<queue::Queue>,
-    alloc::sync::Arc<HandleTable>,
-)> {
+fn authority_of(slot: usize) -> Option<(QueueRef, TableRef)> {
     let guard = BOOTSTRAPS.lock_leaf();
     let bootstrap = guard.get(slot).and_then(Option::as_ref)?;
-    Some((
-        alloc::sync::Arc::clone(&bootstrap.ring),
-        alloc::sync::Arc::clone(&bootstrap.table),
-    ))
+    Some((bootstrap.objects.ring, bootstrap.objects.table))
 }
 
 fn wait_ring(context: &mut thread::ThreadContext, slot: usize) -> u64 {
-    let Some((ring, _)) = authority_of(slot) else {
+    let Some(ring) = authority_of(slot).and_then(|(here, _)| here.hold()) else {
         return ENOSYS;
     };
 
@@ -143,7 +139,7 @@ pub(super) fn cross(context: &mut thread::ThreadContext, _: usize) {
         .is_err()
         || usercopy::copy_to_user(
             top + offset::BOOTSTRAP_HANDLE as u64,
-            &u64::from(launch.bootstrap_handle).to_le_bytes(),
+            &launch.bootstrap_handle.to_le_bytes(),
         )
         .is_err()
         || usercopy::copy_to_user(top + offset::OPERAND as u64, &launch.operand.to_le_bytes())

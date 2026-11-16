@@ -1,24 +1,73 @@
 pub(crate) mod registry;
 
 use core::fmt;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use entropy::NotReady;
+use handle_space::Mixer;
 use world_tree::NodeRef;
 use wost::mm::pool::{self, ArenaId, Refused};
+use wost::sync::{Leaf, SpinLock};
 
+use crate::arena::Pool;
+use crate::handle::Table;
+use crate::object::Channel;
+use crate::queue::Queue;
 use crate::thread::ThreadContext;
 use crate::{info, random, warn};
 
 // The kernel keeps 1/32 of each colour for its heap, page tables and threads.
 const MARGIN_DIVISOR: u32 = 32;
 
+const ROOT_HANDLES: u32 = 64;
+
 pub(crate) struct World {
     arena: ArenaId,
-    #[expect(
-        dead_code,
-        reason = "the values derived from it come with the handle tables"
-    )]
     key: [u8; 32],
+    handles: u32,
+    processes: AtomicU64,
+    pub(crate) tables: TablePool,
+    pub(crate) queues: QueuePool,
+    pub(crate) channels: ChannelPool,
+}
+
+pub(crate) type TablePool = Pool<Table, 16>;
+pub(crate) type QueuePool = Pool<Queue, 2>;
+pub(crate) type ChannelPool = Pool<Channel, 64>;
+
+impl World {
+    fn new(arena: ArenaId, key: [u8; 32], handles: u32) -> Self {
+        Self {
+            arena,
+            key,
+            handles,
+            processes: AtomicU64::new(0),
+            tables: Pool::new(),
+            queues: Pool::new(),
+            channels: Pool::new(),
+        }
+    }
+
+    pub(crate) const fn arena(&self) -> ArenaId {
+        self.arena
+    }
+
+    pub(crate) const fn handles(&self) -> u32 {
+        self.handles
+    }
+
+    // Derived once per process from the world key and the process's ordinal, then stored.
+    pub(crate) fn mixer(&self) -> Mixer {
+        let ordinal = self.processes.fetch_add(1, Ordering::Relaxed);
+        let [a, b, c, d, e, f, g, h, ..] = entropy::derive(&self.key, b"handle", ordinal);
+        Mixer::from_derived([a, b, c, d, e, f, g, h])
+    }
+}
+
+static ROOT: SpinLock<Leaf, Option<NodeRef>> = SpinLock::new(None);
+
+pub(crate) fn root() -> Option<NodeRef> {
+    *ROOT.lock_leaf()
 }
 
 // The key never reaches a log.
@@ -52,7 +101,10 @@ fn create_root(context: &mut ThreadContext) -> Result<NodeRef, RootRefusal> {
     let mut key = [0; 32];
     random::fill(&mut key).map_err(RootRefusal::Randomness)?;
     let arena = pool::reserve_root(context, MARGIN_DIVISOR).map_err(RootRefusal::Arena)?;
-    registry::publish(context, arena, World { arena, key }).map_err(RootRefusal::Arena)
+    let world = World::new(arena, key, ROOT_HANDLES);
+    let root = registry::publish(context, arena, world).map_err(RootRefusal::Arena)?;
+    *ROOT.lock_leaf() = Some(root);
+    Ok(root)
 }
 
 pub(crate) fn start_root(context: &mut ThreadContext) {

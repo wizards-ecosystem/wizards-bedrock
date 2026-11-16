@@ -6,6 +6,7 @@ use core::marker::PhantomData;
 
 use object_pool::Index;
 
+pub(crate) use directory::Pages;
 pub(crate) use pool::Pool;
 
 // Names an object in the same world by page ordinal, slot and generation, never by address.

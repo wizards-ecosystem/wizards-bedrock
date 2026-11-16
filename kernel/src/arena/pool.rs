@@ -44,14 +44,17 @@ impl<T, const N: usize> Pool<T, N> {
     }
 
     // Enough for every object to open a page and its directory path; inserts return the rest.
+    pub(crate) fn frames_for(objects: u32) -> Option<u32> {
+        let per_page = u16::try_from(N).ok()?;
+        frames_needed(objects, 0, per_page)?.checked_mul(1 + LEVELS)
+    }
+
     pub(crate) fn earmark(
         context: &mut ThreadContext,
         arena: ArenaId,
         objects: u32,
     ) -> Result<Earmark, Refused> {
-        let per_page = u16::try_from(N).map_err(|_| Refused::NoMemory)?;
-        let pages = frames_needed(objects, 0, per_page).ok_or(Refused::NoMemory)?;
-        let wanted = pages.checked_mul(1 + LEVELS).ok_or(Refused::NoMemory)?;
+        let wanted = Self::frames_for(objects).ok_or(Refused::NoMemory)?;
         frames::earmark(context, arena, wanted)
     }
 
@@ -86,11 +89,16 @@ impl<T, const N: usize> Pool<T, N> {
     }
 }
 
-#[expect(
-    dead_code,
-    reason = "strong counts and destruction start with the handle tables that hold objects"
-)]
 impl<T, const N: usize> Pool<T, N> {
+    // Drops one strong reference and hands back the object once none remain.
+    pub(crate) fn destroy(&self, local: Local<T>) -> Result<Option<T>, Removal> {
+        match self.release(local) {
+            Ok(Released::Held) => Ok(None),
+            Ok(Released::NowZero) | Err(Refusal::Condemned) => self.remove(local).map(Some),
+            Err(refusal) => Err(Removal::Refused(refusal)),
+        }
+    }
+
     pub(crate) fn acquire(&self, local: Local<T>) -> Result<(), Refusal> {
         let mut state = self.state.lock_leaf();
         let page = state
@@ -100,7 +108,7 @@ impl<T, const N: usize> Pool<T, N> {
         page.page.acquire(local.index().slot(), local.generation())
     }
 
-    pub(crate) fn release(&self, local: Local<T>) -> Result<Released, Refusal> {
+    fn release(&self, local: Local<T>) -> Result<Released, Refusal> {
         let mut state = self.state.lock_leaf();
         let page = state
             .directory
@@ -110,7 +118,7 @@ impl<T, const N: usize> Pool<T, N> {
     }
 
     // Keeps one empty page; any other page that empties closes, and its index keeps a floor.
-    pub(crate) fn remove(&self, local: Local<T>) -> Result<T, Removal> {
+    fn remove(&self, local: Local<T>) -> Result<T, Removal> {
         let (value, closed) = {
             let mut guard = self.state.lock_leaf();
             let state = &mut *guard;

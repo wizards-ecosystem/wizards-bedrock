@@ -1,12 +1,11 @@
-use alloc::sync::Arc;
-
 use native_abi::Rights;
 use native_abi::ring::{Completion, Opcode, Submission, status};
 
 use super::clocks::spins_until;
 use super::runs_until;
-use crate::handle::HandleTable;
-use crate::queue::Queue;
+use crate::handle::TestTable;
+use crate::queue::TestQueue;
+use crate::thread::ThreadContext;
 use crate::vfs;
 
 // What `xtask/src/image/corpus.rs` puts on the volume.
@@ -14,28 +13,29 @@ const SMALL_NAME: &[u8] = b"HELLO.TXT";
 const SMALL_CONTENT: &[u8] = b"the wizard's bedrock reads a disk\n";
 const DIRECTORY_NAME: &[u8] = b"DATA";
 
-pub(super) fn table(quota: usize) -> Option<Arc<HandleTable>> {
-    HandleTable::new(quota).ok().map(Arc::new)
-}
-
-pub(super) fn post(queue: &Queue, from: usize, submissions: &[Submission]) {
+pub(super) fn post(queue: &TestQueue, from: usize, submissions: &[Submission]) {
     for (index, submission) in (from..).zip(submissions) {
         queue.post_submission_for_test(index, *submission);
     }
     queue.publish_tail_for_test((from + submissions.len()) as u32);
 }
 
-fn served_by_the_worker(queue: &Arc<Queue>, table: &Arc<HandleTable>, count: usize) -> bool {
+fn served_by_the_worker(
+    context: &mut ThreadContext,
+    queue: &TestQueue,
+    table: &TestTable,
+    count: usize,
+) -> bool {
     let before = queue.served_count();
-    queue.serve(table) == 0 && runs_until(5_000, || queue.served_count() == before + count)
+    queue.serve(context, table) == 0 && runs_until(5_000, || queue.served_count() == before + count)
 }
 
-pub(super) fn every_submission_gets_exactly_one_completion() -> bool {
+pub(super) fn every_submission_gets_exactly_one_completion(context: &mut ThreadContext) -> bool {
     let (Some(queue), Some(runaway), Some(partial), Some(table)) = (
-        Queue::new(crate::timepage::root()),
-        Queue::new(crate::timepage::root()),
-        Queue::new(crate::timepage::root()),
-        table(8),
+        TestQueue::new(context),
+        TestQueue::new(context),
+        TestQueue::new(context),
+        TestTable::new(context, 8),
     ) else {
         return false;
     };
@@ -49,7 +49,7 @@ pub(super) fn every_submission_gets_exactly_one_completion() -> bool {
             Submission::simple(Opcode::Unknown(0xFFFF), 0x3333, 0),
         ],
     );
-    let once = queue.serve(&table) == 3 && queue.serve(&table) == 0;
+    let once = queue.serve(context, &table) == 3 && queue.serve(context, &table) == 0;
     let accounted = queue.outstanding() == 0 && queue.is_consistent();
 
     let echo = queue.read_completion(0);
@@ -73,11 +73,11 @@ pub(super) fn every_submission_gets_exactly_one_completion() -> bool {
     // Three written under a tail claiming four billion: unbounded, the kernel serves all three.
     post(&runaway, 0, &echoes);
     runaway.publish_tail_for_test(u32::MAX);
-    let runaway_bounded = runaway.serve(&table) == 0 && runaway.outstanding() == 0;
+    let runaway_bounded = runaway.serve(context, &table) == 0 && runaway.outstanding() == 0;
 
     post(&partial, 0, &echoes);
     partial.publish_tail_for_test(1);
-    let only_published = partial.serve(&table) == 1
+    let only_published = partial.serve(context, &table) == 1
         && partial.read_completion(0).token == 0x5150
         && partial.outstanding() == 0
         && partial.is_consistent();
@@ -86,14 +86,17 @@ pub(super) fn every_submission_gets_exactly_one_completion() -> bool {
         && matched
         && runaway_bounded
         && only_published
-        && never_reaped_completions_are_not_overwritten(&table)
+        && never_reaped_completions_are_not_overwritten(context, &table)
 }
 
 // The program never moves its completion head, so the third round must wait rather than overwrite.
-fn never_reaped_completions_are_not_overwritten(table: &Arc<HandleTable>) -> bool {
+fn never_reaped_completions_are_not_overwritten(
+    context: &mut ThreadContext,
+    table: &TestTable,
+) -> bool {
     const ROUND: usize = 8;
 
-    let Some(queue) = Queue::new(crate::timepage::root()) else {
+    let Some(queue) = TestQueue::new(context) else {
         return false;
     };
     let round = |first: usize| -> [Submission; ROUND] {
@@ -102,11 +105,11 @@ fn never_reaped_completions_are_not_overwritten(table: &Arc<HandleTable>) -> boo
         })
     };
     post(&queue, 0, &round(0));
-    let first = queue.serve(table) == ROUND;
+    let first = queue.serve(context, table) == ROUND;
     post(&queue, ROUND, &round(ROUND));
-    let second = queue.serve(table) == ROUND;
+    let second = queue.serve(context, table) == ROUND;
     post(&queue, 2 * ROUND, &round(2 * ROUND));
-    let refused = queue.serve(table) == 0;
+    let refused = queue.serve(context, table) == 0;
 
     let kept = (0..2 * ROUND).all(|slot| {
         let completion = queue.read_completion(slot);
@@ -115,26 +118,28 @@ fn never_reaped_completions_are_not_overwritten(table: &Arc<HandleTable>) -> boo
     first && second && refused && kept && queue.outstanding() == 0 && queue.is_consistent()
 }
 
-pub(super) fn a_word_that_does_not_fit_is_refused_rather_than_truncated() -> bool {
+pub(super) fn a_word_that_does_not_fit_is_refused_rather_than_truncated(
+    context: &mut ThreadContext,
+) -> bool {
     if !crate::time::is_calibrated() {
         return false;
     }
-    let (Some(queue), Some(table)) = (Queue::new(crate::timepage::root()), table(8)) else {
+    let (Some(queue), Some(table)) = (TestQueue::new(context), TestTable::new(context, 8)) else {
         return false;
     };
     let full = Rights::UNIVERSAL;
-    let Ok(source) = table.insert(crate::object::bootstrap_identity(), full) else {
+    let Ok(source) = table.insert_channel(context, full) else {
         return false;
     };
     let Some((widened, cancelled)) =
-        serve_an_unfit_rights_word_and_token(&queue, &table, source, full)
+        serve_an_unfit_rights_word_and_token(context, &queue, &table, source, full)
     else {
         return false;
     };
-    let Some(file) = open_the_small_file_in(&queue, &table, 3) else {
+    let Some(file) = open_the_small_file_in(context, &queue, &table, 3) else {
         return false;
     };
-    let Some((at_max, past)) = read_past_every_file(&queue, &table, file) else {
+    let Some((at_max, past)) = read_past_every_file(context, &queue, &table, file) else {
         return false;
     };
 
@@ -155,9 +160,10 @@ pub(super) fn a_word_that_does_not_fit_is_refused_rather_than_truncated() -> boo
 }
 
 fn serve_an_unfit_rights_word_and_token(
-    queue: &Arc<Queue>,
-    table: &Arc<HandleTable>,
-    source: u32,
+    context: &mut ThreadContext,
+    queue: &TestQueue,
+    table: &TestTable,
+    source: u64,
     full: Rights,
 ) -> Option<(Completion, Completion)> {
     // A valid low half under an invalid high half: a cast reads the low half, `try_from` refuses.
@@ -174,7 +180,7 @@ fn serve_an_unfit_rights_word_and_token(
             Submission::simple(Opcode::Timer, 0xDEAD, 3_600_000_000_000),
         ],
     );
-    if queue.serve(table) != 1 {
+    if queue.serve(context, table) != 1 {
         return None;
     }
     let widened = queue.read_completion(0);
@@ -188,41 +194,43 @@ fn serve_an_unfit_rights_word_and_token(
             (1u64 << 32) | 0xDEAD,
         )],
     );
-    if queue.serve(table) != 1 {
+    if queue.serve(context, table) != 1 {
         return None;
     }
     Some((widened, queue.read_completion(1)))
 }
 
 fn read_past_every_file(
-    queue: &Arc<Queue>,
-    table: &Arc<HandleTable>,
-    file: u32,
+    context: &mut ThreadContext,
+    queue: &TestQueue,
+    table: &TestTable,
+    file: u64,
 ) -> Option<(Completion, Completion)> {
     post(
         queue,
         4,
         &[
-            Submission::about(Opcode::Read, 0xC003, file, 512)
+            Submission::about(Opcode::Read, 0xC003, file, 0)
                 .offset(u64::from(u32::MAX))
-                .length(16),
-            Submission::about(Opcode::Read, 0xC004, file, 528)
+                .bytes(0, 512, 16),
+            Submission::about(Opcode::Read, 0xC004, file, 0)
                 .offset(1u64 << 32)
-                .length(16),
+                .bytes(0, 528, 16),
         ],
     );
-    served_by_the_worker(queue, table, 2)
+    served_by_the_worker(context, queue, table, 2)
         .then(|| (queue.read_completion(3), queue.read_completion(4)))
 }
 
 fn open_the_small_file_in(
-    queue: &Arc<Queue>,
-    table: &Arc<HandleTable>,
+    context: &mut ThreadContext,
+    queue: &TestQueue,
+    table: &TestTable,
     slot: usize,
-) -> Option<u32> {
+) -> Option<u64> {
     let object = crate::object::directory(vfs::root()?);
     let directory = table
-        .insert(object, Rights::UNIVERSAL.union(Rights::TRAVERSE))
+        .insert(context, object, Rights::UNIVERSAL.union(Rights::TRAVERSE))
         .ok()?;
     if !queue.write_data_for_test(0, SMALL_NAME) {
         return None;
@@ -230,27 +238,38 @@ fn open_the_small_file_in(
     post(
         queue,
         slot,
-        &[Submission::about(Opcode::OpenAt, 0x0F11, directory, 0).length(SMALL_NAME.len() as u32)],
+        &[
+            Submission::about(Opcode::OpenAt, 0x0F11, directory, 0).bytes(
+                0,
+                0,
+                SMALL_NAME.len() as u32,
+            ),
+        ],
     );
-    if !served_by_the_worker(queue, table, 1) {
+    if !served_by_the_worker(context, queue, table, 1) {
         return None;
     }
     let completion = queue.read_completion(2);
-    (completion.status == status::OK).then_some(completion.value as u32)
+    (completion.status == status::OK).then_some(completion.value)
 }
 
-pub(super) fn opening_a_node_does_not_restore_universal_rights() -> bool {
+pub(super) fn opening_a_node_does_not_restore_universal_rights(
+    context: &mut ThreadContext,
+) -> bool {
     const DIRECTORY_AT: u64 = 64;
     const READ_AT: u64 = 128;
 
-    let (Some(queue), Some(table), Some(root)) =
-        (Queue::new(crate::timepage::root()), table(8), vfs::root())
-    else {
+    let (Some(queue), Some(table), Some(root)) = (
+        TestQueue::new(context),
+        TestTable::new(context, 8),
+        vfs::root(),
+    ) else {
         return false;
     };
     let (Ok(walkable), Ok(universal)) = (
-        table.insert(crate::object::directory(root), Rights::TRAVERSE),
+        table.insert(context, crate::object::directory(root), Rights::TRAVERSE),
         table.insert(
+            context,
             crate::object::directory(root),
             Rights::UNIVERSAL
                 .union(Rights::TRAVERSE)
@@ -268,13 +287,24 @@ pub(super) fn opening_a_node_does_not_restore_universal_rights() -> bool {
         &queue,
         0,
         &[
-            Submission::about(Opcode::OpenAt, 0xA771, walkable, 0).length(SMALL_NAME.len() as u32),
-            Submission::about(Opcode::OpenAt, 0xA772, walkable, DIRECTORY_AT)
-                .length(DIRECTORY_NAME.len() as u32),
-            Submission::about(Opcode::OpenAt, 0xA773, universal, 0).length(SMALL_NAME.len() as u32),
+            Submission::about(Opcode::OpenAt, 0xA771, walkable, 0).bytes(
+                0,
+                0,
+                SMALL_NAME.len() as u32,
+            ),
+            Submission::about(Opcode::OpenAt, 0xA772, walkable, 0).bytes(
+                0,
+                DIRECTORY_AT,
+                DIRECTORY_NAME.len() as u32,
+            ),
+            Submission::about(Opcode::OpenAt, 0xA773, universal, 0).bytes(
+                0,
+                0,
+                SMALL_NAME.len() as u32,
+            ),
         ],
     );
-    if !served_by_the_worker(&queue, &table, 3) {
+    if !served_by_the_worker(context, &queue, &table, 3) {
         return false;
     }
 
@@ -282,14 +312,14 @@ pub(super) fn opening_a_node_does_not_restore_universal_rights() -> bool {
     if opened.iter().any(|open| open.status != status::OK) {
         return false;
     }
-    let [file, subdirectory, universal_file] = opened.map(|open| open.value as u32);
-    let Ok((file_object, file_rights)) = table.resolve(file) else {
+    let [file, subdirectory, universal_file] = opened.map(|open| open.value);
+    let Ok((file_object, file_rights)) = table.resolve(context, file) else {
         return false;
     };
-    let Ok((directory, directory_rights)) = table.resolve(subdirectory) else {
+    let Ok((directory, directory_rights)) = table.resolve(context, subdirectory) else {
         return false;
     };
-    let Ok((_, universal_rights)) = table.resolve(universal_file) else {
+    let Ok((_, universal_rights)) = table.resolve(context, universal_file) else {
         return false;
     };
     let narrowed = file_object.as_file().is_some()
@@ -304,9 +334,9 @@ pub(super) fn opening_a_node_does_not_restore_universal_rights() -> bool {
     post(
         &queue,
         3,
-        &[Submission::about(Opcode::Read, 0xD200, file, READ_AT).length(16)],
+        &[Submission::about(Opcode::Read, 0xD200, file, 0).bytes(0, READ_AT, 16)],
     );
-    if !served_by_the_worker(&queue, &table, 1) {
+    if !served_by_the_worker(context, &queue, &table, 1) {
         return false;
     }
     let read = queue.read_completion(3);
@@ -323,17 +353,22 @@ pub(super) fn opening_a_node_does_not_restore_universal_rights() -> bool {
         && queue.abandon() == 0
 }
 
-pub(super) fn a_ring_operation_cannot_reach_past_its_rights_or_its_pages() -> bool {
-    let (Some(queue), Some(table), Some(root)) =
-        (Queue::new(crate::timepage::root()), table(8), vfs::root())
+pub(super) fn a_ring_operation_cannot_reach_past_its_rights_or_its_pages(
+    context: &mut ThreadContext,
+) -> bool {
+    let (Some(queue), Some(table), Some(root)) = (
+        TestQueue::new(context),
+        TestTable::new(context, 8),
+        vfs::root(),
+    ) else {
+        return false;
+    };
+    let Some((unwalkable, walkable, unreadable, readable)) =
+        reach_fixture(context, &queue, &table, root)
     else {
         return false;
     };
-    let Some((unwalkable, walkable, unreadable, readable)) = reach_fixture(&queue, &table, root)
-    else {
-        return false;
-    };
-    let Some(refused) = opens_are_refused(&queue, &table, unwalkable, walkable) else {
+    let Some(refused) = opens_are_refused(context, &queue, &table, unwalkable, walkable) else {
         return false;
     };
 
@@ -341,12 +376,12 @@ pub(super) fn a_ring_operation_cannot_reach_past_its_rights_or_its_pages() -> bo
         &queue,
         4,
         &[
-            Submission::about(Opcode::Read, 0xD5, unreadable, 0).length(16),
-            Submission::about(Opcode::Read, 0xD6, unreadable, 4090).length(16),
-            Submission::about(Opcode::Read, 0xD7, readable, 4090).length(16),
+            Submission::about(Opcode::Read, 0xD5, unreadable, 0).bytes(0, 0, 16),
+            Submission::about(Opcode::Read, 0xD6, unreadable, 0).bytes(0, 4090, 16),
+            Submission::about(Opcode::Read, 0xD7, readable, 0).bytes(0, 4090, 16),
         ],
     );
-    let served = queue.serve(&table) == 3;
+    let served = queue.serve(context, &table) == 3;
     let denied = queue.read_completion(4).status == status::DENIED
         && queue.read_completion(5).status == status::DENIED
         && queue.read_completion(6).status == status::BAD_BUFFER;
@@ -356,18 +391,21 @@ pub(super) fn a_ring_operation_cannot_reach_past_its_rights_or_its_pages() -> bo
 }
 
 fn reach_fixture(
-    queue: &Arc<Queue>,
-    table: &Arc<HandleTable>,
+    context: &mut ThreadContext,
+    queue: &TestQueue,
+    table: &TestTable,
     root: vfs::Directory,
-) -> Option<(u32, u32, u32, u32)> {
+) -> Option<(u64, u64, u64, u64)> {
     let unwalkable = table
         .insert(
+            context,
             crate::object::directory(root),
             Rights::UNIVERSAL.union(Rights::ENUMERATE),
         )
         .ok()?;
     let walkable = table
         .insert(
+            context,
             crate::object::directory(root),
             Rights::UNIVERSAL.union(Rights::TRAVERSE),
         )
@@ -381,10 +419,11 @@ fn reach_fixture(
         return None;
     };
     let unreadable = table
-        .insert(crate::object::file(file), Rights::UNIVERSAL)
+        .insert(context, crate::object::file(file), Rights::UNIVERSAL)
         .ok()?;
     let readable = table
         .insert(
+            context,
             crate::object::file(file),
             Rights::UNIVERSAL.union(Rights::READ),
         )
@@ -393,10 +432,11 @@ fn reach_fixture(
 }
 
 fn opens_are_refused(
-    queue: &Arc<Queue>,
-    table: &Arc<HandleTable>,
-    unwalkable: u32,
-    walkable: u32,
+    context: &mut ThreadContext,
+    queue: &TestQueue,
+    table: &TestTable,
+    unwalkable: u64,
+    walkable: u64,
 ) -> Option<bool> {
     let asked = [
         (
@@ -414,11 +454,11 @@ fn opens_are_refused(
         queue,
         0,
         &asked.map(|(token, handle, at, length, _)| {
-            Submission::about(Opcode::OpenAt, token, handle, at).length(length)
+            Submission::about(Opcode::OpenAt, token, handle, 0).bytes(0, at, length)
         }),
     );
     let served_before = queue.served_count();
-    if queue.serve(table) != asked.len() - 1
+    if queue.serve(context, table) != asked.len() - 1
         || !runs_until(5_000, || {
             queue.served_count() == served_before + asked.len()
         })
@@ -434,14 +474,16 @@ fn opens_are_refused(
     }))
 }
 
-pub(super) fn an_operation_completes_after_its_deadline_and_only_once() -> bool {
+pub(super) fn an_operation_completes_after_its_deadline_and_only_once(
+    context: &mut ThreadContext,
+) -> bool {
     const DELAY_NS: u64 = 2_000_000;
     const HOUR_NS: u64 = 3_600_000_000_000;
 
     if !crate::time::is_calibrated() {
         return false;
     }
-    let (Some(queue), Some(table)) = (Queue::new(crate::timepage::root()), table(8)) else {
+    let (Some(queue), Some(table)) = (TestQueue::new(context), TestTable::new(context, 8)) else {
         return false;
     };
 
@@ -455,7 +497,7 @@ pub(super) fn an_operation_completes_after_its_deadline_and_only_once() -> bool 
             Submission::simple(Opcode::Timer, 0xA1, HOUR_NS),
         ],
     );
-    let deferred = queue.serve(&table) == 0 && queue.in_flight() == 3;
+    let deferred = queue.serve(context, &table) == 0 && queue.in_flight() == 3;
     let Some(deadline) = queue.earliest_deadline() else {
         return false;
     };
@@ -477,7 +519,7 @@ pub(super) fn an_operation_completes_after_its_deadline_and_only_once() -> bool 
         3,
         &[Submission::simple(Opcode::Cancel, 0xC0DE, 0xDEAD)],
     );
-    let cancelled = queue.serve(&table) == 1;
+    let cancelled = queue.serve(context, &table) == 1;
     let target = queue.read_completion(1);
     let canceller = queue.read_completion(2);
     let separate = cancelled
@@ -492,7 +534,8 @@ pub(super) fn an_operation_completes_after_its_deadline_and_only_once() -> bool 
         4,
         &[Submission::simple(Opcode::Cancel, 0xC0DF, 0xDEAD)],
     );
-    let again = queue.serve(&table) == 1 && queue.read_completion(3).status == status::NOT_FOUND;
+    let again =
+        queue.serve(context, &table) == 1 && queue.read_completion(3).status == status::NOT_FOUND;
 
     // The process-teardown path ends what is left, once.
     let abandoned = queue.abandon() == 1;

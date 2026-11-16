@@ -25,7 +25,7 @@ impl<'authority> DirectSpan<'authority> {
     pub(super) fn from_shared(allocation: &'authority SharedAllocation) -> Option<Self> {
         // SAFETY: `SharedAllocation` retains its segment for this borrow and
         // permits byte access specifically through volatile operations.
-        unsafe { Self::from_proven_run(allocation.0.address(), allocation.0.len()) }
+        unsafe { Self::from_proven_run(allocation.address(), allocation.len()) }
     }
 
     /// # Safety

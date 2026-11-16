@@ -183,12 +183,11 @@ Phase 7:
   `kernel/src/user/reap.rs`, `kernel/src/user/construction.rs`), with no parent or child
   observation; an exit status reaches only the boot log. Phase 7 needs a counted process object
   owned by its world.
-- The root world exists with its arena, record and object pools (`kernel/src/world.rs`,
-  `kernel/src/arena.rs`), but every process, handle table and ring still comes from one heap
-  that never shrinks and one handle arena behind one lock (`wost/src/mm/heap.rs`,
-  `kernel/src/handle.rs`), so handle values reveal the shared arena's allocation order across
-  processes. Worlds need a handle table per process carved from their arena, and user page tables
-  taken as arena table frames.
+- The root world exists with its arena, record and object pools, and each process's handle table
+  and ring live in it (`kernel/src/world.rs`, `kernel/src/handle.rs`, `kernel/src/queue.rs`), but
+  processes, threads and address spaces still come from the kernel heap and frames, and every
+  process belongs to the root world. Worlds need process objects in their own arenas, and user page
+  tables taken as arena table frames.
 - Frame ownership lives in a page-table software bit, nothing changes a permission or unmaps a
   shared mapping, and spawn takes each segment as one contiguous run with no quota
   (`wost/src/arch/x86_64/paging.rs`, `kernel/src/user/load.rs`). Memory objects need objects that
