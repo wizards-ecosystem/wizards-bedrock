@@ -85,7 +85,6 @@ The design aims past the current state of the art at each layer:
 ## 3. Phase order
 
 ```text
-Review of the current hostile-input surfaces
   7  Processes, worlds and arenas          witness: init, supervisor, echo
   8  Multi-core                            witness: the same on 2 and 4 CPUs
      milestone 1: arenas, handles and memory maps; locking modelled
@@ -178,8 +177,6 @@ chosen later.
 ## 7. Where the code stands
 
 What exists today that each phase must replace or build on; `docs/architecture.md` has the detail.
-Before Phase 7, the hostile inputs, cleanup paths and safe `wost` exports are reviewed
-against the current source.
 
 Phase 7:
 - A process is a thread slot in global by-slot arrays (`kernel/src/user.rs`,
@@ -219,6 +216,12 @@ Phase 7:
   issues `RingWait` or `ThreadBase`, or executes `syscall`, so those witnesses must cover all
   three.
 - `task::prepare` issues no IBPB when it changes address space, which world isolation needs.
+- Collection searches zombies from slot 0, so one whose reclaim is refused blocks every later
+  one, and a refused loader rollback drops its ledger, so spawn cleanup then panics
+  (`kernel/src/user/reap.rs`, `kernel/src/user/load.rs`). Neither refusal has a known trigger.
+  Teardown of a process must never block another's and never panic.
+- `interrupt::answer` rewrites the saved `rax` of any live frame, a ring 0 one included
+  (`wost/src/arch/x86_64/interrupt.rs`). Only a ring 3 frame may be rewritten.
 
 Phase 8:
 - Every piece of processor state is a single global, there is no per-CPU base, and the GDT, TSS,
@@ -261,14 +264,16 @@ Phase 9:
   revoke that cannot be refused.
 - NVMe runs one command at a time with no reset path, maps each buffer per command with a global
   invalidation and holds the IOMMU lock across the wait (`kernel/src/nvme.rs`,
-  `kernel/src/nvme/io.rs`). A fenced driver needs per-core queues, long-lived mappings and a
+  `kernel/src/nvme/io.rs`). It maps the buffer before checking that a command may start and
+  ignores a failed unmap on that path. A fenced driver needs per-core queues, long-lived mappings and a
   bring-up a reset can rerun.
 
 Phase 10:
 - The NVMe path is read-only: no Identify Controller, PRP lists, Write, Flush, shutdown
   notification, status decoding or 4096-byte blocks (`libs/nvme`, `kernel/src/nvme/io.rs`).
 - The kernel parses FAT32 one sector per command at a fixed sector 2048 with no partition table, and
-  walks a file's chain from its first cluster on every read (`libs/fat32`, `kernel/src/fs.rs`). The
+  walks a file's chain from its first cluster on every read (`libs/fat32`, `kernel/src/fs.rs`), so
+  a program that picks a large `Read` offset holds the one worker for three device reads a cluster. The
   object store needs a partition table, a bounded block-range capability and extents over buffers
   mapped once.
 - The VFS, tmpfs, devfs and file worker run in the kernel (`kernel/src/vfs.rs`,
