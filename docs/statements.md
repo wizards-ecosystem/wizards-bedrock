@@ -123,3 +123,20 @@ against them. A statement changes only together with the code it governs.
   mapping or pin and every flush that covers its removed translations has completed.
 - **Loading.** A user thread starts only inside an executable mapping of a sealed executable object
   in its own address space. The kernel parses no executable format.
+
+## Channels
+
+- **Conservation.** A handle moved in a message is in exactly one place: the sender's table, one
+  inbox entry or the receiver's table. A refused send leaves every handle in the sender's table
+  with its value and rights.
+- **Order.** Each committed message is read once, in the order its endpoint committed it, or is
+  destroyed with the endpoint. Calls and messages share that order.
+- **Call.** Each call has exactly one outcome: a reply, abandoned, peer closed, cancelled or timed
+  out. A reply right names one call and succeeds at most once. A call the server received is never
+  reported as peer closed.
+- **Cost.** Nothing a world does allocates from another world's arena or lowers its free
+  reservation. An inbox is paid for by its holder when the endpoint is made, and a send to a full
+  inbox is refused and changes nothing. An endpoint moved in a message stays in its sender's arena
+  until the receiver reads it into its own.
+- **Donation.** While a server serves a synchronous call, its running time is charged to the
+  caller.
