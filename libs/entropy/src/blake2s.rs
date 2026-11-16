@@ -1,3 +1,5 @@
+use crate::Wipe;
+
 const BLOCK: usize = 64;
 
 const IV: [u32; 8] = [
@@ -24,17 +26,19 @@ const SCHEDULE: [[usize; 16]; 10] = [
     [10, 2, 8, 4, 7, 6, 1, 5, 15, 11, 9, 14, 3, 12, 13, 0],
 ];
 
+// The chaining value is kept as little-endian bytes, so the wipe hook can clear it.
 pub(crate) struct Blake2s {
-    state: [u32; 8],
+    state: [u8; 32],
     counter: u64,
-    buffer: [u8; BLOCK],
+    pub(crate) buffer: [u8; BLOCK],
     filled: usize,
+    wipe: Wipe,
 }
 
 impl Drop for Blake2s {
     fn drop(&mut self) {
-        self.state.fill(0);
-        self.buffer.fill(0);
+        (self.wipe)(&mut self.state);
+        (self.wipe)(&mut self.buffer);
     }
 }
 
@@ -51,24 +55,32 @@ fn mix(v: &mut [u32; 16], lanes: [usize; 4], x: u32, y: u32) {
 }
 
 impl Blake2s {
-    pub(crate) fn new() -> Self {
-        Self::with_key(&[])
+    pub(crate) fn new(wipe: Wipe) -> Self {
+        Self::with_key(&[], wipe)
     }
 
-    pub(crate) fn keyed(key: &[u8; 32]) -> Self {
-        Self::with_key(key)
+    pub(crate) fn keyed(key: &[u8; 32], wipe: Wipe) -> Self {
+        Self::with_key(key, wipe)
     }
 
-    fn with_key(key: &[u8]) -> Self {
-        let mut state = IV;
-        state[0] ^= 0x0101_0000 ^ ((key.len() as u32) << 8) ^ 32;
-        let mut buffer = [0u8; BLOCK];
-        buffer[..key.len()].copy_from_slice(key);
-        Self {
-            state,
+    fn with_key(key: &[u8], wipe: Wipe) -> Self {
+        let mut words = IV;
+        words[0] ^= 0x0101_0000 ^ ((key.len() as u32) << 8) ^ 32;
+        let mut hash = Self {
+            state: [0; 32],
             counter: 0,
-            buffer,
+            buffer: [0; BLOCK],
             filled: if key.is_empty() { 0 } else { BLOCK },
+            wipe,
+        };
+        hash.store_state(&words);
+        hash.buffer[..key.len()].copy_from_slice(key);
+        hash
+    }
+
+    fn store_state(&mut self, words: &[u32; 8]) {
+        for (bytes, word) in self.state.chunks_exact_mut(4).zip(words) {
+            bytes.copy_from_slice(&word.to_le_bytes());
         }
     }
 
@@ -86,15 +98,11 @@ impl Blake2s {
         }
     }
 
-    pub(crate) fn finalize(mut self) -> [u8; 32] {
+    pub(crate) fn finalize_into(mut self, out: &mut [u8; 32]) {
         self.counter = self.counter.wrapping_add(self.filled as u64);
         self.buffer[self.filled..].fill(0);
         self.compress(true);
-        let mut out = [0u8; 32];
-        for (bytes, word) in out.chunks_exact_mut(4).zip(self.state) {
-            bytes.copy_from_slice(&word.to_le_bytes());
-        }
-        out
+        out.copy_from_slice(&self.state);
     }
 
     fn compress(&mut self, last: bool) {
@@ -103,7 +111,9 @@ impl Blake2s {
             *word = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
         }
         let mut v = [0u32; 16];
-        v[..8].copy_from_slice(&self.state);
+        for (word, bytes) in v[..8].iter_mut().zip(self.state.chunks_exact(4)) {
+            *word = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+        }
         v[8..].copy_from_slice(&IV);
         v[12] ^= self.counter as u32;
         v[13] ^= (self.counter >> 32) as u32;
@@ -120,10 +130,16 @@ impl Blake2s {
             mix(&mut v, [2, 7, 8, 13], m[s[12]], m[s[13]]);
             mix(&mut v, [3, 4, 9, 14], m[s[14]], m[s[15]]);
         }
-        for (i, word) in self.state.iter_mut().enumerate() {
-            *word ^= v[i] ^ v[i + 8];
+        let mut state = [0u32; 8];
+        for (i, word) in state.iter_mut().enumerate() {
+            *word = v[i] ^ v[i + 8];
         }
+        for (word, bytes) in state.iter_mut().zip(self.state.chunks_exact(4)) {
+            *word ^= u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+        }
+        self.store_state(&state);
         m.fill(0);
         v.fill(0);
+        state.fill(0);
     }
 }

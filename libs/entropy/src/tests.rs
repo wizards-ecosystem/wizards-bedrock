@@ -14,6 +14,22 @@ fn counting_key() -> [u8; 32] {
     core::array::from_fn(|i| i as u8)
 }
 
+fn clear(bytes: &mut [u8]) {
+    bytes.fill(0);
+}
+
+fn block(key: &[u8; 32], counter: u32, nonce: &[u8; 12]) -> [u8; 64] {
+    let mut out = [0u8; 64];
+    chacha::block(key, counter, nonce, &mut out);
+    out
+}
+
+fn digest(hash: Blake2s) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    hash.finalize_into(&mut out);
+    out
+}
+
 #[test]
 fn chacha20_block_matches_rfc_8439_section_2_3_2() {
     let nonce = hex("00 00 00 09 00 00 00 4a 00 00 00 00");
@@ -21,13 +37,13 @@ fn chacha20_block_matches_rfc_8439_section_2_3_2() {
         "10f1e7e4 d13b5915 500fdd1f a32071c4 c7d1f4c7 33c06803 0422aa9a c3d46c4e
          d2826446 079faa09 14c2d705 d98b02a2 b5129cd1 de164eb9 cbd083e8 a2503c4e",
     );
-    assert_eq!(chacha::block(&counting_key(), 1, &nonce), expected, "block");
+    assert_eq!(block(&counting_key(), 1, &nonce), expected, "block");
 }
 
 #[test]
 fn chacha20_keystream_matches_rfc_8439_appendix_a_1_and_section_2_4_2() {
     let mut zero = [0u8; 128];
-    chacha::keystream(&[0; 32], &mut zero);
+    chacha::keystream(&[0; 32], &mut zero, clear);
     let expected: [u8; 128] = hex(
         "76b8e0ad a0f13d90 405d6ae5 5386bd28 bdd219b8 a08ded1a a836efcc 8b770dc7
          da41597c 5157488d 7724e03f b8d84a37 6a43b8f4 1518a11c c387b669 b2ee6586
@@ -46,7 +62,7 @@ fn chacha20_keystream_matches_rfc_8439_appendix_a_1_and_section_2_4_2() {
     );
     let mut cipher = [0u8; 114];
     for (i, piece) in plaintext.chunks(64).enumerate() {
-        let block = chacha::block(&counting_key(), i as u32 + 1, &nonce);
+        let block = block(&counting_key(), i as u32 + 1, &nonce);
         for (j, byte) in piece.iter().enumerate() {
             cipher[i * 64 + j] = byte ^ block[j];
         }
@@ -56,28 +72,28 @@ fn chacha20_keystream_matches_rfc_8439_appendix_a_1_and_section_2_4_2() {
 
 #[test]
 fn blake2s_matches_rfc_7693_appendix_b_and_a_keyed_vector() {
-    let mut abc = Blake2s::new();
+    let mut abc = Blake2s::new(clear);
     abc.update(b"abc");
     let expected: [u8; 32] =
         hex("508c5e8c327c14e2e1a72ba34eeb452f37458b209ed63a294d999b4c86675982");
-    assert_eq!(abc.finalize(), expected, "abc");
+    assert_eq!(digest(abc), expected, "abc");
 
-    let keyed = Blake2s::keyed(&counting_key());
+    let keyed = Blake2s::keyed(&counting_key(), clear);
     let expected: [u8; 32] =
         hex("48a8997da407876b3d79c0d92325ad3b89cbb754d86ab71aee047ad345fd2c49");
-    assert_eq!(keyed.finalize(), expected, "keyed empty");
+    assert_eq!(digest(keyed), expected, "keyed empty");
 
-    let mut keyed = Blake2s::keyed(&counting_key());
+    let mut keyed = Blake2s::keyed(&counting_key(), clear);
     keyed.update(&[0]);
     let expected: [u8; 32] =
         hex("40d15fee7c328830166ac3f918650f807e7e01e177258cdc0a39b11f598066f1");
-    assert_eq!(keyed.finalize(), expected, "keyed one byte");
+    assert_eq!(digest(keyed), expected, "keyed one byte");
 }
 
 #[test]
-fn no_output_before_256_credited_bits_and_every_output_replaces_the_key() {
-    let mut base = Base::default();
-    let mut local = Local::default();
+fn no_output_before_256_credited_bits_and_no_captured_state_reveals_an_earlier_output() {
+    let mut base = Base::new(clear);
+    let mut local = Local::new(clear);
     let mut out = [0u8; 80];
 
     assert!(!base.add_seed_word(0), "zero is rejected");
@@ -101,9 +117,24 @@ fn no_output_before_256_credited_bits_and_every_output_replaces_the_key() {
     assert_eq!(local.fill(&mut base, &mut out), Ok(()), "ready");
     assert_ne!(out, [0u8; 80], "output written");
 
-    let key_before = local.key.0;
+    // The confirmed break: the pool's pending bytes, hashed under the zero first key, opened the
+    // first local key and from it every output.
+    let mut first = Blake2s::new(clear);
+    first.update(&[0; 32]);
+    first.update(&base.pool.hash.buffer[..32]);
+    let first_key = digest(first);
+    let local_key: [u8; 32] = block(&first_key, 0, &ZERO_NONCE)[32..].try_into().unwrap();
+    let one_shot: [u8; 32] = block(&local_key, 0, &ZERO_NONCE)[32..].try_into().unwrap();
+    let mut recomputed = [0u8; 80];
+    chacha::keystream(&one_shot, &mut recomputed, clear);
+    assert_ne!(
+        recomputed, out,
+        "the captured pool recomputes the earlier output"
+    );
+
+    let key_before = local.key.bytes;
     let mut again = [0u8; 80];
     assert_eq!(local.fill(&mut base, &mut again), Ok(()), "second request");
-    assert_ne!(local.key.0, key_before, "key replaced");
+    assert_ne!(local.key.bytes, key_before, "key replaced");
     assert_ne!(again, out, "fresh output");
 }

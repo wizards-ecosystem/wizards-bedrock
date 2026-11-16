@@ -368,17 +368,24 @@ impl Queue {
         };
         let mut chunk = [0u8; RANDOM_CHUNK];
         let mut written = 0;
-        while written < len {
+        let refusal = loop {
+            if written == len {
+                break None;
+            }
             let round = &mut chunk[..RANDOM_CHUNK.min(len - written)];
             if crate::random::fill(round).is_err() {
-                return refuse(token, status::UNAVAILABLE);
+                break Some(status::UNAVAILABLE);
             }
             if !self.write_data(at + written, round) {
-                return refuse(token, status::BAD_BUFFER);
+                break Some(status::BAD_BUFFER);
             }
             written += round.len();
+        };
+        wost::mm::wipe(&mut chunk);
+        match refusal {
+            None => answer(token, len as u64),
+            Some(code) => refuse(token, code),
         }
-        answer(token, len as u64)
     }
 
     fn defer(&self, submission: Submission) -> Option<u64> {

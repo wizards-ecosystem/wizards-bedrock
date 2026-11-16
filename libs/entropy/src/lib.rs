@@ -17,12 +17,26 @@ const ZERO_NONCE: [u8; 12] = [0; 12];
 // Keeps one keystream far below the 2^32 block counter limit.
 const MAX_STREAM: usize = 1 << 20;
 
-#[derive(Default)]
-struct Key([u8; 32]);
+// The kernel passes a volatile wipe, which this crate cannot write without unsafe.
+pub type Wipe = fn(&mut [u8]);
 
-impl Drop for Key {
+struct Secret<const N: usize> {
+    bytes: [u8; N],
+    wipe: Wipe,
+}
+
+impl<const N: usize> Secret<N> {
+    const fn zero(wipe: Wipe) -> Self {
+        Self {
+            bytes: [0; N],
+            wipe,
+        }
+    }
+}
+
+impl<const N: usize> Drop for Secret<N> {
     fn drop(&mut self) {
-        self.0.fill(0);
+        (self.wipe)(&mut self.bytes);
     }
 }
 
@@ -37,11 +51,10 @@ impl Pool {
         self.credited = self.credited.saturating_add(bits);
     }
 
-    fn extract(&mut self) -> [u8; 32] {
-        let digest = mem::replace(&mut self.hash, Blake2s::new()).finalize();
-        self.hash.update(&digest);
+    // The pool restarts empty, so nothing it keeps reaches the key this digest makes.
+    fn extract(&mut self, digest: &mut Secret<32>) {
+        mem::replace(&mut self.hash, Blake2s::new(digest.wipe)).finalize_into(&mut digest.bytes);
         self.credited = 0;
-        digest
     }
 }
 
@@ -57,26 +70,11 @@ impl fmt::Display for NotReady {
 impl core::error::Error for NotReady {}
 
 pub struct Base {
-    key: Key,
+    key: Secret<32>,
     pool: Pool,
     previous_word: Option<u64>,
     generation: u64,
     reseeded_at_ns: u64,
-}
-
-impl Default for Base {
-    fn default() -> Self {
-        Self {
-            key: Key::default(),
-            pool: Pool {
-                hash: Blake2s::new(),
-                credited: 0,
-            },
-            previous_word: None,
-            generation: 0,
-            reseeded_at_ns: 0,
-        }
-    }
 }
 
 impl fmt::Debug for Base {
@@ -86,6 +84,20 @@ impl fmt::Debug for Base {
 }
 
 impl Base {
+    #[must_use]
+    pub fn new(wipe: Wipe) -> Self {
+        Self {
+            key: Secret::zero(wipe),
+            pool: Pool {
+                hash: Blake2s::new(wipe),
+                credited: 0,
+            },
+            previous_word: None,
+            generation: 0,
+            reseeded_at_ns: 0,
+        }
+    }
+
     #[must_use]
     pub fn add_seed_word(&mut self, word: u64) -> bool {
         let repeated = self.previous_word == Some(word);
@@ -103,20 +115,23 @@ impl Base {
 
     #[must_use]
     pub fn reseed(&mut self, now_ns: u64) -> bool {
-        let first = self.generation == 0;
-        let due = first || now_ns.saturating_sub(self.reseeded_at_ns) >= RESEED_INTERVAL_NS;
-        if !due || self.pool.credited < READY_BITS {
+        if !self.is_due(now_ns) || self.pool.credited < READY_BITS {
             return false;
         }
-        let mut digest = self.pool.extract();
-        let mut next = Blake2s::new();
-        next.update(&self.key.0);
-        next.update(&digest);
-        self.key.0 = next.finalize();
-        digest.fill(0);
+        let mut digest = Secret::zero(self.key.wipe);
+        self.pool.extract(&mut digest);
+        let mut next = Blake2s::new(self.key.wipe);
+        next.update(&self.key.bytes);
+        next.update(&digest.bytes);
+        next.finalize_into(&mut self.key.bytes);
         self.generation += 1;
         self.reseeded_at_ns = now_ns;
         true
+    }
+
+    #[must_use]
+    pub const fn is_due(&self, now_ns: u64) -> bool {
+        self.generation == 0 || now_ns.saturating_sub(self.reseeded_at_ns) >= RESEED_INTERVAL_NS
     }
 
     #[must_use]
@@ -124,19 +139,17 @@ impl Base {
         self.generation != 0
     }
 
-    fn take_local_key(&mut self) -> Key {
-        let mut block = chacha::block(&self.key.0, 0, &ZERO_NONCE);
-        let mut local = Key::default();
-        self.key.0.copy_from_slice(&block[..32]);
-        local.0.copy_from_slice(&block[32..]);
-        block.fill(0);
-        local
+    fn rekey(&mut self, local: &mut Secret<32>) {
+        let mut block = Secret::<64>::zero(self.key.wipe);
+        chacha::block(&self.key.bytes, 0, &ZERO_NONCE, &mut block.bytes);
+        let (next, tail) = block.bytes.split_at(32);
+        self.key.bytes.copy_from_slice(next);
+        local.bytes.copy_from_slice(tail);
     }
 }
 
-#[derive(Default)]
 pub struct Local {
-    key: Key,
+    key: Secret<32>,
     generation: u64,
 }
 
@@ -147,12 +160,20 @@ impl fmt::Debug for Local {
 }
 
 impl Local {
+    #[must_use]
+    pub const fn new(wipe: Wipe) -> Self {
+        Self {
+            key: Secret::zero(wipe),
+            generation: 0,
+        }
+    }
+
     pub fn fill(&mut self, base: &mut Base, out: &mut [u8]) -> Result<(), NotReady> {
         if !base.is_ready() {
             return Err(NotReady);
         }
         if self.generation != base.generation {
-            self.key = base.take_local_key();
+            base.rekey(&mut self.key);
             self.generation = base.generation;
         }
         for chunk in out.chunks_mut(MAX_STREAM) {
@@ -162,25 +183,26 @@ impl Local {
     }
 }
 
-fn fill_erasing(key: &mut Key, out: &mut [u8]) {
-    let mut block = chacha::block(&key.0, 0, &ZERO_NONCE);
-    let (next, tail) = block.split_at(32);
-    key.0.copy_from_slice(next);
+fn fill_erasing(key: &mut Secret<32>, out: &mut [u8]) {
+    let mut block = Secret::<64>::zero(key.wipe);
+    chacha::block(&key.bytes, 0, &ZERO_NONCE, &mut block.bytes);
+    let (next, tail) = block.bytes.split_at(32);
+    key.bytes.copy_from_slice(next);
     if let Some(bytes) = tail.get(..out.len()) {
         out.copy_from_slice(bytes);
     } else {
-        let mut one_shot = [0u8; 32];
-        one_shot.copy_from_slice(tail);
-        chacha::keystream(&one_shot, out);
-        one_shot.fill(0);
+        let mut one_shot = Secret::<32>::zero(key.wipe);
+        one_shot.bytes.copy_from_slice(tail);
+        chacha::keystream(&one_shot.bytes, out, key.wipe);
     }
-    block.fill(0);
 }
 
 #[must_use]
-pub fn derive(world_key: &[u8; 32], domain: &[u8], index: u64) -> [u8; 32] {
-    let mut hash = Blake2s::keyed(world_key);
+pub fn derive(world_key: &[u8; 32], domain: &[u8], index: u64, wipe: Wipe) -> [u8; 32] {
+    let mut hash = Blake2s::keyed(world_key, wipe);
     hash.update(&index.to_le_bytes());
     hash.update(domain);
-    hash.finalize()
+    let mut out = [0; 32];
+    hash.finalize_into(&mut out);
+    out
 }

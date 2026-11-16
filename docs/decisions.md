@@ -443,6 +443,14 @@ number and is added here, as one entry or as an amending id on the entry it chan
 - **D-503** Ring opcode 8 `Random` fills a range of the data page from the kernel generator and
   refuses `UNAVAILABLE` before it is seeded. It draws from the one kernel `Local` until a world
   key gives each world its own stream; a program never adds entropy, and no draw blocks.
+- **D-590** The generator's periodic reseed runs on the keyboard poller, the one kernel thread that
+  already wakes every 10 ms, rather than on a thread of its own or in the timer interrupt, which
+  may not read seed words for long. The call costs a clock read and a leaf lock until the
+  interval has passed.
+- **D-591** `libs/entropy` takes the wipe as a function pointer that each key-holding value stores
+  and calls when it drops, rather than a trait parameter on every type, because the kernel has
+  one wipe and the host tests another. BLAKE2s keeps its chaining value as bytes so the same wipe
+  clears it.
 - **D-240** An NVMe or VT-d wait is bounded by the clock, through `timebase::PollLimit` for NVMe,
   with a spin count only where no clock exists yet or the clock has stopped, because an iteration
   bound depends on processor speed.

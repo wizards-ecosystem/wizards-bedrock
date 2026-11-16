@@ -238,12 +238,13 @@ pub(crate) fn start_poller() {
     }
 }
 
-// The poller owns its interval: no periodic tick wakes it.
+// The poller owns its interval: no periodic tick wakes it. It also carries the generator's reseed.
 const POLL_INTERVAL_MS: u64 = 10;
 
 fn poll_forever(context: &mut ThreadContext, _: usize) {
     loop {
         poll();
+        crate::random::reseed_when_due();
         if crate::time::is_calibrated() && interrupt::are_enabled() {
             crate::thread::sleep_ms(context, POLL_INTERVAL_MS);
         } else {

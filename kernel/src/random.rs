@@ -2,6 +2,7 @@ use core::fmt;
 
 use entropy::{Base, Local, NotReady};
 use wost::arch::current::cpu::{self, SeedReader, SeedSource};
+use wost::mm;
 use wost::sync::{Leaf, SpinLock};
 
 use crate::time;
@@ -14,6 +15,7 @@ const SEED_WORDS: u32 = 64;
 struct Generator {
     base: Base,
     local: Local,
+    reader: SeedReader,
 }
 
 static GENERATOR: SpinLock<Leaf, Option<Generator>> = SpinLock::new(None);
@@ -38,21 +40,49 @@ impl fmt::Display for SeedError {
 
 impl core::error::Error for SeedError {}
 
+// Built in place, so no copy of the generator's state is left behind on a stack.
 pub(crate) fn seed() -> Result<SeedSource, SeedError> {
     let reader = SeedReader::detect().ok_or(SeedError::NoSource)?;
-    let mut base = Base::default();
-    base.mix_sample(cpu::timestamp());
-    let seeded = (0..SEED_WORDS).any(|_| {
-        reader.read().is_some_and(|word| base.add_seed_word(word)) && base.reseed(time::now_ns())
-    });
-    if !seeded {
-        return Err(SeedError::Starved(reader.source()));
+    let sample = cpu::timestamp();
+    GENERATOR
+        .lock_leaf()
+        .insert(Generator {
+            base: Base::new(mm::wipe),
+            local: Local::new(mm::wipe),
+            reader,
+        })
+        .base
+        .mix_sample(sample);
+    let now_ns = time::now_ns();
+    if (0..SEED_WORDS).any(|_| reader.read().is_some_and(|word| credit(word, now_ns))) {
+        Ok(reader.source())
+    } else {
+        Err(SeedError::Starved(reader.source()))
     }
-    *GENERATOR.lock_leaf() = Some(Generator {
-        base,
-        local: Local::default(),
-    });
-    Ok(reader.source())
+}
+
+// A failed read ends the attempt and keeps the current key.
+pub(crate) fn reseed_when_due() {
+    let now_ns = time::now_ns();
+    let Some(reader) = GENERATOR
+        .lock_leaf()
+        .as_ref()
+        .filter(|generator| generator.base.is_due(now_ns))
+        .map(|generator| generator.reader)
+    else {
+        return;
+    };
+    for word in (0..SEED_WORDS).map_while(|_| reader.read()) {
+        if credit(word, now_ns) {
+            return;
+        }
+    }
+}
+
+fn credit(word: u64, now_ns: u64) -> bool {
+    GENERATOR.lock_leaf().as_mut().is_some_and(|generator| {
+        generator.base.add_seed_word(word) && generator.base.reseed(now_ns)
+    })
 }
 
 pub(crate) fn is_ready() -> bool {

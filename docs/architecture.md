@@ -454,6 +454,15 @@ ready after 256 credited bits, and the boot log names the source that seeded it.
 refuses with `NotReady` before then, and every draw replaces the key that produced it before it
 returns. The ring's `Random` draws from it in 256-byte rounds.
 
+A reseed hashes the old key with the pool's digest into the new key, and the pool restarts empty,
+so the state holds no input to an earlier key. It happens once the pool holds 256 bits credited
+since the last reseed and 60 s have passed on the caller's clock. The keyboard poller calls
+`random::reseed_when_due` every 10 ms, which reads seed words only when the interval has passed
+and stops at the first failed read, keeping the current key. The generator is built in place under
+its lock, and every key, digest, keystream block and world key is cleared by `wost::mm::wipe`, a
+volatile store the optimiser cannot drop, when it goes out of use. `libs/entropy` receives the wipe
+as a function from the kernel, because it may not write `unsafe`.
+
 ## 6. The native ABI
 
 A program's external authority is its handle table. The data path is a submission and completion

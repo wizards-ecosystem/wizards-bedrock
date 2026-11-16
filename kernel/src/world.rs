@@ -6,6 +6,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use entropy::NotReady;
 use handle_space::Mixer;
 use world_tree::NodeRef;
+use wost::mm;
 use wost::mm::pool::{self, ArenaId, Refused};
 use wost::sync::{Leaf, SpinLock};
 
@@ -23,9 +24,17 @@ const MARGIN_DIVISOR: u32 = 32;
 
 const ROOT_HANDLES: u32 = 64;
 
+struct WorldKey([u8; 32]);
+
+impl Drop for WorldKey {
+    fn drop(&mut self) {
+        mm::wipe(&mut self.0);
+    }
+}
+
 pub(crate) struct World {
     arena: ArenaId,
-    key: [u8; 32],
+    key: WorldKey,
     handles: u32,
     ordinals: AtomicU64,
     spaces: AtomicU64,
@@ -45,10 +54,10 @@ pub(crate) type ObservationPool = Pool<Observation, 16>;
 pub(crate) type MemoryPool = Pool<MemoryObject, 16>;
 
 impl World {
-    fn new(arena: ArenaId, key: [u8; 32], handles: u32) -> Self {
+    fn new(arena: ArenaId, key: &WorldKey, handles: u32) -> Self {
         Self {
             arena,
-            key,
+            key: WorldKey(key.0),
             handles,
             ordinals: AtomicU64::new(0),
             spaces: AtomicU64::new(0),
@@ -72,14 +81,15 @@ impl World {
     // Derived once per process from the world key and the process's ordinal, then stored.
     pub(crate) fn mixer(&self) -> Mixer {
         let ordinal = self.ordinals.fetch_add(1, Ordering::Relaxed);
-        let [a, b, c, d, e, f, g, h, ..] = entropy::derive(&self.key, b"handle", ordinal);
+        let [a, b, c, d, e, f, g, h, ..] =
+            entropy::derive(&self.key.0, b"handle", ordinal, mm::wipe);
         Mixer::from_derived([a, b, c, d, e, f, g, h])
     }
 
     // Derived once per address space from the world key and the space's ordinal, then stored.
     pub(crate) fn placement_seed(&self) -> [u8; 32] {
         let ordinal = self.spaces.fetch_add(1, Ordering::Relaxed);
-        entropy::derive(&self.key, b"space", ordinal)
+        entropy::derive(&self.key.0, b"space", ordinal, mm::wipe)
     }
 }
 
@@ -117,10 +127,10 @@ impl fmt::Display for RootRefusal {
 impl core::error::Error for RootRefusal {}
 
 fn create_root(context: &mut ThreadContext) -> Result<NodeRef, RootRefusal> {
-    let mut key = [0; 32];
-    random::fill(&mut key).map_err(RootRefusal::Randomness)?;
+    let mut key = WorldKey([0; 32]);
+    random::fill(&mut key.0).map_err(RootRefusal::Randomness)?;
     let arena = pool::reserve_root(context, MARGIN_DIVISOR).map_err(RootRefusal::Arena)?;
-    let world = World::new(arena, key, ROOT_HANDLES);
+    let world = World::new(arena, &key, ROOT_HANDLES);
     let root = registry::publish(context, arena, world).map_err(RootRefusal::Arena)?;
     *ROOT.lock_leaf() = Some(root);
     Ok(root)

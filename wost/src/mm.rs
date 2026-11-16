@@ -11,7 +11,7 @@ pub mod slab;
 mod table;
 
 use core::fmt;
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering, compiler_fence};
 
 use frame_space::{Colours, FRAME_SIZE, FrameSpace, Pool, words_for};
 
@@ -191,6 +191,15 @@ pub fn direct_map() -> Option<DirectMap> {
         0 => None,
         offset => Some(DirectMap::new(offset)),
     }
+}
+
+// Volatile stores, so clearing key bytes that are about to fall out of use is never a dead store.
+pub fn wipe(bytes: &mut [u8]) {
+    for byte in bytes {
+        // SAFETY: `byte` is an exclusive reference, so the pointer is valid, aligned and unaliased.
+        unsafe { core::ptr::from_mut(byte).write_volatile(0) };
+    }
+    compiler_fence(Ordering::SeqCst);
 }
 
 pub(crate) fn force_unlock(panic: &PanicToken) {

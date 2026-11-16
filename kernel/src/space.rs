@@ -31,8 +31,9 @@ impl Placer {
         let total = pages.checked_add(guard)?;
         let mut samples = [0u64; PLACEMENT_SAMPLES as usize];
         for (index, sample) in (0u64..).zip(samples.iter_mut()) {
+            let index = self.counter.wrapping_add(index);
             let [a, b, c, d, e, f, g, h, ..] =
-                entropy::derive(&self.seed, b"placement", self.counter.wrapping_add(index));
+                entropy::derive(&self.seed, b"placement", index, wost::mm::wipe);
             *sample = u64::from_le_bytes([a, b, c, d, e, f, g, h]);
         }
         let placed = place(&self.placed, &samples, self.counter, range, total, 0).ok()?;
