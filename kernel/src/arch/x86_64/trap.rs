@@ -53,6 +53,9 @@ fn on_user_entry(context: &mut ThreadContext, registers: &mut UserRegisters<'_>,
         }
         UserEntry::Interrupted => thread::preempt(context),
     }
+    if crate::world::current_is_dying() {
+        thread::retire()
+    }
     thread::refresh_clock();
 }
 

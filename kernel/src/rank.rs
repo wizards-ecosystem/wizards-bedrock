@@ -5,6 +5,8 @@ pub(crate) enum Storage {}
 pub(crate) enum Iommu {}
 pub(crate) enum Console {}
 pub(crate) enum Serial {}
+// A pin of one foreign world, held for one bounded step before any object lock.
+pub(crate) enum Pin {}
 // One lock per kernel object, and at most one of them held at a time.
 pub(crate) enum Object {}
 pub(crate) enum Space {}
@@ -26,6 +28,10 @@ impl Level for Serial {
     const RANK: u8 = 4;
 }
 
+impl Level for Pin {
+    const RANK: u8 = 5;
+}
+
 impl Level for Object {
     const RANK: u8 = 6;
 }
@@ -42,6 +48,7 @@ impl_lock_after!(Unlocked => Storage);
 impl_lock_after!(Storage => Iommu);
 impl_lock_after!(Iommu => Console);
 impl_lock_after!(Console => Serial);
-impl_lock_after!(Serial => Object);
+impl_lock_after!(Serial => Pin);
+impl_lock_after!(Pin => Object);
 impl_lock_after!(Object => Space);
 impl_lock_after!(Space => Scheduler);

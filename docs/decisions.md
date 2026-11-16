@@ -624,6 +624,24 @@ number and is added here, as one entry or as an amending id on the entry it chan
   tables it unlinked through their first entry, which a stale walk reads as not present; a shared
   frame keeps its holder count and token in an object frame of its world, one more frame per
   shared page in the earmark; the entry enclave is checked by walking again instead of by lists.
+- **D-545** A world's descendant set is a fixed array of 63 entries inside its record, and the root's
+  descendants limit is 63, rather than a run of arena frames sized by the descriptor: the record
+  then stays one object page with no second structure to build or unwind, at the cost of at most
+  64 live worlds until the set needs to grow.
+- **D-546** A dying world's node generation is bumped and its registry entry freed before its arena
+  dissolves, not after: the frames lane frees the arena node only when the last chunk dissolves,
+  and a creation may take that node at once, so the entry must already be Free. A stale reference
+  fails on the generation either way. The `WorldKill` callers are completed from the copy the
+  teardown took before that last chunk.
+- **D-547** Teardown stops a world's threads through the existing thread table: it wakes each
+  waiting thread of the world, every thread of a world that is not Live retires at its next return
+  to ring 3 with its process killed, and the teardown waits until each is retired and off its
+  processor and the world's process pool is empty. Steps T3 to T6 release nothing of their own,
+  because the processes' own teardowns release their queues, tables and spaces and no mapper slot
+  or endpoint reaches another world yet.
+- **D-548** A pin is a `wost::sync::PinGuard` at rank `Pin`, below the object locks, plus a counted
+  slab hold of the world's record; object locks under it are taken as leaves at rank `Object`, so
+  no guard lends its token and no equal-rank pair lock is needed.
 - **D-481** The ring 3 witness is a cargo-built static `ET_EXEC` linked at `0x400000`, and the
   loader maps each segment at its `p_vaddr` with no per-program shift, because a position-dependent
   image holds absolute addresses that a shift breaks and the in-kernel loader takes no `ET_DYN`;

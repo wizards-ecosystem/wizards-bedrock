@@ -265,6 +265,51 @@ impl<L: Level, T> Drop for SpinLockGuard<'_, L, T> {
     }
 }
 
+// Interrupts off and the rank held for one bounded step, so no block or lower lock runs under it.
+pub struct PinGuard<L: Level> {
+    interrupts: InterruptState,
+    level: PhantomData<fn() -> L>,
+    stays_here: PhantomData<*const ()>,
+}
+
+impl<L: Level> PinGuard<L> {
+    pub fn take() -> Self {
+        let interrupts = interrupt::disable();
+        let percpu = percpu::current();
+        let held = percpu.held_ranks();
+        let Some(next) = admit(held, L::RANK, false) else {
+            panic!(
+                "lock order: pin rank {} taken while holding ranks {:#x}",
+                L::RANK,
+                held.bits()
+            );
+        };
+        percpu.set_held_ranks(next);
+        Self {
+            interrupts,
+            level: PhantomData,
+            stays_here: PhantomData,
+        }
+    }
+}
+
+impl<L: Level> fmt::Debug for PinGuard<L> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("PinGuard")
+    }
+}
+
+impl<L: Level> Drop for PinGuard<L> {
+    fn drop(&mut self) {
+        let percpu = percpu::current();
+        let Some(held) = release(percpu.held_ranks(), L::RANK, false) else {
+            panic!("lock order: pin rank {} released but not held", L::RANK);
+        };
+        percpu.set_held_ranks(held);
+        self.interrupts.restore_in_place();
+    }
+}
+
 pub struct ThreadLock<L, T> {
     locked: AtomicBool,
     level: PhantomData<fn() -> L>,

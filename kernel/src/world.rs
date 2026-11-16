@@ -1,13 +1,15 @@
+mod create;
 pub(crate) mod registry;
+mod teardown;
 
 use core::fmt;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use entropy::NotReady;
 use handle_space::Mixer;
-use world_tree::NodeRef;
+use world_tree::{Budgets, Descendants, Limits, NodeRef, Path, WorldState};
 use wost::mm;
-use wost::mm::pool::{self, ArenaId, FrameKind, Refused};
+use wost::mm::pool::{self, ArenaId, ColourMask, FrameKind, Refused};
 use wost::sync::{Leaf, SpinLock};
 
 use crate::arena::Pool;
@@ -17,14 +19,20 @@ use crate::object::Channel;
 use crate::process::{Observation, Process};
 use crate::queue::Queue;
 use crate::thread::ThreadContext;
-use crate::{info, random, timepage, warn};
+use crate::{info, random, rank, thread, timepage, warn};
+
+pub(crate) use create::{Refusal, Request, create};
+pub(crate) use teardown::{KillRefusal, inspect, kill, kill_for, step};
 
 // The kernel keeps 1/32 of each colour for its heap, page tables and threads.
 const MARGIN_DIVISOR: u32 = 32;
 
 const ROOT_HANDLES: u32 = 64;
 
-const ROOT_CODE_PAGES: u32 = 65536;
+const CODE_PAGES: u32 = 65536;
+
+// Every world but the root can be a descendant of the root, so this bounds the worlds alive at once.
+const DESCENDANTS: usize = 63;
 
 struct WorldKey([u8; 32]);
 
@@ -34,10 +42,28 @@ impl Drop for WorldKey {
     }
 }
 
+// A `WorldKill` call that completes once the world's frames are credited to its heir.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Killer {
+    pub(crate) queue: crate::queue::QueueRef,
+    pub(crate) pending: usize,
+    pub(crate) id: u64,
+}
+
+// Children join and leave `descendants` and debit `budgets` only under this lock.
+#[derive(Debug)]
+struct Life {
+    budgets: Budgets,
+    descendants: Descendants<DESCENDANTS>,
+}
+
 pub(crate) struct World {
     arena: ArenaId,
     key: WorldKey,
-    handles: u32,
+    path: Path,
+    mask: ColourMask,
+    limits: Limits,
+    life: SpinLock<rank::Object, Life>,
     ordinals: AtomicU64,
     spaces: AtomicU64,
     pub(crate) code: CodeQuota,
@@ -57,14 +83,20 @@ pub(crate) type ObservationPool = Pool<Observation, 16>;
 pub(crate) type MemoryPool = Pool<MemoryObject, 16>;
 
 impl World {
-    fn new(arena: ArenaId, key: &WorldKey, handles: u32) -> Self {
+    fn new(arena: ArenaId, key: &WorldKey, path: Path, mask: ColourMask, limits: Limits) -> Self {
         Self {
             arena,
             key: WorldKey(key.0),
-            handles,
+            path,
+            mask,
+            limits,
+            life: SpinLock::new(Life {
+                budgets: Budgets::new(limits),
+                descendants: Descendants::EMPTY,
+            }),
             ordinals: AtomicU64::new(0),
             spaces: AtomicU64::new(0),
-            code: CodeQuota::new(ROOT_CODE_PAGES),
+            code: CodeQuota::new(CODE_PAGES),
             tables: Pool::new(),
             queues: Pool::new(),
             channels: Pool::new(),
@@ -79,7 +111,17 @@ impl World {
     }
 
     pub(crate) const fn handles(&self) -> u32 {
-        self.handles
+        self.limits.handles
+    }
+
+    // Every object page goes back to the arena; a live object here outlived each of its holders.
+    fn release(self) {
+        self.tables.close();
+        self.queues.close();
+        self.channels.close();
+        self.processes.close();
+        self.observations.close();
+        self.memories.close();
     }
 
     // Derived once per process from the world key and the process's ordinal, then stored.
@@ -101,6 +143,12 @@ static ROOT: SpinLock<Leaf, Option<NodeRef>> = SpinLock::new(None);
 
 pub(crate) fn root() -> Option<NodeRef> {
     *ROOT.lock_leaf()
+}
+
+// A thread of a dying world never returns to ring 3, so its process ends killed.
+pub(crate) fn current_is_dying() -> bool {
+    thread::current_process()
+        .is_some_and(|process| registry::state(process.world()) != Some(WorldState::Live))
 }
 
 // The key never reaches a log.
@@ -134,8 +182,14 @@ fn create_root(context: &mut ThreadContext) -> Result<NodeRef, RootRefusal> {
     let mut key = WorldKey([0; 32]);
     random::fill(&mut key.0).map_err(RootRefusal::Randomness)?;
     let arena = pool::reserve_root(context, MARGIN_DIVISOR).map_err(RootRefusal::Arena)?;
-    let world = World::new(arena, &key, ROOT_HANDLES);
-    let root = registry::publish(context, arena, world).map_err(RootRefusal::Arena)?;
+    let limits = Limits {
+        descendants: DESCENDANTS as u32,
+        threads: thread::CAPACITY as u32,
+        handles: ROOT_HANDLES,
+    };
+    let world = World::new(arena, &key, Path::ROOT, pool::full_mask(), limits);
+    let root = registry::prepare(context, arena, world).map_err(RootRefusal::Arena)?;
+    registry::publish(root);
     *ROOT.lock_leaf() = Some(root);
     Ok(root)
 }

@@ -156,6 +156,10 @@ impl ProcessRef {
         }
     }
 
+    pub(crate) const fn world(self) -> NodeRef {
+        self.world
+    }
+
     pub(crate) fn hold(self) -> Option<(Hold<World>, Hold<Process>)> {
         let world = registry::hold(self.world)?;
         let process = world.processes.hold(self.process)?;

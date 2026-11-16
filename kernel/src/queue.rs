@@ -26,6 +26,7 @@ mod ring;
 #[cfg(feature = "selftest")]
 mod selftest;
 mod work;
+mod world;
 
 #[cfg(feature = "selftest")]
 pub(crate) use selftest::TestQueue;
@@ -61,11 +62,13 @@ enum PendingKind {
         request: ReadRequest,
         phase: WorkPhase,
     },
+    // Ends when the world's teardown credits its frames; a cancel ends only the wait.
+    Kill,
 }
 
 impl PendingKind {
     const fn is_cancellable(self) -> bool {
-        matches!(self, Self::Timer { .. }) || self.is_queued_work()
+        matches!(self, Self::Timer { .. } | Self::Kill) || self.is_queued_work()
     }
 
     const fn is_queued_work(self) -> bool {
@@ -83,7 +86,7 @@ impl PendingKind {
     const fn deadline(self) -> Option<u64> {
         match self {
             Self::Timer { deadline_ns } => Some(deadline_ns),
-            Self::OpenAt { .. } | Self::Read { .. } => None,
+            Self::OpenAt { .. } | Self::Read { .. } | Self::Kill => None,
         }
     }
 }
@@ -179,6 +182,22 @@ impl QueueRef {
 
     pub(crate) fn hold(self) -> Option<Hold<Queue>> {
         registry::hold(self.world)?.queues.hold(self.queue)
+    }
+
+    // The world teardown's answer to a `WorldKill`; an entry cancelled since is skipped by its id.
+    pub(crate) fn complete_kill(self, pending: usize, id: u64) {
+        let Some(queue) = self.hold() else {
+            return;
+        };
+        let Some((index, entry)) =
+            queue.begin_settlement(|entry| entry.id == id && entry.kind == PendingKind::Kill)
+        else {
+            return;
+        };
+        assert!(index == pending, "a kill's pending entry moved");
+        queue.settle_pending(index, entry, status::OK, 0);
+        queue.served.fetch_add(1, Ordering::Release);
+        queue.waiters.wake_all();
     }
 
     // The process's reference goes; `false` while a hold still borrows the queue.
@@ -309,6 +328,9 @@ impl Queue {
             Opcode::MemorySeal => memory::seal(process, submission),
             Opcode::Map => memory::map(process, submission),
             Opcode::Unmap => memory::unmap(process, submission),
+            Opcode::WorldCreate => world::create(self, process, submission),
+            Opcode::WorldKill => return world::kill(self, process, submission),
+            Opcode::WorldInspect => world::inspect(process, submission),
             Opcode::Unknown(_) => refuse(token, status::UNKNOWN_OPCODE),
         })
     }
@@ -562,7 +584,7 @@ impl Fields {
                 argument: true,
                 ..none
             },
-            Opcode::Close => Self {
+            Opcode::Close | Opcode::WorldKill | Opcode::WorldInspect => Self {
                 handle: true,
                 ..none
             },
@@ -616,6 +638,10 @@ impl Fields {
                 handle: true,
                 argument: true,
                 length: true,
+                ..none
+            },
+            Opcode::WorldCreate => Self {
+                buffer: true,
                 ..none
             },
             Opcode::Unknown(_) => return None,

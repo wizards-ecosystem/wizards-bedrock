@@ -1,16 +1,32 @@
+use core::ops::Deref;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-use world_tree::{NodeRef, WorldEvent, WorldState};
+use world_tree::{Admission, NodeRef, Path, Reclaimed, WorldEvent, WorldState};
 use wost::mm::pool::{self, ArenaId, Refused};
-use wost::mm::slab::Hold;
+use wost::mm::slab::{Hold, Removal};
+use wost::sync::{Leaf, PinGuard, SpinLock};
 
-use super::World;
+use super::{Killer, World};
 use crate::arena::{Local, Pool};
+use crate::rank;
 use crate::thread::ThreadContext;
 
 const CAPACITY: usize = pool::capacity() as usize;
 
 const STATE_SHIFT: u32 = 32;
+
+const PINS: u64 = (1 << STATE_SHIFT) - 1;
+
+// `WorldKill` calls waiting on one world at once; one more is refused `NO_ROOM`.
+const KILLERS: usize = 8;
+
+// What a teardown still needs once the record is gone: where the frames go and whose they are.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Remains {
+    pub(crate) path: Path,
+    pub(crate) arena: ArenaId,
+    pub(crate) killers: [Option<Killer>; KILLERS],
+}
 
 // One entry per arena node; a world's record is the only object in its node's record pool.
 #[derive(Debug)]
@@ -19,6 +35,8 @@ struct Entry {
     word: AtomicU64,
     record: AtomicU64,
     records: Pool<World, 1>,
+    remains: SpinLock<Leaf, Option<Remains>>,
+    killers: SpinLock<Leaf, [Option<Killer>; KILLERS]>,
 }
 
 impl Entry {
@@ -28,11 +46,30 @@ impl Entry {
             word: AtomicU64::new(encode(WorldState::Free)),
             record: AtomicU64::new(0),
             records: Pool::new(),
+            remains: SpinLock::new(None),
+            killers: SpinLock::new([None; KILLERS]),
         }
     }
 
     fn state(&self) -> WorldState {
-        decode(self.word.load(Ordering::Acquire))
+        decode(self.word.load(Ordering::SeqCst))
+    }
+
+    fn is(&self, node: NodeRef) -> bool {
+        self.generation.load(Ordering::SeqCst) == node.generation
+    }
+
+    fn record(&self) -> Local<World> {
+        Local::from_bits(self.record.load(Ordering::Relaxed))
+    }
+
+    // Moves the state and keeps the pin count; `false` unless the state was `from`.
+    fn turn(&self, from: WorldState, to: WorldState) -> bool {
+        self.word
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |word| {
+                (decode(word) == from).then_some(word & PINS | encode(to))
+            })
+            .is_ok()
     }
 }
 
@@ -57,42 +94,214 @@ const fn decode(word: u64) -> WorldState {
     }
 }
 
-// The record lands in the world's own arena before the entry turns Live, so a refusal leaves the
-// entry Free.
-pub(crate) fn publish(
+fn entry(node: NodeRef) -> Option<&'static Entry> {
+    ENTRIES.get(node.node as usize)
+}
+
+fn entry_of(arena: ArenaId) -> &'static Entry {
+    let Some(entry) = ENTRIES.get(arena.index() as usize) else {
+        panic!("arena node {} lies outside the registry", arena.index());
+    };
+    entry
+}
+
+// The record lands in the world's own arena while the entry stays Free, so nothing resolves it
+// before `publish`.
+pub(crate) fn prepare(
     context: &mut ThreadContext,
     arena: ArenaId,
     world: World,
 ) -> Result<NodeRef, Refused> {
-    let Some(entry) = ENTRIES.get(arena.index() as usize) else {
-        panic!("arena node {} lies outside the registry", arena.index());
-    };
-    let Ok(live) = entry.state().after(WorldEvent::Publish) else {
-        panic!(
-            "arena node {} was published while its world is not free",
-            arena.index()
-        );
-    };
+    let entry = entry_of(arena);
+    assert!(
+        entry.state().after(WorldEvent::Publish).is_ok(),
+        "arena node {} was prepared while its world is not free",
+        arena.index()
+    );
+    let path = world.path;
     let mut earmark = Pool::<World, 1>::earmark(context, arena, 1)?;
     let record = entry.records.insert(&mut earmark, world);
     entry.record.store(record.to_bits(), Ordering::Relaxed);
-    entry
-        .generation
-        .store(arena.generation(), Ordering::Relaxed);
-    entry.word.store(encode(live), Ordering::Release);
+    *entry.remains.lock_leaf() = Some(Remains {
+        path,
+        arena,
+        killers: [None; KILLERS],
+    });
+    entry.generation.store(arena.generation(), Ordering::SeqCst);
     Ok(NodeRef {
         node: arena.index(),
         generation: arena.generation(),
     })
 }
 
+// Sequentially consistent, so a creator's later reads of its ancestors follow it.
+pub(crate) fn publish(node: NodeRef) {
+    let published = entry(node)
+        .is_some_and(|entry| entry.is(node) && entry.turn(WorldState::Free, WorldState::Live));
+    assert!(published, "world {} was published twice", node.node);
+}
+
+// The record of a world that was prepared and never published, with its record pool closed.
+pub(crate) fn withdraw(node: NodeRef) -> World {
+    let Some(entry) =
+        entry(node).filter(|entry| entry.is(node) && entry.state() == WorldState::Free)
+    else {
+        panic!("world {} was withdrawn though it was published", node.node);
+    };
+    let Ok(Some(world)) = entry.records.destroy(entry.record()) else {
+        panic!("the record of unpublished world {} was held", node.node);
+    };
+    entry.records.close();
+    world
+}
+
+// The world's own record for as long as it is Live or Dying; a pin is the way into another world.
 pub(crate) fn hold(node: NodeRef) -> Option<Hold<World>> {
-    let entry = ENTRIES.get(node.node as usize)?;
-    if entry.state() != WorldState::Live
-        || entry.generation.load(Ordering::Relaxed) != node.generation
-    {
+    let entry = entry(node)?;
+    if !entry.state().admits(Admission::Teardown) || !entry.is(node) {
         return None;
     }
-    let record = Local::from_bits(entry.record.load(Ordering::Relaxed));
-    entry.records.hold(record)
+    entry.records.hold(entry.record())
+}
+
+pub(crate) fn state(node: NodeRef) -> Option<WorldState> {
+    let entry = entry(node)?;
+    let state = entry.state();
+    entry.is(node).then_some(state)
+}
+
+// Under the world's life lock, so no descendant joins it after this.
+pub(super) fn mark_dying(node: NodeRef) -> bool {
+    entry(node)
+        .is_some_and(|entry| entry.is(node) && entry.turn(WorldState::Live, WorldState::Dying))
+}
+
+// Closes the world to new pins and answers how many are still counted.
+pub(super) fn close(node: NodeRef) -> u64 {
+    let Some(entry) = entry(node).filter(|entry| entry.is(node)) else {
+        panic!(
+            "world {} was closed after its node was reclaimed",
+            node.node
+        );
+    };
+    entry.turn(WorldState::Dying, WorldState::Closed);
+    entry.word.load(Ordering::SeqCst) & PINS
+}
+
+// The record of a closed world once no pin or hold borrows it, with its record pool closed.
+pub(super) fn take(node: NodeRef) -> Option<World> {
+    let entry =
+        entry(node).filter(|entry| entry.is(node) && entry.state() == WorldState::Closed)?;
+    match entry.records.destroy(entry.record()) {
+        Ok(Some(world)) => {
+            entry.records.close();
+            Some(world)
+        }
+        Err(Removal::Borrowed) => None,
+        Ok(None) | Err(Removal::Refused(_)) => {
+            panic!(
+                "the record of closed world {} has another holder",
+                node.node
+            )
+        }
+    }
+}
+
+// Under a pin of the world, so the teardown reads every killer when it reclaims the node.
+pub(super) fn enlist(node: NodeRef, killer: Killer) -> bool {
+    let Some(entry) = entry(node).filter(|entry| entry.is(node)) else {
+        return false;
+    };
+    let mut killers = entry.killers.lock_leaf();
+    let Some(free) = killers.iter_mut().find(|killer| killer.is_none()) else {
+        return false;
+    };
+    *free = Some(killer);
+    true
+}
+
+// The next generation of the node starts Free; a node at the last generation stays Closed.
+pub(super) fn reclaim(node: NodeRef) {
+    let Some(entry) = entry(node).filter(|entry| entry.is(node)) else {
+        panic!("world {} was reclaimed twice", node.node);
+    };
+    let Ok(reclaimed) = entry.state().reclaim(node.generation) else {
+        panic!("world {} was reclaimed before it closed", node.node);
+    };
+    let killers = core::mem::replace(&mut *entry.killers.lock_leaf(), [None; KILLERS]);
+    if let Some(remains) = entry.remains.lock_leaf().as_mut() {
+        remains.killers = killers;
+    }
+    if let Reclaimed::Free { generation } = reclaimed {
+        entry.generation.store(generation, Ordering::SeqCst);
+        entry.turn(WorldState::Closed, WorldState::Free);
+    }
+}
+
+pub(super) fn remains(node: NodeRef) -> Option<Remains> {
+    *entry(node)?.remains.lock_leaf()
+}
+
+// A counted pin of one world for one bounded step, interrupts off; `None` answers `DEAD`.
+pub(crate) struct Pin {
+    world: Hold<World>,
+    entry: &'static Entry,
+    _guard: PinGuard<rank::Pin>,
+}
+
+pub(crate) fn pin(node: NodeRef, admission: Admission) -> Option<Pin> {
+    let guard = PinGuard::take();
+    let entry = entry(node)?;
+    if !entry.is(node) {
+        return None;
+    }
+    entry
+        .word
+        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |word| {
+            decode(word).admits(admission).then_some(word + 1)
+        })
+        .ok()?;
+    let unpin = || entry.word.fetch_sub(1, Ordering::SeqCst);
+    if !entry.is(node) {
+        unpin();
+        return None;
+    }
+    let Some(world) = entry.records.hold(entry.record()) else {
+        unpin();
+        return None;
+    };
+    Some(Pin {
+        world,
+        entry,
+        _guard: guard,
+    })
+}
+
+impl Pin {
+    pub(crate) fn state(&self) -> WorldState {
+        self.entry.state()
+    }
+}
+
+impl Deref for Pin {
+    type Target = World;
+
+    fn deref(&self) -> &World {
+        &self.world
+    }
+}
+
+impl Drop for Pin {
+    fn drop(&mut self) {
+        self.entry.word.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+impl core::fmt::Debug for Pin {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("Pin")
+            .field("world", &*self.world)
+            .finish()
+    }
 }

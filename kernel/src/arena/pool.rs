@@ -21,6 +21,7 @@ struct State<T, const N: usize> {
     directory: Directory<Page<T, N>>,
     available: u32,
     spare: u32,
+    live: u32,
 }
 
 #[derive(Debug)]
@@ -34,13 +35,19 @@ struct Page<T, const N: usize> {
 impl<T, const N: usize> Pool<T, N> {
     pub(crate) const fn new() -> Self {
         Self {
-            state: SpinLock::new(State {
-                arena: None,
-                directory: Directory::EMPTY,
-                available: NONE,
-                spare: NONE,
-            }),
+            state: SpinLock::new(State::EMPTY),
         }
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.state.lock_leaf().live == 0
+    }
+
+    // Every page returns to the arena; the pool can then serve another arena.
+    pub(crate) fn close(&self) {
+        let closed = core::mem::replace(&mut *self.state.lock_leaf(), State::EMPTY);
+        assert!(closed.live == 0, "a pool closed while objects lived in it");
+        drop(closed);
     }
 
     // Enough for every object to open a page and its directory path; inserts return the rest.
@@ -134,6 +141,7 @@ impl<T, const N: usize> Pool<T, N> {
                 .get_mut(ordinal)
                 .ok_or(Removal::Refused(Refusal::Stale))?;
             let value = page.page.remove(local.index().slot(), local.generation())?;
+            state.live -= 1;
             let (live, free, listed, floor) = (
                 page.page.live(),
                 page.page.free(),
@@ -163,6 +171,14 @@ impl<T, const N: usize> Pool<T, N> {
 }
 
 impl<T, const N: usize> State<T, N> {
+    const EMPTY: Self = Self {
+        arena: None,
+        directory: Directory::EMPTY,
+        available: NONE,
+        spare: NONE,
+        live: 0,
+    };
+
     fn frames_to_insert(&self) -> u32 {
         if self.available == NONE {
             1 + self.directory.nodes_to_open()
@@ -188,6 +204,7 @@ impl<T, const N: usize> State<T, N> {
             panic!("a listed object page had no free slot");
         };
         let full = page.page.free() == 0;
+        self.live += 1;
         if self.spare == ordinal {
             self.spare = NONE;
         }

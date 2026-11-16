@@ -280,10 +280,35 @@ empties closes, and its ordinal keeps the least generation above every one the p
 reused ordinal never repeats a generation and an exhausted one retires.
 
 The world registry (`kernel/src/world/registry.rs`) has one entry per arena node: the generation,
-a word with the world's state, and the record pool that holds the world's record in its own
-arena. A `NodeRef` is the node index and its arena generation. After the generator is seeded,
-`world::start_root` draws the root world's key from it, reserves the root arena with a margin
-of 1/32 of each colour and publishes the root world.
+a word with the world's state (Free, Live, Dying, Closed) and pin count, and the record pool that
+holds the world's record in its own arena. A `NodeRef` is the node index and its arena
+generation. After the generator is seeded, `world::start_root` draws the root world's key from it,
+reserves the root arena with a margin of 1/32 of each colour and publishes the root world.
+
+A world record holds its key, its path of at most 16 ancestors, its colour mask, its limits
+(descendants, threads, handles per table) and, under its life lock (rank `Object`), its remaining
+budgets and the flat set of its descendants, at most 63, so at most 64 worlds live at once. Another
+world is reached only under a pin (rank `Pin`, below every object lock): interrupts off, the
+registry word counted from an admitted state with the generation checked before and after, for one
+bounded step; a pin that fails answers `DEAD`. A world's own threads and the reaper hold its record
+without a pin while it is Live or Dying.
+
+`world::create` (`kernel/src/world/create.rs`) runs the `libs/world-tree` creation protocol: debit
+the parent's budgets and donate the child an arena of the requested frames per colour in a mask
+within the parent's; build the record with a key drawn from the generator, never from the parent;
+enter the child into each ancestor's set, nearest first; publish it Live; then re-read every
+ancestor, and kill the child if one died meanwhile. A refusal before the publish removes the child
+from every set it joined, credits the parent and dissolves the arena back, so nothing changes.
+
+`world::kill` turns a Live world Dying under its life lock, so no child joins it after, stops its
+arena from earmarking or donating, and hands it to the reaper. The teardown
+(`kernel/src/world/teardown.rs`) kills every descendant in its frozen set, each of which tears
+down by itself; wakes its threads, each of which retires at its next return to ring 3, and waits
+until they are off the processor and every process's own teardown has released it; closes the pin
+word and waits for the counted pins to drain; takes the record, leaves every ancestor's set,
+credits the parent's budgets, releases every object page and bumps the node's generation; and then
+dissolves the arena 512 frame records at a time, each frame zeroed and credited once to the
+nearest Live ancestor, chosen again for every chunk. No step waits on another world's teardown.
 
 The heap (`wost/src/mm/heap.rs`) addresses frames through the direct map. Requests up to 2048
 bytes go to eight slab classes from 16 bytes (`libs/slab-layout`); larger ones take whole frames.
@@ -559,13 +584,17 @@ kernel narrows it with `try_from` and refuses or saturates.
 | 13 | `MemorySeal` | with flag bit 0, seals the sealable object `handle` read-only; needs `WRITE` and no writer (`BUSY`), and a writable mapping is a writer. Completes with the new handle `DUPLICATE TRANSFER READ MAP`; the old value is gone |
 | 16 | `Map` | maps `length` pages of object `second` from byte `offset` (page aligned) at address `argument` in the caller's space (`handle` 0); flag bit 0 `WRITE` takes a writer, bit 1 `EXECUTE` needs a sealed executable object, its `EXECUTE` right and a reservation. Needs `MAP` and `READ`; rights are checked before state and address. Completes with the address, or `NO_ADDRESS` when the range is taken or not user memory, `LIMIT` past 64 records |
 | 17 | `Unmap` | removes the whole mapping record at `argument` of `length` pages (`NOT_FOUND` otherwise) and completes after the flush that cleared its translations; only then does a writable record's writer go |
+| 18 | `WorldCreate` | makes a child of the caller's world from the 32-byte world descriptor in buffer 0 at `at` (8-byte aligned): version 1, frames per colour, colour mask (0 for the parent's), descendants, threads and handles per table. Completes with a world handle `DUPLICATE TRANSFER INSPECT SPAWN KILL`; `NO_MEMORY` when the parent cannot donate the frames, `LIMIT` past a budget, the depth or the parent's mask, `DEAD` when an ancestor is dying |
+| 19 | `WorldKill` | needs `KILL`; completes once the world is gone and its frames are its heir's, while its descendants end on their own; `DEAD` for a world already dying, `DENIED` for the root, `NO_ROOM` past 8 waiting kills of one world. A cancel ends the wait, not the kill |
+| 20 | `WorldInspect` | `handle` names a world (`INSPECT`) or is 0 for the caller's; completes with the frames the world reserves, and `extra` with the frames it uses |
 
 The statuses are `OK` (0), `UNKNOWN_OPCODE` (1), `NO_HANDLE_SLOT` (2), `BAD_HANDLE` (3), `DENIED`
 (4), `CANCELLED` (5), `NOT_FOUND` (6, a cancel that named nothing in flight), `NO_ROOM` (7),
 `BAD_BUFFER` (8), `NO_ENTRY` (9), `BAD_PATH` (10), `UNAVAILABLE` (11), `IO` (12, a device or
 volume failure), `NO_MEMORY` (13, the caller's arena cannot cover the operation), `BUSY` (14),
-`NO_QUOTA` (15, a code quota cannot cover an execute seal), `NO_ADDRESS` (16) and `LIMIT` (23, a
-world limit or a fixed per-object limit). A pending operation stays
+`NO_QUOTA` (15, a code quota cannot cover an execute seal), `NO_ADDRESS` (16), `DEAD` (17, the
+object or its world is gone or dying) and `LIMIT` (23, a world limit or a fixed per-object
+limit). A pending operation stays
 in its slot until its completion is posted, and ring pages are reclaimed only once the queue is
 quiet. Cancellation is advisory.
 
@@ -708,8 +737,8 @@ opens the SMAP window, for one copy. Each first walks every page and requires ef
 permission, checks the range against the user limit by comparison, and recovers a fault at a
 linker fixup that only the trap adapter writes.
 
-A retiring thread hands its process to the reaper (`kernel/src/reaper.rs`), a FIFO the service
-worker serves, and leaves its slot `Retired`, so no path running on that stack frees or reuses it.
+A retiring thread hands its process to the reaper (`kernel/src/reaper.rs`), a FIFO of process and
+world teardowns the service worker serves, and leaves its slot `Retired`, so no path running on that stack frees or reuses it.
 The reaper runs the teardown steps of `kernel/src/process/teardown.rs` in order: P0 fixes the
 status and writes it to the observation; P1 waits until the thread is retired and off the
 processor; P2 ends every queued operation with `CANCELLED` and waits for a running one; P3 returns

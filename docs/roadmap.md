@@ -185,10 +185,13 @@ Phase 7:
   bounded by those slots. Thread records and stacks need to live in the world's arena.
 - The root world exists with its arena, record and object pools, and each process's handle table
   and ring live in it (`kernel/src/world.rs`, `kernel/src/handle.rs`, `kernel/src/queue.rs`), but
-  processes, threads and address spaces still come from the kernel heap and frames, and every
-  process belongs to the root world. Worlds need process objects in their own arenas. User page
-  tables are arena `Table` frames of the world named only by their links, and a shared ring, buffer
-  0 or time page keeps its holder count in an object frame of the world.
+  processes, threads and address spaces still come from the kernel heap and frames. Child worlds
+  are created, inspected and killed with their own arenas, keys and limits
+  (`kernel/src/world/create.rs`, `kernel/src/world/teardown.rs`), but no program can be spawned
+  into one, so every process still belongs to the root world. Teardown stops a world's threads
+  through the fixed task table (`thread::stop_world`). User page tables are arena `Table` frames of
+  the world named only by their links, and a shared ring, buffer 0 or time page keeps its holder
+  count in an object frame of the world.
 - Frame ownership lives in a page-table software bit, nothing changes a permission or unmaps a
   shared mapping, and spawn takes each segment as one contiguous run with no quota
   (`wost/src/arch/x86_64/paging.rs`, `kernel/src/user/load.rs`). Memory objects own their arena

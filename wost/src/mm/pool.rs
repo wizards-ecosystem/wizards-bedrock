@@ -215,6 +215,13 @@ pub fn donate(
     Ok(nodes.publish(index, child))
 }
 
+// A dying arena earmarks and donates no more; what it holds still returns to it.
+pub fn condemn(arena: ArenaId) {
+    if let Some(node) = FRAMES.lock_leaf().nodes.live(arena) {
+        node.dying = true;
+    }
+}
+
 pub fn earmark(
     context: &mut ThreadContext,
     arena: ArenaId,

@@ -29,6 +29,10 @@ impl Rights {
 
     pub const MODIFY: Self = Self(1 << 14);
 
+    pub const SPAWN: Self = Self(1 << 15);
+
+    pub const KILL: Self = Self(1 << 16);
+
     // An undefined bit refuses the whole word: masking would grant quietly.
     pub const fn from_bits(bits: u32) -> Option<Self> {
         if bits & !Self::ALL.0 != 0 {
@@ -48,7 +52,9 @@ impl Rights {
             | Self::MAP.0
             | Self::TRAVERSE.0
             | Self::ENUMERATE.0
-            | Self::MODIFY.0,
+            | Self::MODIFY.0
+            | Self::SPAWN.0
+            | Self::KILL.0,
     );
 
     pub const fn bits(self) -> u32 {

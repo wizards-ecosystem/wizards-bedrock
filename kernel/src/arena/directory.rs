@@ -185,6 +185,21 @@ impl<E> Directory<E> {
     }
 }
 
+// An object page forgets its objects, so a node hands back every entry before its own frame goes.
+impl<E> Drop for Directory<E> {
+    fn drop(&mut self) {
+        release(mem::replace(&mut self.root, Entry::Unborn));
+    }
+}
+
+fn release<E>(entry: Entry<E>) {
+    if let Entry::Node(mut page) = entry {
+        for entry in &mut node_mut(&mut page).entries {
+            release(mem::replace(entry, Entry::Unborn));
+        }
+    }
+}
+
 fn position(ordinal: u32, level: u32) -> usize {
     (ordinal >> (BITS * (level - 1))) as usize & (FANOUT - 1)
 }

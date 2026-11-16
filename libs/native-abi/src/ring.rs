@@ -70,6 +70,8 @@ pub mod status {
     pub const NO_QUOTA: u32 = 15;
     // The range is taken, or no gap fits a placement.
     pub const NO_ADDRESS: u32 = 16;
+    // The object or its world is gone or dying.
+    pub const DEAD: u32 = 17;
     // A world limit or a fixed per-object limit.
     pub const LIMIT: u32 = 23;
 }
@@ -101,6 +103,9 @@ pub enum Opcode {
     MemorySeal,
     Map,
     Unmap,
+    WorldCreate,
+    WorldKill,
+    WorldInspect,
     Unknown(u32),
 }
 
@@ -121,6 +126,9 @@ impl Opcode {
             13 => Self::MemorySeal,
             16 => Self::Map,
             17 => Self::Unmap,
+            18 => Self::WorldCreate,
+            19 => Self::WorldKill,
+            20 => Self::WorldInspect,
             other => Self::Unknown(other),
         }
     }
@@ -141,6 +149,9 @@ impl Opcode {
             Self::MemorySeal => 13,
             Self::Map => 16,
             Self::Unmap => 17,
+            Self::WorldCreate => 18,
+            Self::WorldKill => 19,
+            Self::WorldInspect => 20,
             Self::Unknown(other) => other,
         }
     }

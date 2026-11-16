@@ -36,6 +36,23 @@ pub mod limits {
     pub const USER_MAPPING_END: u64 = 0x0000_7FFF_FFFF_F000;
 }
 
+// The world descriptor `WorldCreate` reads from a buffer, 8-byte aligned.
+pub mod world {
+    pub const VERSION: u32 = 1;
+    pub const BYTES: usize = 32;
+
+    pub mod offset {
+        pub const VERSION: usize = 0;
+        pub const FRAMES_PER_COLOUR: usize = 4;
+        // 0 asks for the parent's mask.
+        pub const COLOUR_MASK: usize = 8;
+        pub const DESCENDANTS: usize = 16;
+        pub const THREADS: usize = 20;
+        pub const HANDLES: usize = 24;
+        pub const RESERVED: usize = 28;
+    }
+}
+
 pub mod entry {
     pub const VERSION: u64 = 3;
 

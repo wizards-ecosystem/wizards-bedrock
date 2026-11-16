@@ -14,6 +14,7 @@ mod processes;
 mod rings;
 mod storage;
 mod threads;
+mod worlds;
 
 type Check = (&'static str, fn(&mut ThreadContext) -> bool);
 
@@ -161,6 +162,10 @@ const CHECKS: &[Check] = &[
     (
         "a spinning thread cannot starve another",
         threads::a_spinner_cannot_starve_another,
+    ),
+    (
+        "a world past its reservation is refused alone",
+        worlds::a_world_past_its_reservation_is_refused_alone,
     ),
     ("the clock never runs backwards", |_| {
         clocks::the_clock_never_runs_backwards()

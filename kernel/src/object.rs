@@ -1,4 +1,5 @@
 use native_abi::Rights;
+use world_tree::NodeRef;
 use wost::mm::slab::Removal;
 
 use crate::arena::Local;
@@ -11,6 +12,7 @@ pub(crate) enum ObjectType {
     File,
     Directory,
     Memory,
+    World,
 }
 
 impl ObjectType {
@@ -23,6 +25,7 @@ impl ObjectType {
                 .union(Rights::WRITE)
                 .union(Rights::EXECUTE)
                 .union(Rights::MAP),
+            Self::World => Rights::SPAWN.union(Rights::KILL),
         }
     }
 }
@@ -42,6 +45,8 @@ pub(crate) enum ObjectRef {
     File(crate::vfs::File),
     Directory(crate::vfs::Directory),
     Memory(Local<MemoryObject>),
+    // Weak: a world handle never keeps its world alive, and resolves under a pin or answers `DEAD`.
+    World(NodeRef),
 }
 
 impl ObjectRef {
@@ -51,20 +56,21 @@ impl ObjectRef {
             Self::File(_) => ObjectType::File,
             Self::Directory(_) => ObjectType::Directory,
             Self::Memory(_) => ObjectType::Memory,
+            Self::World(_) => ObjectType::World,
         }
     }
 
     pub(crate) const fn as_file(&self) -> Option<&crate::vfs::File> {
         match self {
             Self::File(file) => Some(file),
-            Self::Channel(_) | Self::Directory(_) | Self::Memory(_) => None,
+            Self::Channel(_) | Self::Directory(_) | Self::Memory(_) | Self::World(_) => None,
         }
     }
 
     pub(crate) const fn as_directory(&self) -> Option<&crate::vfs::Directory> {
         match self {
             Self::Directory(directory) => Some(directory),
-            Self::Channel(_) | Self::File(_) | Self::Memory(_) => None,
+            Self::Channel(_) | Self::File(_) | Self::Memory(_) | Self::World(_) => None,
         }
     }
 
@@ -73,7 +79,7 @@ impl ObjectRef {
         match self {
             Self::Channel(channel) => world.channels.acquire(channel).is_ok(),
             Self::Memory(memory) => world.memories.acquire(memory).is_ok(),
-            Self::File(_) | Self::Directory(_) => true,
+            Self::File(_) | Self::Directory(_) | Self::World(_) => true,
         }
     }
 
@@ -88,7 +94,7 @@ impl ObjectRef {
                     panic!("a memory object's last reference went while a hold borrowed it");
                 }
             }
-            Self::File(_) | Self::Directory(_) => {}
+            Self::File(_) | Self::Directory(_) | Self::World(_) => {}
         }
     }
 }

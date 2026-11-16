@@ -3,6 +3,7 @@ use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
 use eevdf::{BASE_WEIGHT, Entity};
 use stack_layout::StackLayout;
+use world_tree::NodeRef;
 use wost::arch::current::cpu;
 use wost::arch::current::interrupt::{self, TrapFrame};
 use wost::arch::current::paging::{AddressSpace, Binding, StackArena};
@@ -611,6 +612,42 @@ pub(crate) fn is_retired_off_cpu(slot: usize) -> bool {
             .slots
             .get(slot)
             .is_some_and(|thread| thread.state == State::Retired)
+}
+
+// Wakes each waiting thread of the world, which retires at its next return to ring 3, and
+// answers whether every one of them is retired and off its processor.
+pub(crate) fn stop_world(world: NodeRef) -> bool {
+    let current = task::current();
+    let (stopped, woken) = {
+        let mut guard = THREADS.lock_leaf();
+        let Threads {
+            identities, queue, ..
+        } = &mut *guard;
+        let mut stopped = true;
+        let mut woken = false;
+        for (slot, identity) in identities.iter().enumerate() {
+            if identity
+                .owner
+                .is_none_or(|process| process.world() != world)
+            {
+                continue;
+            }
+            match queue.slots[slot].state {
+                State::Retired if slot != current => continue,
+                State::Blocked | State::Sleeping => {
+                    queue.ready(slot);
+                    woken = true;
+                }
+                _ => {}
+            }
+            stopped = false;
+        }
+        (stopped, woken)
+    };
+    if woken {
+        reschedule_timer(Some(time::scheduler_now_ns()));
+    }
+    stopped
 }
 
 pub(crate) fn release_retired(slot: usize) {
