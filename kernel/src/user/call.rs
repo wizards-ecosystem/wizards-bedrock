@@ -196,7 +196,7 @@ pub(super) fn cross() {
         "user {which}: entering ring 3 at {:#x} with {} on {:#x}",
         launch.entry, launch.argument, launch.root
     );
-    if !crate::maskable_interrupts_are_ready() {
+    if !crate::interrupts::maskable_interrupts_are_ready() {
         warn!("user {which}: maskable interrupts are not admitted");
         refuse_cross(slot);
     }

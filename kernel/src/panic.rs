@@ -1,6 +1,3 @@
-//! Panic handling: with no unwinding (`panic = "abort"`) and no supervisor yet, a panic is
-//! terminal, so the handler reports through both consoles and stops the machine.
-
 use core::fmt::Write;
 use core::panic::PanicInfo;
 
@@ -14,7 +11,6 @@ fn panic(info: &PanicInfo<'_>) -> ! {
     wost::panic::terminate(info, report)
 }
 
-/// The thread is named because every thread runs the same kernel, so a report needs a subject.
 fn report(info: &PanicInfo<'_>) -> ! {
     let thread = thread::current_name();
     dev::try_with_uart(|uart| {

@@ -10,8 +10,7 @@ use super::runs_until;
 use super::threads::context;
 use crate::{mem, user};
 
-// Sample addresses are offsets from a section's base, never a sum of two higher-half addresses:
-// those are within a hair of `u64::MAX` and adding a pair overflows.
+// Samples are offsets from a section's base: adding two higher-half addresses overflows.
 pub(super) fn the_image_obeys_write_xor_execute() -> bool {
     let sections = boot::sections();
     let enclave = sections.entry_enclave;

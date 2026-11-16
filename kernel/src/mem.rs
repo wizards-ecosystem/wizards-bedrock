@@ -1,9 +1,3 @@
-//! Physical memory: what the bootloader reported, and what the kernel took.
-//!
-//! The frame allocator lives in `wost::mm`, because owning a frame needs a raw pointer. What is
-//! here needs no privilege: deciding whether the handoff is usable at all, and saying so.
-
-use alloc::vec::Vec;
 use core::fmt;
 
 use stack_layout::StackLayout;
@@ -21,25 +15,18 @@ use wost::boot::{
 };
 use wost::mm;
 use wost::sync::SpinLock;
-use x86_apic::io;
 use x86_paging::{Flags, MappingRangeError};
 
 use crate::acpi::Interrupts;
-use crate::arch::current::ioapic::IoApic;
 use crate::iommu::EarlyDmaBoundary;
 use crate::thread::ThreadContext;
-use crate::{debug, info, thread, warn};
+use crate::{debug, info, pci, thread, warn};
 
 #[cfg(feature = "selftest")]
 mod selftest;
 #[cfg(feature = "selftest")]
 pub(crate) use selftest::{map_user_page_for_test, unmap_for_test};
 
-/// Bring the frame allocator up over the bootloader's memory map.
-///
-/// Declines rather than panics when either half of the handoff is missing: a
-/// kernel that cannot allocate is still worth booting far enough to say why,
-/// and the checks that follow report the absence rather than faulting on it.
 pub(crate) fn init(
     map: Result<MemoryMap, HandoffError>,
     direct: Result<DirectMap, HandoffError>,
@@ -71,42 +58,16 @@ pub(crate) fn init(
     info!("memory: {report}");
 }
 
-/// The kernel's own address space, kept live after the switch.
-///
-/// Retained so mappings can be changed after activation.
 static SPACE: SpinLock<Option<AddressSpace>> = SpinLock::new(None);
 
-/// BAR owners whose exact retirement failed after register access ended.
-static RETAINED_PCI_BARS: SpinLock<
-    [Option<PciBarQuarantine>; crate::pci::FUNCTION_AUTHORITY_LIMIT * pci_config::BARS],
-> = SpinLock::new([const { None }; crate::pci::FUNCTION_AUTHORITY_LIMIT * pci_config::BARS]);
-
-/// One controller whose rollback could not safely begin.
-static RETAINED_ROUTING: SpinLock<Option<Routing>> = SpinLock::new(None);
-
-/// One unexposed mapping and every earlier routing candidate still owned.
-static RETAINED_ROUTING_MAPPING: SpinLock<
-    Option<(paging::DeviceMapping, Vec<IoApic<ReleasableDevice>>)>,
-> = SpinLock::new(None);
-
-/// One refused unmap and every earlier routing candidate still owned.
-static RETAINED_ROUTING_REGISTERS: SpinLock<
-    Option<(ReleasableDevice, Vec<IoApic<ReleasableDevice>>)>,
-> = SpinLock::new(None);
-
-/// Run one operation owned by this module against the live address space.
-///
-/// Private because `AddressSpace` also carries reclaim and arbitrary unmap
-/// authority over the tables the CPU is using. Callers get only the operations
-/// below, while this token-bearing acquisition keeps the two-level lock order.
+// Private: `AddressSpace` also carries reclaim and unmap authority over the live tables.
 fn with_active_space<T>(
     context: &mut ThreadContext,
-    f: impl FnOnce(&mut AddressSpace) -> T,
+    operation: impl FnOnce(&mut AddressSpace) -> T,
 ) -> Option<T> {
-    SPACE.lock(context).as_mut().map(f)
+    SPACE.lock(context).as_mut().map(operation)
 }
 
-/// Map one physical device extent into the kernel's device window.
 pub(crate) fn map_device(
     context: &mut ThreadContext,
     physical: u64,
@@ -119,7 +80,6 @@ pub(crate) fn map_device(
     with_active_space(context, |space| space.map_device(admitted))
 }
 
-/// Map one function-bound PCI BAR into the kernel's device window.
 pub(crate) fn map_pci_bar(
     context: &mut ThreadContext,
     admitted: platform_pci::AdmittedBar,
@@ -133,48 +93,13 @@ pub(crate) fn map_pci_bar(
         .map_err(PciBarMapFailure::Mapping)
 }
 
-/// A refused PCI BAR map retaining its exact function-bound authority.
 #[derive(Debug)]
 pub(crate) enum PciBarMapFailure {
-    /// The running address space was unavailable.
     NoSpace(platform_pci::AdmittedBar),
-    /// Page-table or device-window admission refused.
     Mapping(BarMapFailure),
 }
 
-/// The exact remaining owner of a PCI BAR whose cleanup could not finish.
-#[derive(Debug)]
-enum PciBarQuarantine {
-    /// Pages are installed, but register access was never exposed.
-    Mapping { _mapping: platform_pci::BarMapping },
-    /// Pages remain installed after an exact unmap refusal.
-    Releasable { _bar: platform_pci::ReleasableBar },
-    /// Pages are gone, but the function registry refused the BAR authority.
-    Authority {
-        _failure: pci_config::BarAuthorityFailure,
-    },
-}
-
-fn retain_pci_bar(quarantine: PciBarQuarantine) {
-    let mut retained = RETAINED_PCI_BARS.lock_leaf();
-    let Some(slot) = retained.iter_mut().find(|slot| slot.is_none()) else {
-        panic!("retained BAR authority exceeds every BAR of the PCI function registry");
-    };
-    *slot = Some(quarantine);
-}
-
-/// Keep an inaccessible BAR mapping reachable after its live-root check fails.
-pub(crate) fn retain_pci_bar_mapping(mapping: platform_pci::BarMapping) {
-    retain_pci_bar(PciBarQuarantine::Mapping { _mapping: mapping });
-}
-
-/// Keep BAR authority reachable after its function registry refuses release.
-pub(crate) fn retain_pci_bar_authority(failure: pci_config::BarAuthorityFailure) {
-    retain_pci_bar(PciBarQuarantine::Authority { _failure: failure });
-}
-
 impl PciBarMapFailure {
-    /// The page-table reason, if mapping reached the active space.
     pub(crate) const fn reason(&self) -> Option<MapError> {
         match self {
             Self::NoSpace(_) => None,
@@ -182,7 +107,6 @@ impl PciBarMapFailure {
         }
     }
 
-    /// Recover the unchanged BAR authority.
     pub(crate) fn into_admitted(self) -> platform_pci::AdmittedBar {
         match self {
             Self::NoSpace(admitted) => admitted,
@@ -191,17 +115,13 @@ impl PciBarMapFailure {
     }
 }
 
-/// Result of returning an inaccessible PCI BAR mapping.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[must_use = "a quarantined BAR still owns exact cleanup authority"]
 pub(crate) enum PciBarRetirement {
-    /// Mapping and function-bound BAR authority were both returned.
     Retired,
-    /// The exact remaining owner is held in the kernel quarantine.
     Quarantined,
 }
 
-/// Return a PCI BAR mapping, retrying one unchanged preflight refusal.
 pub(crate) fn unmap_pci_bar_exact(
     context: &mut ThreadContext,
     bar: platform_pci::ReleasableBar,
@@ -209,44 +129,22 @@ pub(crate) fn unmap_pci_bar_exact(
     let mut active = SPACE.lock(context);
     let Some(space) = active.as_mut() else {
         drop(active);
-        retain_pci_bar(PciBarQuarantine::Releasable { _bar: bar });
+        pci::retain_bar(pci::BarQuarantine::Releasable { _bar: bar });
         return PciBarRetirement::Quarantined;
     };
-    let authority = match space.unmap_pci_bar(bar) {
-        BarUnmapOutcome::Unmapped(authority) => authority,
-        BarUnmapOutcome::Refused(first) => match space.unmap_pci_bar(first.bar) {
-            BarUnmapOutcome::Unmapped(authority) => authority,
-            BarUnmapOutcome::Refused(second) => {
-                let bar = second.bar;
-                drop(active);
-                retain_pci_bar(PciBarQuarantine::Releasable { _bar: bar });
-                return PciBarRetirement::Quarantined;
-            }
-        },
-    };
+    let unmapped = unmap_pci_bar_twice(space, bar);
     drop(active);
-    match platform_pci::release_memory_bar(authority) {
-        Ok(()) => PciBarRetirement::Retired,
-        Err(failure) => {
-            retain_pci_bar_authority(failure);
-            PciBarRetirement::Quarantined
-        }
-    }
+    release_unmapped_pci_bar(unmapped)
 }
 
-/// Exact retirement or retained access for one mapped PCI BAR.
 #[derive(Debug)]
 #[must_use = "a refused mapped-BAR retirement returns its access owner"]
 pub(crate) enum MappedPciBarRetirement {
-    /// Mapping and function-bound BAR authority were both returned.
     Retired,
-    /// No active address space was available, so the mapped BAR remains owned.
     Retained(platform_pci::MappedBar),
-    /// Register access ended and the exact remaining owner is quarantined.
     Quarantined,
 }
 
-/// Return a mapped PCI BAR without losing it when no active space is available.
 pub(crate) fn unmap_mapped_pci_bar_exact(
     context: &mut ThreadContext,
     bar: platform_pci::MappedBar,
@@ -255,40 +153,50 @@ pub(crate) fn unmap_mapped_pci_bar_exact(
     let Some(space) = active.as_mut() else {
         return MappedPciBarRetirement::Retained(bar);
     };
-    let authority = match space.unmap_pci_bar(bar.into_releasable()) {
-        BarUnmapOutcome::Unmapped(authority) => authority,
-        BarUnmapOutcome::Refused(first) => match space.unmap_pci_bar(first.bar) {
-            BarUnmapOutcome::Unmapped(authority) => authority,
-            BarUnmapOutcome::Refused(second) => {
-                let bar = second.bar;
-                drop(active);
-                retain_pci_bar(PciBarQuarantine::Releasable { _bar: bar });
-                return MappedPciBarRetirement::Quarantined;
-            }
-        },
-    };
+    let unmapped = unmap_pci_bar_twice(space, bar.into_releasable());
     drop(active);
-    if let Err(failure) = platform_pci::release_memory_bar(authority) {
-        retain_pci_bar_authority(failure);
-        return MappedPciBarRetirement::Quarantined;
+    match release_unmapped_pci_bar(unmapped) {
+        PciBarRetirement::Retired => MappedPciBarRetirement::Retired,
+        PciBarRetirement::Quarantined => MappedPciBarRetirement::Quarantined,
     }
-    MappedPciBarRetirement::Retired
 }
 
-/// Result of one transient device-unmap attempt.
+fn unmap_pci_bar_twice(
+    space: &mut AddressSpace,
+    bar: platform_pci::ReleasableBar,
+) -> BarUnmapOutcome {
+    match space.unmap_pci_bar(bar) {
+        BarUnmapOutcome::Refused(first) => space.unmap_pci_bar(first.bar),
+        unmapped => unmapped,
+    }
+}
+
+fn release_unmapped_pci_bar(unmapped: BarUnmapOutcome) -> PciBarRetirement {
+    let authority = match unmapped {
+        BarUnmapOutcome::Unmapped(authority) => authority,
+        BarUnmapOutcome::Refused(failure) => {
+            pci::retain_bar(pci::BarQuarantine::Releasable { _bar: failure.bar });
+            return PciBarRetirement::Quarantined;
+        }
+    };
+    match platform_pci::release_memory_bar(authority) {
+        Ok(()) => PciBarRetirement::Retired,
+        Err(failure) => {
+            pci::retain_bar_authority(failure);
+            PciBarRetirement::Quarantined
+        }
+    }
+}
+
 #[derive(Debug)]
 #[must_use = "every refusal returns the exact device-mapping owner"]
-pub(crate) enum DeviceUnmapOutcome {
-    /// The complete mapping was removed.
+enum DeviceUnmapOutcome {
     Unmapped,
-    /// Preflight refused without changing the mapping.
     Refused(DeviceUnmapFailure),
-    /// No active address space was available, so the mapping remains owned.
     NoSpace(ReleasableDevice),
 }
 
-/// Remove one transient device mapping after its access owner is consumed.
-pub(crate) fn unmap_device(
+fn unmap_device(
     context: &mut ThreadContext,
     region: paging::ReleasableDevice,
 ) -> DeviceUnmapOutcome {
@@ -302,17 +210,13 @@ pub(crate) fn unmap_device(
     }
 }
 
-/// Exact retirement or retained ownership of one transient device mapping.
 #[derive(Debug)]
 #[must_use = "a refused device retirement returns its exact mapping owner"]
 pub(crate) enum DeviceRetirement {
-    /// The complete mapping was removed.
     Retired,
-    /// Both preflight attempts refused or no active space was available.
     Retained(ReleasableDevice),
 }
 
-/// Return a transient device mapping, retrying one unchanged preflight refusal.
 pub(crate) fn unmap_device_exact(
     context: &mut ThreadContext,
     region: ReleasableDevice,
@@ -328,15 +232,11 @@ pub(crate) fn unmap_device_exact(
     }
 }
 
-/// Move the double-fault handler onto a guarded stack.
-///
-/// Mapping this stack after kernel page-table activation makes its guard page
-/// genuinely absent. Pinning keeps a live hardware pointer from being unmapped.
+// Mapped after activation so its guard is truly absent; pinned, because the TSS points at it.
 fn guard_the_fault_stack() -> Result<u64, StackMapError> {
     let layout = thread::fault_stack_layout().ok_or(MapError::OutOfMemory)?;
     let slot = layout.slot(0).ok_or(MapError::OutOfMemory)?;
 
-    // `map_stack` verifies the guard is absent even outside self-test builds.
     let mut context = ThreadContext::require();
     let stack = with_active_space(&mut context, |space| space.map_pinned_stack(&slot))
         .ok_or(MapError::OutOfMemory)??;
@@ -348,22 +248,11 @@ fn guard_the_fault_stack() -> Result<u64, StackMapError> {
     Ok(top)
 }
 
-/// Map the boot thread's own guarded stack.
-///
-/// `None` rather than an error when it cannot be had: kernel services can
-/// still report and degrade on the bootloader's stack, but the user boundary
-/// remains closed.
 pub(crate) fn map_boot_stack() -> Option<MappedStack> {
     let mut context = ThreadContext::require();
     map_guarded_stack(&mut context, thread::boot_stack_layout()?)
 }
 
-/// Map the one guarded stack `layout` describes.
-///
-/// The shared half of every stack this kernel maps after the switch: allocate,
-/// zero, map writable and never executable, and verify the guard below is
-/// absent. That last step is `map_stack`'s, which is why it is used rather
-/// than open-coded.
 pub(crate) fn map_guarded_stack(
     context: &mut ThreadContext,
     layout: StackLayout,
@@ -382,12 +271,7 @@ pub(crate) fn map_guarded_stack(
     }
 }
 
-/// Log every region the bootloader described.
-///
-/// At debug level because it runs to a few dozen lines, and worth having at
-/// all because it is the only place an unrecognised region type becomes
-/// visible: the pinned `limine` crate has no constant for the one base
-/// revision 4 added, so it arrives here as `unknown type N`.
+// The pinned `limine` crate has no name for base revision 4's region type; it logs as unknown.
 fn describe(map: &MemoryMap) {
     for region in map.regions() {
         debug!(
@@ -402,18 +286,10 @@ fn describe(map: &MemoryMap) {
     }
 }
 
-/// Whether a region type is one this kernel has no name for.
 fn unrecognised(kind: &MemoryKind) -> bool {
     matches!(kind, MemoryKind::Other(_))
 }
 
-/// Build the kernel's own page tables and switch to them.
-///
-/// Every decision here is policy, which ranges exist and what each may do, and policy is safe
-/// Rust: `wost` owns the table writes and the one `mov cr3` underneath, so this function cannot
-/// express an unsafe operation and does not need to. Handoff and allocation failures keep the
-/// bootloader's tables. A cleanup contradiction is fatal because continuing would discard live
-/// ownership.
 pub(crate) fn init_paging(
     map: Result<MemoryMap, HandoffError>,
     direct: Result<DirectMap, HandoffError>,
@@ -425,8 +301,7 @@ pub(crate) fn init_paging(
         return None;
     };
 
-    // Read ACPI before building tables while the bootloader's direct map
-    // already covers it.
+    // Read ACPI while the bootloader's direct map still covers it, before building tables.
     let interrupts = match rsdp {
         Ok(rsdp) => crate::acpi::interrupts(rsdp),
         Err(reason) => {
@@ -468,19 +343,14 @@ pub(crate) fn init_paging(
         }
     }
 
-    let thread_slots = start_threads(&mut space, arena);
+    let thread_slots = thread::start_threads(&mut space, arena);
 
-    // Kept, so a mapping can arrive with the thread that needs it instead of
-    // being guessed while the tables are built.
     *SPACE.lock_leaf() = Some(space);
 
     report_guarded_paging(thread_slots, write_combining);
     interrupts
 }
 
-/// Map every thread stack into the inactive space, or reclaim it whole.
-///
-/// A cleanup contradiction panics, because continuing would discard live ownership.
 fn map_thread_stacks(space: &mut AddressSpace) -> Option<StackArena> {
     let Some(layout) = thread::layout() else {
         let cleanup = space.reclaim(None);
@@ -509,24 +379,6 @@ fn map_thread_stacks(space: &mut AddressSpace) -> Option<StackArena> {
     }
 }
 
-/// Hand the mapped arena to the task table, unmapping it again if the table refuses.
-fn start_threads(space: &mut AddressSpace, arena: StackArena) -> Option<usize> {
-    match thread::init(arena) {
-        Ok(slots) => Some(slots),
-        Err(failure) => {
-            let reason = failure.reason;
-            let returned = space.unmap_stacks(failure.arena);
-            assert!(
-                returned.is_ok(),
-                "an arena refused by the task table must remain removable"
-            );
-            warn!("threads: {reason}; no threads");
-            None
-        }
-    }
-}
-
-/// Guard the double-fault stack in the kept space, then report what paging produced.
 fn report_guarded_paging(
     thread_slots: Option<usize>,
     write_combining: Option<cpu::WriteCombining>,
@@ -551,305 +403,6 @@ fn report_guarded_paging(
     }
 }
 
-/// Result of proving every described external interrupt controller inert.
-#[derive(Debug)]
-pub(crate) struct RoutingPreparation {
-    routing: Option<Routing>,
-    controllers_masked: bool,
-}
-
-/// Authority to enable external interrupts after every controller was masked.
-#[derive(Debug)]
-pub(crate) struct ExternalControllersMasked {
-    routing: Option<Routing>,
-}
-
-struct ControllersReleased {
-    _private: (),
-}
-
-impl RoutingPreparation {
-    fn ready(routing: Routing) -> Self {
-        Self {
-            routing: Some(routing),
-            controllers_masked: true,
-        }
-    }
-
-    const fn polled_safe(_released: ControllersReleased) -> Self {
-        Self {
-            routing: None,
-            controllers_masked: true,
-        }
-    }
-
-    pub(crate) const fn unproven() -> Self {
-        Self {
-            routing: None,
-            controllers_masked: false,
-        }
-    }
-
-    /// Extract interrupt-enable authority only from a complete mask proof.
-    pub(crate) fn into_masked(self) -> Option<ExternalControllersMasked> {
-        if !self.controllers_masked {
-            return None;
-        }
-        Some(ExternalControllersMasked {
-            routing: self.routing,
-        })
-    }
-}
-
-impl ExternalControllersMasked {
-    /// The selected keyboard controller, when the proven inventory has one.
-    pub(crate) fn into_routing(self) -> Option<Routing> {
-        self.routing
-    }
-}
-
-/// Probe every described I/O APIC and return the unique removable owner of `gsi`.
-///
-/// Called before interrupts are enabled. Every controller is therefore masked
-/// before firmware state could deliver an unowned vector, while the active
-/// address space lets all temporary mappings be returned after selection.
-pub(crate) fn prepare_routing(
-    context: &mut ThreadContext,
-    interrupts: Interrupts,
-    gsi: u32,
-) -> RoutingPreparation {
-    let count = interrupts.io_apic_count();
-    if count == 0 {
-        warn!("ioapic: firmware supplied no controller inventory");
-        return RoutingPreparation::unproven();
-    }
-    let mut controllers = Vec::new();
-    let mut ranges = Vec::new();
-    if controllers.try_reserve_exact(count).is_err() || ranges.try_reserve_exact(count).is_err() {
-        warn!("ioapic: no memory for {count} routing candidates; interrupts stay off");
-        return RoutingPreparation::unproven();
-    }
-
-    let mut descriptions = interrupts.io_apics();
-    let mut next_description = core::iter::Iterator::next(&mut descriptions);
-    while let Some(description) = next_description {
-        next_description = core::iter::Iterator::next(&mut descriptions);
-        let controller = match probe_io_apic(context, description) {
-            IoApicProbe::Ready(controller) => controller,
-            IoApicProbe::Refused => return abandon_candidates(context, &mut controllers),
-            IoApicProbe::Retained(owner) => {
-                retain_probe_owner(owner, controllers);
-                return RoutingPreparation::unproven();
-            }
-        };
-        ranges.push(controller.range());
-        controllers.push(controller);
-    }
-
-    let owner = match io::owner_of(&ranges, gsi) {
-        Ok(Some(owner)) => owner,
-        Ok(None) => {
-            warn!("keyboard: no io apic owns gsi {gsi}; staying polled");
-            return poll_after_release(context, &mut controllers);
-        }
-        Err(reason) => {
-            warn!("ioapic: {reason}; staying polled");
-            return poll_after_release(context, &mut controllers);
-        }
-    };
-    let Some(selected) = interrupts.io_apics().nth(owner) else {
-        warn!("ioapic: selected controller has no firmware description; interrupts stay off");
-        return abandon_candidates(context, &mut controllers);
-    };
-
-    // The selected controller is rebuilt only after every probe mapping is
-    // gone, so temporary inventory state cannot survive into its ownership.
-    if release_io_apics(context, &mut controllers).is_none() {
-        warn!("ioapic: candidate mappings did not retire exactly; interrupts stay off");
-        return RoutingPreparation::unproven();
-    }
-    let io_apic = match probe_io_apic(context, selected) {
-        IoApicProbe::Ready(controller) => controller,
-        IoApicProbe::Refused => return RoutingPreparation::unproven(),
-        IoApicProbe::Retained(owner) => {
-            retain_probe_owner(owner, controllers);
-            return RoutingPreparation::unproven();
-        }
-    };
-    RoutingPreparation::ready(Routing {
-        io_apic,
-        interrupts,
-    })
-}
-
-/// Return every candidate after a refusal; the inventory stays unproven either way.
-fn abandon_candidates(
-    context: &mut ThreadContext,
-    controllers: &mut Vec<IoApic<ReleasableDevice>>,
-) -> RoutingPreparation {
-    if release_io_apics(context, controllers).is_none() {
-        warn!("ioapic: candidate cleanup was incomplete; interrupts stay off");
-    }
-    RoutingPreparation::unproven()
-}
-
-/// Return every candidate for a polled keyboard, safe only once all of them were released.
-fn poll_after_release(
-    context: &mut ThreadContext,
-    controllers: &mut Vec<IoApic<ReleasableDevice>>,
-) -> RoutingPreparation {
-    match release_io_apics(context, controllers) {
-        Some(released) => RoutingPreparation::polled_safe(released),
-        None => RoutingPreparation::unproven(),
-    }
-}
-
-#[derive(Debug)]
-enum IoApicProbe {
-    Ready(IoApic<ReleasableDevice>),
-    Refused,
-    Retained(ProbeOwner),
-}
-
-/// The exact owner a refused probe could not return.
-#[derive(Debug)]
-enum ProbeOwner {
-    Mapping(paging::DeviceMapping),
-    Registers(ReleasableDevice),
-}
-
-fn retain_probe_owner(owner: ProbeOwner, controllers: Vec<IoApic<ReleasableDevice>>) {
-    match owner {
-        ProbeOwner::Mapping(mapping) => retain_routing_mapping(mapping, controllers),
-        ProbeOwner::Registers(registers) => retain_routing_registers(registers, controllers),
-    }
-}
-
-fn probe_io_apic(context: &mut ThreadContext, description: acpi_tables::IoApic) -> IoApicProbe {
-    let id = description.id();
-    let mapping = match map_device(context, u64::from(description.address()), IO_APIC_WINDOW) {
-        Some(Ok(mapping)) => mapping,
-        Some(Err(reason)) => {
-            warn!(
-                "ioapic {}: registers at {:#x} not mapped: {reason}; interrupts stay off",
-                id,
-                description.address()
-            );
-            return IoApicProbe::Refused;
-        }
-        None => {
-            warn!("ioapic: no active address space; interrupts stay off");
-            return IoApicProbe::Refused;
-        }
-    };
-    let registers = match mapping.claim_releasable() {
-        Ok(registers) => registers,
-        Err(mapping) => {
-            warn!(
-                "ioapic {}: mapped registers are not live; interrupts stay off",
-                id
-            );
-            return IoApicProbe::Retained(ProbeOwner::Mapping(mapping));
-        }
-    };
-    match IoApic::take(registers, description.gsi_base()) {
-        Ok(controller) => IoApicProbe::Ready(controller),
-        Err(failure) => {
-            let reason = failure.reason;
-            match unmap_device_exact(context, failure.registers) {
-                DeviceRetirement::Retired => {
-                    warn!(
-                        "ioapic {}: registers unusable: {reason}; mapping retired; interrupts stay off",
-                        id
-                    );
-                    IoApicProbe::Refused
-                }
-                DeviceRetirement::Retained(registers) => {
-                    warn!(
-                        "ioapic {}: registers unusable: {reason}; mapping retained; interrupts stay off",
-                        id
-                    );
-                    IoApicProbe::Retained(ProbeOwner::Registers(registers))
-                }
-            }
-        }
-    }
-}
-
-fn release_io_apics(
-    context: &mut ThreadContext,
-    controllers: &mut Vec<IoApic<ReleasableDevice>>,
-) -> Option<ControllersReleased> {
-    while let Some(controller) = controllers.pop() {
-        if let DeviceRetirement::Retained(registers) =
-            unmap_device_exact(context, controller.into_releasable())
-        {
-            warn!("ioapic: candidate mapping remained owned during cleanup");
-            retain_routing_registers(registers, core::mem::take(controllers));
-            return None;
-        }
-    }
-    Some(ControllersReleased { _private: () })
-}
-
-/// Bytes of register window an I/O APIC occupies: the index/data pair sits in the first 32, and
-/// a page is the smallest thing worth mapping.
-const IO_APIC_WINDOW: u64 = 4096;
-
-/// The interrupt controller ACPI described, ready to route lines.
-#[derive(Debug)]
-pub(crate) struct Routing {
-    /// The controller itself.
-    pub(crate) io_apic: IoApic<ReleasableDevice>,
-    /// What ACPI said about which line goes where.
-    pub(crate) interrupts: Interrupts,
-}
-
-fn retain_routing_mapping(
-    mapping: paging::DeviceMapping,
-    controllers: Vec<IoApic<ReleasableDevice>>,
-) {
-    let mut retained = RETAINED_ROUTING_MAPPING.lock_leaf();
-    assert!(
-        retained.is_none(),
-        "routing continued after an exact mapping owner was quarantined"
-    );
-    *retained = Some((mapping, controllers));
-}
-
-fn retain_routing_registers(
-    registers: ReleasableDevice,
-    controllers: Vec<IoApic<ReleasableDevice>>,
-) {
-    let mut retained = RETAINED_ROUTING_REGISTERS.lock_leaf();
-    assert!(
-        retained.is_none(),
-        "routing continued after an exact register owner was quarantined"
-    );
-    *retained = Some((registers, controllers));
-}
-
-/// Keep a routing controller reachable when cleanup cannot safely start.
-pub(crate) fn retain_routing(routing: Routing) {
-    let mut retained = RETAINED_ROUTING.lock_leaf();
-    assert!(
-        retained.is_none(),
-        "routing continued after a controller was quarantined"
-    );
-    *retained = Some(routing);
-}
-
-/// Return an uncommitted routing controller to the active address space.
-pub(crate) fn release_routing(context: &mut ThreadContext, routing: Routing) -> bool {
-    match unmap_device_exact(context, routing.io_apic.into_releasable()) {
-        DeviceRetirement::Retired => true,
-        DeviceRetirement::Retained(registers) => {
-            retain_routing_registers(registers, Vec::new());
-            false
-        }
-    }
-}
-
 #[derive(Debug)]
 enum BuildError {
     Mapping(MapError),
@@ -860,11 +413,14 @@ enum BuildError {
 }
 
 impl fmt::Display for BuildError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Mapping(reason) => fmt::Display::fmt(reason, f),
+            Self::Mapping(reason) => fmt::Display::fmt(reason, formatter),
             Self::Rollback { cause, cleanup } => {
-                write!(f, "{cause}; address-space rollback refused: {cleanup}")
+                write!(
+                    formatter,
+                    "{cause}; address-space rollback refused: {cleanup}"
+                )
             }
         }
     }
@@ -895,7 +451,6 @@ fn build(
     }
 }
 
-/// Map each image section by its class, recording its physical extent in `ranges`.
 fn map_image(
     space: &mut AddressSpace,
     image: ImageAddress,
@@ -903,8 +458,7 @@ fn map_image(
 ) -> Result<(), MapError> {
     let sections = boot::sections();
 
-    // Read-only and executable; read-only and not; writable and not. No
-    // fourth combination exists, which is the whole of W^X.
+    // Read-only executable, read-only, writable: no fourth combination exists, which is W^X.
     let enclave = sections.entry_enclave;
     let classes = [
         (sections.text, Flags::NONE, "text"),
@@ -954,7 +508,6 @@ fn map_image(
     Ok(())
 }
 
-/// Map every usable run through the direct map, keeping each image range's own flags.
 fn map_direct(
     space: &mut AddressSpace,
     map: &MemoryMap,

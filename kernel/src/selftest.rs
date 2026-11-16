@@ -17,8 +17,7 @@ const VERDICT_VERSION: usize = 1;
 
 type Check = (&'static str, fn() -> bool);
 
-// In order: the unserved-call check must run before any other program, and the nvme timeout
-// resets the only storage controller, so it runs last.
+// The unserved-call check runs before any program; the nvme timeout resets storage, so last.
 const CHECKS: &[Check] = &[
     (
         "allocation returns a zeroed frame",

@@ -56,7 +56,6 @@ pub(super) fn every_submission_gets_exactly_one_completion() -> bool {
         && echo.value == 0xDEAD_BEEF
         && uptime.token == 0x2222
         && uptime.status == queue::STATUS_OK
-        // A zeroed `now_ns()` once left the token-only form of this green.
         && uptime.value > 0
         && uptime.value <= crate::time::now_ns()
         && refused.token == 0x3333
@@ -291,8 +290,7 @@ pub(super) fn opening_a_node_does_not_restore_universal_rights() -> bool {
         && file_rights == Rights::READ
         && directory.as_directory().is_some()
         && directory_rights == Rights::TRAVERSE
-        // Read and never write: there is no write path, and a right that grants nothing is a
-        // syscall name in disguise.
+        // Read only: there is no write path, and a right that grants nothing is a disguised call.
         && universal_rights == Rights::UNIVERSAL.union(Rights::READ)
         && table.live() == 5
         && table.promised() == 0;

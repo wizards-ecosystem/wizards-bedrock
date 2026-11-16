@@ -235,13 +235,13 @@ pub(crate) fn spawn(name: &'static str, which: u64, argument: u64) -> Result<Spa
 }
 
 fn admitted_space() -> Result<AddressSpace, SpawnError> {
-    if !crate::maskable_interrupts_are_ready() {
+    if !crate::interrupts::maskable_interrupts_are_ready() {
         return Err(SpawnError::NoInterruptAdmission);
     }
     if !crate::user_launch_is_safe() {
         return Err(SpawnError::UnguardedBootStack);
     }
-    let isolation = crate::user_isolation();
+    let isolation = crate::interrupts::user_isolation();
     if !cpu::Protections::enabled().nx {
         return Err(SpawnError::NoExecuteProtection);
     }
@@ -255,9 +255,9 @@ fn admitted_space() -> Result<AddressSpace, SpawnError> {
         return Err(SpawnError::NoServiceWorker);
     }
     match isolation {
-        crate::UserIsolation::Closed => return Err(SpawnError::NoUserIsolation),
-        crate::UserIsolation::Shared => AddressSpace::for_user(),
-        crate::UserIsolation::Paired => AddressSpace::for_user_isolated(),
+        crate::interrupts::UserIsolation::Closed => return Err(SpawnError::NoUserIsolation),
+        crate::interrupts::UserIsolation::Shared => AddressSpace::for_user(),
+        crate::interrupts::UserIsolation::Paired => AddressSpace::for_user_isolated(),
     }
     .map_err(SpawnError::NoSpace)
 }

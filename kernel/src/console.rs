@@ -1,6 +1,3 @@
-//! Framebuffer text console in Noto Sans Mono bitmap glyphs, for user-facing output.
-//! Diagnostics go to the serial log.
-
 use core::fmt;
 
 use noto_sans_mono_bitmap::{
@@ -13,20 +10,14 @@ use crate::theme::Palette;
 const FONT_HEIGHT: RasterHeight = RasterHeight::Size16;
 const FONT_WEIGHT: FontWeight = FontWeight::Regular;
 
-/// Blank border kept around the text area.
-/// Where a line starts, and the floor `erase_previous` will not go below.
 pub(crate) const MARGIN: usize = 8;
 
-/// Extra pixels between baselines, so ascenders and descenders do not touch.
 const LINE_GAP: usize = 2;
 
-/// Drawn in place of any character the font does not carry.
 const FALLBACK_GLYPH: char = '?';
 
-/// ASCII backspace: move back a cell and blank it.
 const BACKSPACE: char = '\u{8}';
 
-/// A monospaced text console over a linear framebuffer.
 #[derive(Debug)]
 pub(crate) struct Console {
     framebuffer: Framebuffer,
@@ -39,7 +30,6 @@ pub(crate) struct Console {
 }
 
 impl Console {
-    /// Take over `framebuffer` and clear it to `palette`.
     pub(crate) fn new(framebuffer: Framebuffer, palette: Palette) -> Self {
         let mut console = Self {
             geometry: framebuffer.info(),
@@ -54,13 +44,11 @@ impl Console {
         console
     }
 
-    /// Add the shadow that scrolling reads once the heap is available.
     #[must_use = "a refused console shadow was not attached"]
     pub(crate) fn attach_back_buffer(&mut self) -> bool {
         self.framebuffer.attach_back_buffer()
     }
 
-    /// Adopt `palette`, clear the screen, and home the cursor.
     pub(crate) fn reset(&mut self, palette: Palette) {
         self.palette = palette;
         self.framebuffer.fill(palette.background);
@@ -68,7 +56,6 @@ impl Console {
         self.cursor_y = MARGIN;
     }
 
-    /// Write `text` and its line break with the cursor hidden throughout.
     pub(crate) fn write_line(&mut self, text: &str) {
         self.hide_cursor();
         self.put(text);
@@ -76,7 +63,7 @@ impl Console {
         self.show_cursor();
     }
 
-    /// Write `text` with the cursor hidden: moving visible content would copy its mark too.
+    // The cursor is hidden while writing: a scroll would copy its mark too.
     fn write_text(&mut self, text: &str) {
         self.hide_cursor();
         self.put(text);
@@ -125,7 +112,6 @@ impl Console {
         self.blank_cell();
     }
 
-    /// Paint the cell under the cursor in the background colour.
     fn blank_cell(&mut self) {
         for row in 0..self.line_height {
             for column in 0..self.glyph_width {
@@ -162,7 +148,6 @@ impl Console {
         }
     }
 
-    /// Shift the text area up one line and clear the line that opens up.
     fn scroll(&mut self) {
         let shift = self.line_height;
         let retained = self.cursor_y.saturating_sub(MARGIN + shift);
@@ -180,8 +165,6 @@ impl fmt::Write for Console {
     }
 }
 
-/// Look up a glyph, falling back to [`FALLBACK_GLYPH`] so rendering can never
-/// fail on an unexpected character.
 fn raster_for(character: char) -> Option<RasterizedChar> {
     get_raster(character, FONT_WEIGHT, FONT_HEIGHT)
         .or_else(|| get_raster(FALLBACK_GLYPH, FONT_WEIGHT, FONT_HEIGHT))

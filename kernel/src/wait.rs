@@ -1,45 +1,31 @@
-//! Waiting for an event: a waiting thread is not runnable and nothing is armed for it.
-//!
-//! The waiter set is a bitmask of slots in the queue itself, because the waker is an interrupt
-//! handler, which may not use the heap. A queue's lock and `THREADS` are never held together.
-//! The interrupt flag, clear across registering and blocking, makes them one step; SMP owes this
-//! pair a second look.
-
+use wost::arch::current::interrupt::TrapFrame;
+use wost::arch::current::task;
 use wost::sync::SpinLock;
 
 use crate::thread::{self, CAPACITY, ThreadContext};
-use wost::arch::current::interrupt::TrapFrame;
 
 const _: () = assert!(
     CAPACITY <= u32::BITS as usize,
     "the waiter set is one word wide"
 );
 
-/// A place threads wait until something wakes them.
+// A queue's lock and `THREADS` are never held together.
 #[derive(Debug)]
 pub(crate) struct WaitQueue {
-    /// One bit per thread slot: set while that thread is waiting here.
     waiters: SpinLock<u32>,
 }
 
 impl WaitQueue {
-    /// A queue nobody is waiting on.
     pub(crate) const fn new() -> Self {
         Self {
             waiters: SpinLock::new(0),
         }
     }
 
-    /// Check `ready` under the lock `wake_all` takes, and set this thread's bit only if false.
-    ///
-    /// The check and the registration both happen with the interrupt flag clear, which on one CPU
-    /// makes them one step. Under SMP the flag excludes nothing; full barriers on both sides must
-    /// replace it.
-    ///
-    /// `ready` runs with interrupts off and a queue lock held, so it must read state and nothing
-    /// else.
+    // `ready` runs with interrupts off under a queue lock, so it must only read state.
     pub(crate) fn wait_unless(&self, context: &mut ThreadContext, ready: impl Fn() -> bool) {
-        let slot = thread::current_slot();
+        let slot = task::current();
+        // Off from the check to the block, which makes them one step on one CPU.
         let mut saved = wost::arch::current::interrupt::disable();
 
         let registered = {
@@ -62,17 +48,14 @@ impl WaitQueue {
         saved.restore();
     }
 
-    /// Check `ready` under the lock `wake_all` takes and, only if false, wait through a syscall
-    /// frame until a wake or `until`, reporting whether this thread switched away.
-    ///
-    /// `ready` has the same atomic-only contract as [`wait_unless`](Self::wait_unless).
+    // `ready` must only read state, as for `wait_unless`.
     pub(crate) fn wait_from_trap_until(
         &self,
         frame: &TrapFrame,
         until: Option<u64>,
         ready: impl Fn() -> bool,
     ) -> bool {
-        let slot = thread::current_slot();
+        let slot = task::current();
         let saved = wost::arch::current::interrupt::disable();
         let registered = {
             let mut waiters = self.waiters.lock_leaf();
@@ -92,7 +75,7 @@ impl WaitQueue {
         switched
     }
 
-    /// Make every thread waiting here runnable, and report how many; safe from a trap handler.
+    // Safe from a trap handler.
     pub(crate) fn wake_all(&self) -> usize {
         let waiting = {
             let mut waiters = self.waiters.lock_leaf();

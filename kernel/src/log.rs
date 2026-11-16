@@ -1,10 +1,9 @@
-//! Kernel logging to the serial console only, so diagnostics never scroll the banner away.
+// Serial only, so diagnostics never scroll the banner away.
 
 use core::fmt::{self, Write};
 
 use crate::dev;
 
-/// Severity of a log record, most severe first.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub(crate) enum Level {
     #[cfg(feature = "selftest")]
@@ -15,7 +14,6 @@ pub(crate) enum Level {
 }
 
 impl Level {
-    /// Fixed-width tag, so records line up in the serial log.
     const fn tag(self) -> &'static str {
         match self {
             #[cfg(feature = "selftest")]
@@ -27,11 +25,8 @@ impl Level {
     }
 }
 
-/// Records less severe than this are discarded at the call site.
 const MAX_LEVEL: Level = Level::Info;
 
-/// Emit one record. Use the [`error!`](crate::error), [`warn!`](crate::warn),
-/// [`info!`](crate::info), and [`debug!`](crate::debug) macros instead.
 pub(crate) fn record(level: Level, args: fmt::Arguments<'_>) {
     if level > MAX_LEVEL {
         return;
@@ -41,7 +36,6 @@ pub(crate) fn record(level: Level, args: fmt::Arguments<'_>) {
     });
 }
 
-/// Log a failure the kernel could not recover from cleanly.
 #[macro_export]
 macro_rules! error {
     ($($arg:tt)*) => {
@@ -49,7 +43,6 @@ macro_rules! error {
     };
 }
 
-/// Log a condition that is survivable but not expected.
 #[macro_export]
 macro_rules! warn {
     ($($arg:tt)*) => {
@@ -57,7 +50,6 @@ macro_rules! warn {
     };
 }
 
-/// Log a milestone in normal operation.
 #[macro_export]
 macro_rules! info {
     ($($arg:tt)*) => {
@@ -65,7 +57,6 @@ macro_rules! info {
     };
 }
 
-/// Log detail useful only when chasing a specific problem.
 #[macro_export]
 macro_rules! debug {
     ($($arg:tt)*) => {

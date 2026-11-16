@@ -1,13 +1,9 @@
-//! The Wizard's Bedrock kernel entry point; every privileged operation goes through `wost`.
-//!
-//! This crate contains no hand-written `unsafe`.
-
 #![no_std]
 #![no_main]
 // Denied, since `forbid` would refuse the `#[allow(unsafe_code)]` glue `wost::entry!` expands here.
 #![deny(unsafe_code)]
 
-/// Nothing may allocate before `mem::init` has run, so `kernel_main` runs it before all that might.
+// Nothing may allocate before `mem::init` has run.
 extern crate alloc;
 
 mod acpi;
@@ -19,6 +15,7 @@ mod devfs;
 mod fs;
 mod handle;
 mod input;
+mod interrupts;
 mod iommu;
 mod log;
 mod mem;
@@ -27,8 +24,10 @@ mod object;
 mod panic;
 mod pci;
 mod queue;
+mod routing;
 #[cfg(feature = "selftest")]
 mod selftest;
+mod storage;
 mod theme;
 mod thread;
 mod time;
@@ -38,15 +37,14 @@ mod user;
 mod vfs;
 mod wait;
 
-use core::fmt::{self, Write};
-use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use core::fmt::Write;
+use core::sync::atomic::{AtomicBool, Ordering};
 
-use wost::arch::current::{apic, cpu, interrupt, pci as platform_pci, pic, segment, task, xstate};
+use wost::arch::current::{cpu, segment, task, xstate};
 use wost::boot::BootInfo;
 use wost::sync::SpinLock;
 
 use crate::arch::current::uart::UartError;
-use crate::arch::current::{ioapic, vector};
 
 ::wost::entry!(kernel_main);
 
@@ -61,8 +59,7 @@ fn kernel_main(boot: BootInfo) -> ! {
         Err(reason) => warn!("framebuffer: {reason}"),
     }
 
-    // Checked only once both consoles are up, so that a machine with neither a
-    // serial cable nor a supported bootloader still shows why it stopped.
+    // Checked only once both consoles are up, so either one shows why the boot stopped.
     let mut early_dma = match early_dma {
         Ok(boundary) => boundary,
         Err(reason) => panic!("DMA-safe boot handoff refused: {reason}"),
@@ -89,8 +86,7 @@ fn kernel_main(boot: BootInfo) -> ! {
         count => panic!("DMA-safe boot handoff quiesced {count} ISA requesters"),
     }
 
-    // The fault path exists before anything that can fault, so a wrong
-    // assumption prints a report instead of resetting (`006`).
+    // The fault path exists before anything that can fault.
     segment::init();
     arch::current::trap::init();
     info!("cpu: descriptor tables installed");
@@ -100,8 +96,7 @@ fn kernel_main(boot: BootInfo) -> ! {
     let protections = cpu::enable_protections();
     info!("cpu: protections {protections}");
 
-    // Before any thread but this one exists, because every switch saves and
-    // restores from here on.
+    // Before any second thread exists, because every switch saves and restores from here on.
     match xstate::init() {
         Some(extended) => info!(
             "cpu: extended state {} bytes, xcr0 {:#x}{}",
@@ -119,16 +114,14 @@ fn kernel_main(boot: BootInfo) -> ! {
     let dma_non_requester = early_dma.take_non_requester();
     let dma_quiesced = early_dma.take_quiesced_requester();
 
-    // After the fault path, because this is the first write through an
-    // address the bootloader chose; before everything else, which may want a frame.
+    // The first write through an address the bootloader chose, so after the fault path.
     mem::init(boot.memory_map, boot.direct_map, early_dma);
     let interrupts = mem::init_paging(boot.memory_map, boot.direct_map, boot.image, boot.rsdp);
     if let Ok(rsdp) = boot.rsdp {
         iommu::discover(rsdp);
     }
 
-    // The bootloader's stack has nothing below it and sits inside the
-    // unsplittable direct map, so the only guard is to leave it.
+    // The bootloader's stack sits in the unsplittable direct map: it cannot be guarded, only left.
     *HANDOFF.lock_leaf() = Some(Handoff {
         serial,
         interrupts,
@@ -137,23 +130,21 @@ fn kernel_main(boot: BootInfo) -> ! {
         dma_quiesced,
     });
     match mem::map_boot_stack() {
-        Some(stack) => task::continue_on_stack(stack, boot_continue, 1),
+        Some(stack) => task::continue_on_stack(stack, boot_continue, GUARDED_STACK),
         None => {
             warn!(
                 "boot: staying on the bootloader's stack, which has no guard; ring 3 stays closed"
             );
-            boot_continue(0)
+            boot_continue(BOOTLOADER_STACK)
         }
     }
 }
 
-/// What the boot thread carries across the change of stack.
-///
-/// A static, since a pointer into the abandoned old stack would point at memory nothing owns.
+// A static: a pointer into the abandoned bootloader stack would point at memory nothing owns.
+#[derive(Debug)]
 struct Handoff {
     serial: Result<(), UartError>,
     interrupts: Option<acpi::Interrupts>,
-    /// The initrd, read by the boot thread before the stack change and by the loader long after.
     module: Result<&'static [u8], wost::boot::HandoffError>,
     dma_non_requester: Option<pci_config::QualifiedNonRequester>,
     dma_quiesced: Option<pci_config::QuiescedIsaRequester>,
@@ -161,54 +152,17 @@ struct Handoff {
 
 static HANDOFF: SpinLock<Option<Handoff>> = SpinLock::new(None);
 
-/// Whether the boot thread reached its guarded stack before user launch.
+const BOOTLOADER_STACK: usize = 0;
+const GUARDED_STACK: usize = 1;
+
 static BOOT_STACK_GUARDED: AtomicBool = AtomicBool::new(false);
 
-/// Whether process construction may leave the boot stack.
 pub(crate) fn user_launch_is_safe() -> bool {
     BOOT_STACK_GUARDED.load(Ordering::Acquire)
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum UserIsolation {
-    Closed,
-    Shared,
-    Paired,
-}
-
-impl UserIsolation {
-    const fn bits(self) -> u8 {
-        match self {
-            Self::Closed => 0,
-            Self::Shared => 1,
-            Self::Paired => 2,
-        }
-    }
-
-    const fn from_bits(bits: u8) -> Self {
-        match bits {
-            1 => Self::Shared,
-            2 => Self::Paired,
-            _ => Self::Closed,
-        }
-    }
-}
-
-static USER_ISOLATION: AtomicU8 = AtomicU8::new(UserIsolation::Closed.bits());
-
-pub(crate) fn user_isolation() -> UserIsolation {
-    UserIsolation::from_bits(USER_ISOLATION.load(Ordering::Acquire))
-}
-
-static MASKABLE_INTERRUPTS_READY: AtomicBool = AtomicBool::new(false);
-
-pub(crate) fn maskable_interrupts_are_ready() -> bool {
-    MASKABLE_INTERRUPTS_READY.load(Ordering::Acquire)
-}
-
-/// The rest of the boot, on a guarded stack; panics if the handoff is gone, as then it ran twice.
-extern "C" fn boot_continue(guarded: usize) -> ! {
-    BOOT_STACK_GUARDED.store(guarded == 1, Ordering::Release);
+extern "C" fn boot_continue(stack: usize) -> ! {
+    BOOT_STACK_GUARDED.store(stack == GUARDED_STACK, Ordering::Release);
     let Some(Handoff {
         serial,
         interrupts,
@@ -220,16 +174,14 @@ extern "C" fn boot_continue(guarded: usize) -> ! {
         panic!("the boot handoff is gone; boot_continue ran twice");
     };
 
-    // The heap exists from here; the console's shadow is its first consumer,
-    // so scrolling stops reading uncached device memory.
     dev::attach_back_buffer();
-    let routing = prepare_keyboard_routing(interrupts).into_masked();
+    let routing = routing::prepare_keyboard_routing(interrupts).into_masked();
 
-    survey_the_bus(dma_non_requester, dma_quiesced);
-    survey_the_filesystems();
-    start_interrupts(routing.as_ref());
+    storage::survey_the_bus(dma_non_requester, dma_quiesced);
+    storage::survey_the_filesystems();
+    interrupts::start(routing.as_ref());
     input::init();
-    route_keyboard(routing);
+    routing::route_keyboard(routing);
     input::start_poller();
     queue::start_worker();
 
@@ -252,8 +204,6 @@ extern "C" fn boot_continue(guarded: usize) -> ! {
     #[cfg(feature = "selftest")]
     selftest::run();
 
-    // The shipped path must exercise user entry too; a refusal is diagnostic,
-    // never fatal, so the kernel remains interactive.
     match user::run() {
         Ok(program) => info!("user: program running in slot {}", program.slot),
         Err(reason) => warn!("user: no program: {reason}"),
@@ -265,11 +215,7 @@ extern "C" fn boot_continue(guarded: usize) -> ! {
     echo_keystrokes()
 }
 
-/// The boot thread's last job: block on the keyboard, and draw what arrives.
-///
-/// Nothing polls and nothing spins: this thread is not runnable until a keystroke wakes it, the
-/// idle thread halts meanwhile and no timer is armed, so a prompt takes one interrupt per key.
-/// Drawing happens here, outside the handler, because a glyph can cost a scroll.
+// Drawn here, not by the keyboard producer, because a glyph can cost a scroll.
 fn echo_keystrokes() -> ! {
     let mut context = thread::ThreadContext::require();
     loop {
@@ -283,916 +229,3 @@ fn echo_keystrokes() -> ! {
         }
     }
 }
-
-/// Bring up the interrupt controller, start the clock, and accept interrupts.
-///
-/// Each stage is a precondition for the next and every one can decline, because a kernel that
-/// cannot take interrupts is worth far more than one taking them into a controller it never
-/// configured. In order: stop the legacy controllers delivering anything, give the local APIC its
-/// vectors and turn it on, measure the clocks, and only then set the flag. Calibration sits between
-/// for both neighbours: it needs the APIC's registers answering, and running before the `sti` is
-/// what makes the measurement unpreemptible. It arms nothing, since the timer is the scheduler's
-/// to arm and nothing has asked it for anything yet. Alone among the stages, its failure vetoes
-/// nothing: a kernel without a clock still wants its keyboard.
-fn start_interrupts(external_controllers: Option<&mem::ExternalControllersMasked>) {
-    if let Err(reason) = pic::silence() {
-        warn!("legacy controllers not silenced: {reason}; interrupts stay off");
-        return;
-    }
-    info!("pic: legacy controllers remapped and masked");
-
-    apply_speculation_controls();
-
-    match apic::init(vector::LOCAL_APIC) {
-        Ok(local) => info!("apic: {local}"),
-        Err(reason) => {
-            warn!("local apic: {reason}; interrupts stay off");
-            return;
-        }
-    }
-
-    start_clock();
-    publish_time_page();
-
-    if !external_interrupts_are_admitted(external_controllers) {
-        warn!("ioapic: complete mask proof missing; interrupts stay off");
-        return;
-    }
-    if !PCI_INTERRUPT_BOUNDARY.load(Ordering::Acquire) || !iommu::is_interrupt_boundary_active() {
-        warn!("iommu: complete PCI interrupt boundary missing; interrupts stay off");
-        return;
-    }
-
-    if let Err(reason) = apic::enable_after_pending_audit() {
-        warn!("apic: pending interrupt audit refused sti: {reason}; interrupts stay off");
-        return;
-    }
-    MASKABLE_INTERRUPTS_READY.store(true, Ordering::Release);
-    info!("cpu: accepting interrupts");
-}
-
-/// Enable the speculation controls, then choose user isolation and the ring 3 buffer clear.
-///
-/// One MSR write at boot; the report matters as much, because this is the
-/// only place a machine's speculation claims are visible.
-fn apply_speculation_controls() {
-    let speculation = cpu::enable_speculation_controls();
-    info!("cpu: {speculation}");
-    match cpu::shared_kernel_mapping_reason(&speculation) {
-        Some(reason) => {
-            let isolation = if cfg!(feature = "selftest")
-                && wost::arch::current::kpti_entry_path_is_implemented()
-            {
-                // Qualification must execute the paired path even on QEMU,
-                // whose exact TCG tuple independently admits shared roots.
-                UserIsolation::Paired
-            } else {
-                UserIsolation::Shared
-            };
-            USER_ISOLATION.store(isolation.bits(), Ordering::Release);
-            if isolation == UserIsolation::Paired {
-                info!(
-                    "cpu: user isolation paired roots: forced for self-test; shared proof retained: {reason}"
-                );
-            } else {
-                info!("cpu: user isolation shared kernel mappings: {reason}");
-            }
-        }
-        None => {
-            if wost::arch::current::kpti_entry_path_is_implemented() {
-                USER_ISOLATION.store(UserIsolation::Paired.bits(), Ordering::Release);
-                info!("cpu: user isolation paired roots: selected; shared mappings refused");
-            } else {
-                USER_ISOLATION.store(UserIsolation::Closed.bits(), Ordering::Release);
-                warn!(
-                    "cpu: user isolation: no complete shared or paired entry path; ring 3 closed"
-                );
-            }
-        }
-    }
-
-    // An unreadable `MD_CLEAR` errs toward executing `verw`.
-    if !speculation.needs_buffer_clear() {
-        info!(
-            "cpu: no buffer clear on return to ring 3; the processor reports immunity to everything it clears"
-        );
-    } else {
-        interrupt::enable_buffer_clear();
-        let buffer_clear_reported = cpu::has_buffer_clear();
-        info!(
-            "cpu: buffers cleared on every return to ring 3{}",
-            if buffer_clear_reported {
-                ""
-            } else {
-                " (md_clear unreported, so the flush may buy nothing here)"
-            }
-        );
-    }
-}
-
-/// Calibrate the clock against the local APIC and say how far it can be trusted.
-fn start_clock() {
-    match time::init() {
-        Ok(report) => {
-            let apic_source_hz = report.apic_source_hz();
-            info!("time: apic source at {apic_source_hz} hz; {report}");
-            // Loud: this is the one clock property the kernel cannot check,
-            // and a machine without the promise may be throttling underneath.
-            if !report.counter_is_invariant() {
-                warn!(
-                    "time: the counter is not advertised invariant; the clock is only as steady as this machine's power management"
-                );
-            }
-        }
-        Err(reason) => warn!("clock: {reason}; uptime stays at zero, nothing preempts"),
-    }
-}
-
-/// Publish the time page whether or not the clock exists.
-///
-/// A program reading `TIME` must find `MODE_NONE`, not a page fault.
-fn publish_time_page() {
-    if timepage::init(time::counter_hz()) {
-        let mode = if time::is_calibrated() {
-            timepage::MODE_COUNTER
-        } else {
-            timepage::MODE_NONE
-        };
-        assert_eq!(
-            timepage::publish(mode, time::origin_ticks(), time::conversion()),
-            timepage::Publication::Published,
-            "the initialized time page refused its first publication"
-        );
-        info!(
-            "time: published at {:#x}, {}",
-            timepage::TIME,
-            if mode == timepage::MODE_COUNTER {
-                "readable without a call"
-            } else {
-                "revoked; readers must ask ring Uptime"
-            }
-        );
-    } else {
-        warn!("time: no page to publish the clock in; every query is ring Uptime");
-    }
-}
-
-const fn external_interrupts_are_admitted(mask: Option<&mem::ExternalControllersMasked>) -> bool {
-    mask.is_some()
-}
-
-static PCI_INTERRUPT_BOUNDARY: AtomicBool = AtomicBool::new(false);
-
-/// Claim configuration space and say what is on the bus.
-///
-/// Declines without failing: a machine whose configuration ports are already spoken for has no
-/// PCI as far as this kernel is concerned, and everything built so far works without it. The walk
-/// recurses through bridges: q35 and VMware place functions behind them, so a scan of bus zero
-/// can miss a controller entirely (`012` §2). Records whether every PCI requester is proved
-/// behind the default-deny owner.
-fn survey_the_bus(
-    dma_non_requester: Option<pci_config::QualifiedNonRequester>,
-    dma_quiesced: Option<pci_config::QuiescedIsaRequester>,
-) {
-    if !wost::arch::current::pci::init() {
-        warn!("pci: the configuration ports are already claimed; no bus");
-        return;
-    }
-
-    let early_boundary = thread::ThreadContext::claim()
-        .is_some_and(|mut context| iommu::establish_fabric_boundary(&mut context));
-    if !early_boundary {
-        warn!("iommu: no early default-deny PCI boundary; storage and interrupts stay closed");
-    }
-
-    match pci::snapshot_topology(dma_non_requester, dma_quiesced) {
-        Ok(()) => info!("pci: complete segment-zero topology sealed"),
-        Err(reason) => warn!("pci: DMA topology refused: {reason}"),
-    }
-
-    let mut selection = StorageSelection::Seeking;
-    let mut storage = 0;
-    let surveyed = pci::enumerate(|function| {
-        if function.class.is_nvme() {
-            storage += 1;
-            if matches!(selection, StorageSelection::Seeking) {
-                selection = try_controller(function.at, storage);
-            }
-        }
-    });
-
-    let Some(survey) = surveyed else {
-        warn!("pci: configuration space did not answer");
-        return;
-    };
-    info!(
-        "pci: {} functions across {} bus(es), {} bridge(s), highest {:#04x}, {storage} nvme",
-        survey.functions, survey.buses, survey.bridges, survey.highest_bus
-    );
-
-    let interrupt_boundary = iommu::ensure_interrupt_boundary();
-    if !interrupt_boundary {
-        warn!("iommu: PCI interrupt isolation is incomplete; maskable interrupts stay off");
-    }
-
-    match selection {
-        StorageSelection::Selected => mount_the_volume(),
-        StorageSelection::Seeking if storage == 0 => {
-            info!("pci: no nvme controller; nothing to claim")
-        }
-        StorageSelection::Seeking => info!("nvme: no usable controller"),
-        StorageSelection::Halted => {
-            warn!("nvme: selection stopped because a candidate could not be retired")
-        }
-    }
-    PCI_INTERRUPT_BOUNDARY.store(interrupt_boundary, Ordering::Release);
-}
-
-/// Whether enumeration should try another storage function.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum StorageSelection {
-    Seeking,
-    Selected,
-    Halted,
-}
-
-/// Where a storage candidate stands between the stages of [`try_controller`].
-#[derive(Debug)]
-enum CandidateStage {
-    /// Leased, mapped and verified disabled, with bus mastering still off;
-    /// the flag records whether the sibling isolation stage has completed.
-    Prepared(pci::Device, nvme::DisabledController, bool),
-    /// Bus mastering admitted behind the installed domain.
-    Admitted(pci::Device, nvme::BusMasterAdmittedController),
-    /// A stage failed and only the lease remains, for [`retire_candidate`].
-    Retire(pci::Device),
-    /// Selection is decided and no lease remains to return.
-    Settled(StorageSelection),
-}
-
-impl CandidateStage {
-    /// Move the owners out, leaving selection halted until a stage returns.
-    fn take(&mut self) -> Self {
-        core::mem::replace(self, Self::Settled(StorageSelection::Halted))
-    }
-
-    /// The owners of a prepared candidate; any other stage stays in place.
-    fn take_prepared(&mut self) -> Option<(pci::Device, nvme::DisabledController)> {
-        match self.take() {
-            Self::Prepared(device, prepared, true) => Some((device, prepared)),
-            other => {
-                *self = other;
-                None
-            }
-        }
-    }
-
-    /// The owners of an admitted candidate; any other stage stays in place.
-    fn take_admitted(&mut self) -> Option<(pci::Device, nvme::BusMasterAdmittedController)> {
-        match self.take() {
-            Self::Admitted(device, admitted) => Some((device, admitted)),
-            other => {
-                *self = other;
-                None
-            }
-        }
-    }
-}
-
-/// Claim one storage candidate and either commit or retire it.
-///
-/// Selection advances only after the failed candidate has stopped DMA,
-/// unmapped its registers, returned its queues, restored its command word and
-/// released its function and I/O claims. Every stage returns its owners here,
-/// so only one stage frame at a time sits on the boot stack.
-fn try_controller(at: pci_config::Address, ordinal: usize) -> StorageSelection {
-    let mut context = thread::ThreadContext::require();
-
-    // Stages borrow the candidate, so the debug frame holds one copy of its
-    // owners rather than one per stage call.
-    let mut stage = claim_candidate(at, ordinal, &mut context);
-    let device = loop {
-        if matches!(&stage, CandidateStage::Prepared(_, _, false)) {
-            isolate_candidate(&mut stage);
-            continue;
-        }
-        stage = match stage {
-            CandidateStage::Prepared(..) => admit_candidate(&mut stage, &mut context),
-            CandidateStage::Admitted(..) => start_candidate(&mut stage, &mut context, ordinal),
-            CandidateStage::Retire(device) => break device,
-            CandidateStage::Settled(selection) => return selection,
-        };
-    };
-    retire_candidate(device, ordinal)
-}
-
-/// Lease, map, prepare and isolate a candidate before it may bus-master.
-fn claim_candidate(
-    at: pci_config::Address,
-    ordinal: usize,
-    context: &mut thread::ThreadContext,
-) -> CandidateStage {
-    let mut device = match pci::lease(at) {
-        Ok(device) => device,
-        Err(reason) => return CandidateStage::Settled(refused_lease(at, reason)),
-    };
-    let (vendor, model) = device.identity();
-    info!(
-        "nvme: claimed {:02x}:{:02x}.{} — {vendor:04x}:{model:04x}",
-        at.bus(),
-        at.device(),
-        at.function()
-    );
-
-    let registers = match admit_controller_window(&mut device, context) {
-        ControllerWindowAdmission::Admitted(registers) => registers,
-        ControllerWindowAdmission::Refused => return CandidateStage::Retire(device),
-        ControllerWindowAdmission::Quarantined => {
-            pci::retain_failed_release(device);
-            return CandidateStage::Settled(StorageSelection::Halted);
-        }
-    };
-    let prepared = match nvme::prepare(context, registers) {
-        nvme::PrepareOutcome::Prepared(prepared) => prepared,
-        nvme::PrepareOutcome::Failed(failure) => {
-            return failed_preparation(failure, device, ordinal);
-        }
-    };
-    CandidateStage::Prepared(device, prepared, false)
-}
-
-/// Establish unit-wide isolation without moving the prepared controller into
-/// the same debug frame as VT-d's bounded inventory and table construction.
-fn isolate_candidate(stage: &mut CandidateStage) {
-    let outcome = match stage {
-        CandidateStage::Prepared(device, _, false) => iommu::establish(device),
-        _ => return,
-    };
-    match outcome {
-        iommu::EstablishOutcome::Established => {}
-        iommu::EstablishOutcome::Unavailable => warn!("storage: no DMA isolation"),
-        iommu::EstablishOutcome::Quarantined => {
-            quarantine_isolation(stage);
-            return;
-        }
-    }
-    let CandidateStage::Prepared(_, _, isolated) = stage else {
-        panic!("the isolation stage lost its prepared candidate");
-    };
-    *isolated = true;
-}
-
-/// Move uncertain isolation owners into their permanent quarantine only after
-/// the VT-d establishment frame has returned.
-fn quarantine_isolation(stage: &mut CandidateStage) {
-    let CandidateStage::Prepared(device, prepared, false) = stage.take() else {
-        panic!("an isolation quarantine lost its prepared candidate");
-    };
-    warn!("storage: DMA isolation state is uncertain; selection halted");
-    nvme::keep_iommu_quarantine(prepared, device);
-    *stage = CandidateStage::Settled(StorageSelection::Halted);
-}
-
-/// Report a refused lease, and whether selection may try the next function.
-fn refused_lease(at: pci_config::Address, reason: pci::ClaimError) -> StorageSelection {
-    let bus = at.bus();
-    let device_number = at.device();
-    let function = at.function();
-    match reason {
-        pci::ClaimError::ProbeRestore(recovery) => match recovery.retry() {
-            pci::ProbeRecoveryOutcome::Recovered => {
-                warn!(
-                    "nvme: {:02x}:{:02x}.{} probe failed but restored on retry",
-                    bus, device_number, function
-                );
-                StorageSelection::Seeking
-            }
-            pci::ProbeRecoveryOutcome::Refused(failure) => {
-                warn!(
-                    "nvme: {:02x}:{:02x}.{} probe restoration remains uncertain: {:?}",
-                    bus,
-                    device_number,
-                    function,
-                    failure.reason()
-                );
-                pci::retain_failed_probe(failure.into_recovery());
-                StorageSelection::Halted
-            }
-            pci::ProbeRecoveryOutcome::FunctionRetained => {
-                warn!(
-                    "nvme: {:02x}:{:02x}.{} probe restored but its function claim remains retained",
-                    bus, device_number, function
-                );
-                StorageSelection::Halted
-            }
-        },
-        pci::ClaimError::FunctionRetained => {
-            warn!(
-                "nvme: {:02x}:{:02x}.{} preparation failed with its function claim retained",
-                bus, device_number, function
-            );
-            StorageSelection::Halted
-        }
-        reason => {
-            warn!(
-                "nvme: {:02x}:{:02x}.{} could not be claimed: {reason}",
-                bus, device_number, function
-            );
-            StorageSelection::Seeking
-        }
-    }
-}
-
-/// Keep an uncertain preparation with its lease, or hand the lease back.
-fn failed_preparation(
-    failure: nvme::PrepareFailure,
-    device: pci::Device,
-    ordinal: usize,
-) -> CandidateStage {
-    let reason = failure.reason();
-    let Some(quarantine) = failure.into_quarantine() else {
-        return CandidateStage::Retire(device);
-    };
-    warn!(
-        "nvme: candidate {ordinal} left uncertain controller state after {}",
-        reason
-    );
-    nvme::keep_prepare_quarantine(quarantine, device);
-    CandidateStage::Settled(StorageSelection::Halted)
-}
-
-/// Admit bus mastering for a prepared candidate behind its installed domain.
-fn admit_candidate(
-    stage: &mut CandidateStage,
-    context: &mut thread::ThreadContext,
-) -> CandidateStage {
-    let Some((mut device, prepared)) = stage.take_prepared() else {
-        return stage.take();
-    };
-    let admitted = match prepared.admit_bus_master(&mut device) {
-        nvme::BusMasterAdmission::Admitted(admitted) => admitted,
-        nvme::BusMasterAdmission::Refused(failure) => {
-            warn!(
-                "nvme: bus master refused after verified disable: {}",
-                failure.reason()
-            );
-            match failure.into_disabled().retire(&mut device, context) {
-                nvme::ControllerRetirement::Retired => {}
-                nvme::ControllerRetirement::Quarantined(quarantine) => {
-                    nvme::keep_controller_quarantine(quarantine, device);
-                    return CandidateStage::Settled(StorageSelection::Halted);
-                }
-            }
-            return CandidateStage::Retire(device);
-        }
-    };
-    info!("nvme: bus master on after verified controller disable");
-    CandidateStage::Admitted(device, admitted)
-}
-
-/// Allocate and clear the one-page startup transfer before it gains DMA authority.
-#[inline(never)]
-fn allocate_cleared_startup_buffer() -> Option<wost::mm::DmaSegment> {
-    let mut segment = wost::mm::allocate_contiguous(1, 1)?;
-    if !segment.zero() {
-        return None;
-    }
-    Some(wost::mm::DmaSegment::from(segment))
-}
-
-/// Start an admitted controller, read block 0 through it, and keep it.
-fn start_candidate(
-    stage: &mut CandidateStage,
-    context: &mut thread::ThreadContext,
-    ordinal: usize,
-) -> CandidateStage {
-    let Some((mut device, admitted)) = stage.take_admitted() else {
-        return stage.take();
-    };
-    let mut controller = match nvme::start(context, &mut device, admitted) {
-        Ok(controller) => controller,
-        Err(failure) => {
-            let reason = failure.reason();
-            match failure.into_retirement() {
-                nvme::ControllerRetirement::Retired => return CandidateStage::Retire(device),
-                nvme::ControllerRetirement::Quarantined(quarantine) => {
-                    warn!(
-                        "nvme: candidate {ordinal} left uncertain controller state after {}",
-                        reason
-                    );
-                    nvme::keep_controller_quarantine(quarantine, device);
-                    return CandidateStage::Settled(StorageSelection::Halted);
-                }
-            }
-        }
-    };
-
-    // One block, to prove the whole path: queue built, command submitted,
-    // doorbell rung, phase tag recognised, completion matched by identifier.
-    let Some(mut buffer) = allocate_cleared_startup_buffer() else {
-        warn!("nvme: no cleared memory for a read buffer");
-        match controller.retire(&mut device, context) {
-            nvme::ControllerRetirement::Retired => {}
-            nvme::ControllerRetirement::Quarantined(quarantine) => {
-                nvme::keep_controller_quarantine(quarantine, device);
-                return CandidateStage::Settled(StorageSelection::Halted);
-            }
-        }
-        return CandidateStage::Retire(device);
-    };
-    match controller.read_blocks(0, 1, &mut buffer) {
-        Ok(()) => info!("nvme: read block 0"),
-        Err(reason) => {
-            warn!("nvme: block 0 could not be read: {reason}");
-            let retirement = controller.retire(&mut device, context);
-            iommu::report_faults();
-            match retirement {
-                nvme::ControllerRetirement::Retired => {}
-                nvme::ControllerRetirement::Quarantined(quarantine) => {
-                    nvme::keep_controller_quarantine(quarantine, device);
-                    drop(buffer);
-                    return CandidateStage::Settled(StorageSelection::Halted);
-                }
-            }
-            drop(buffer);
-            return CandidateStage::Retire(device);
-        }
-    }
-    if let Err(reason) = device.commit() {
-        warn!("nvme: pci command commit refused: {reason}");
-        pci::retain_failed_commit(device);
-        nvme::keep_uncommitted(controller, buffer);
-        return CandidateStage::Settled(StorageSelection::Halted);
-    }
-    nvme::keep(controller, buffer);
-    CandidateStage::Settled(StorageSelection::Selected)
-}
-
-/// Finish one failed lease, stopping selection unless restoration is exact.
-fn retire_candidate(mut device: pci::Device, ordinal: usize) -> StorageSelection {
-    if let Err(reason) = device.disable_bus_master_for_retirement() {
-        warn!("nvme: candidate {ordinal} bus-master fence was refused once: {reason}");
-        if let Err(reason) = device.disable_bus_master_for_retirement() {
-            warn!(
-                "nvme: candidate {ordinal} could not prove bus mastering off after retry: {reason}; selection halted"
-            );
-            pci::retain_failed_release(device);
-            return StorageSelection::Halted;
-        }
-    }
-    if let Err(reason) = device.settle_bus_master_fence_for_retirement() {
-        warn!("nvme: candidate {ordinal} safe command restoration was refused once: {reason}");
-        if let Err(reason) = device.settle_bus_master_fence_for_retirement() {
-            warn!(
-                "nvme: candidate {ordinal} could not settle its bus-master fence after retry: {reason}; selection halted"
-            );
-            pci::retain_failed_release(device);
-            return StorageSelection::Halted;
-        }
-    }
-    // BME is verified off, excluded from the restored command word and still
-    // protected by the selected function claim while translation goes away.
-    if !iommu::release_candidate() {
-        warn!("nvme: candidate {ordinal} could not return its dma domain; selection halted");
-        pci::retain_failed_release(device);
-        return StorageSelection::Halted;
-    }
-    if let Some((reason, device)) = device.release().into_retained() {
-        warn!(
-            "nvme: candidate {ordinal} pci lease retirement was refused once: {}",
-            reason
-        );
-        if let Some((reason, device)) = device.release().into_retained() {
-            warn!(
-                "nvme: candidate {ordinal} could not return its pci lease after retry: {}; selection halted",
-                reason
-            );
-            pci::retain_failed_release(device);
-            return StorageSelection::Halted;
-        }
-    }
-    info!("nvme: candidate {ordinal} retired cleanly; trying next");
-    StorageSelection::Seeking
-}
-
-#[derive(Debug)]
-enum ControllerWindowAdmission {
-    Admitted(platform_pci::MappedBar),
-    Refused,
-    Quarantined,
-}
-
-fn admit_controller_window(
-    device: &mut pci::Device,
-    context: &mut thread::ThreadContext,
-) -> ControllerWindowAdmission {
-    // BAR0 is the register file; a controller whose first window is not
-    // memory is one this driver cannot reach.
-    let Some(window) = device.window(0) else {
-        warn!("nvme: no bar0; nothing to map");
-        return ControllerWindowAdmission::Refused;
-    };
-    let pci_config::Bar::Memory { address, wide, .. } = window.bar else {
-        warn!("nvme: bar0 is not a memory window");
-        return ControllerWindowAdmission::Refused;
-    };
-    info!(
-        "nvme: bar0 is {} bytes of {}-bit memory at {address:#x}",
-        window.size,
-        if wide { 64 } else { 32 }
-    );
-    let admitted = match device.admit_memory_bar(0) {
-        Ok(admitted) => admitted,
-        Err(reason) => {
-            warn!("nvme: bar0 physical range refused: {reason}");
-            return ControllerWindowAdmission::Refused;
-        }
-    };
-    let (page_start, page_end, physical_bits) = admitted.physical_admission();
-    let mapping = match mem::map_pci_bar(context, admitted) {
-        Ok(mapping) => mapping,
-        Err(failure) => {
-            match failure.reason() {
-                Some(reason) => warn!("nvme: bar0 mapping refused: {reason}"),
-                None => warn!("nvme: no active address space for bar0"),
-            }
-            if let Err(failure) = platform_pci::release_admitted_bar(failure.into_admitted()) {
-                warn!("nvme: bar0 authority return refused: {failure}");
-                mem::retain_pci_bar_authority(failure);
-                return ControllerWindowAdmission::Quarantined;
-            }
-            return ControllerWindowAdmission::Refused;
-        }
-    };
-    let disabled = match mapping.claim_disabled() {
-        Ok(disabled) => disabled,
-        Err(mapping) => {
-            warn!("nvme: the installed bar0 mapping is absent from the active root");
-            mem::retain_pci_bar_mapping(mapping);
-            return ControllerWindowAdmission::Quarantined;
-        }
-    };
-    let mapped = match device.enable_memory_bar(disabled) {
-        pci::BarDecodeOutcome::Enabled(mapped) => mapped,
-        pci::BarDecodeOutcome::Refused(failure) => {
-            let reason = failure.reason();
-            let retirement =
-                mem::unmap_pci_bar_exact(context, failure.into_bar().into_releasable());
-            warn!("nvme: memory-space decode refused: {reason}; mapping {retirement:?}");
-            return match retirement {
-                mem::PciBarRetirement::Retired => ControllerWindowAdmission::Refused,
-                mem::PciBarRetirement::Quarantined => ControllerWindowAdmission::Quarantined,
-            };
-        }
-    };
-    info!(
-        "nvme: bar0 pages {page_start:#x}..{page_end:#x} admitted below MAXPHYADDR {physical_bits}"
-    );
-    info!("nvme: memory-space decode on; bus master remains off");
-    ControllerWindowAdmission::Admitted(mapped)
-}
-
-/// Mount through the VFS so the shipped path exercises its abstraction.
-/// An absent volume is a valid empty machine, not a boot failure.
-fn mount_the_volume() {
-    let shape = fs::mount().map(|result| result.map(|volume| volume.shape()));
-    match shape {
-        None => {
-            info!("fat32: no controller, so no volume");
-            return;
-        }
-        Some(Err(reason)) => {
-            warn!("fat32: the volume would not mount: {reason:?}");
-            return;
-        }
-        Some(Ok((clusters, cluster_bytes))) => {
-            info!("fat32: mounted — {clusters} clusters of {cluster_bytes} bytes");
-        }
-    }
-
-    let Some(root) = vfs::root() else {
-        return;
-    };
-
-    // The controller's ThreadLock is non-reentrant across this callback, so
-    // names are resolved only after enumeration releases it.
-    let mut files = 0usize;
-    let mut directories = 0usize;
-    let mut first = [0u8; 16];
-    let mut first_len = 0usize;
-    if let Err(reason) = vfs::enumerate(root, |name, is_directory| {
-        if is_directory {
-            directories += 1;
-        } else {
-            files += 1;
-            if first_len == 0 && name.len() <= first.len() {
-                first[..name.len()].copy_from_slice(name);
-                first_len = name.len();
-            }
-        }
-        true
-    }) {
-        warn!("fat32: the root would not list: {reason:?}");
-        return;
-    }
-    info!("fat32: {files} file(s) and {directories} directory(ies) in the root");
-
-    if first_len == 0 {
-        return;
-    }
-    let name = &first[..first_len];
-    match vfs::resolve(root, name) {
-        Ok(vfs::Node::File(file)) => {
-            let mut head = [0u8; 32];
-            match vfs::read(file, 0, &mut head) {
-                Ok(read) => info!(
-                    "fat32: {} — read {read} of its bytes",
-                    core::str::from_utf8(name).unwrap_or("?")
-                ),
-                Err(reason) => warn!("fat32: that file would not read: {reason:?}"),
-            }
-        }
-        Ok(vfs::Node::Directory(_)) => warn!("fat32: a listed file resolved to a directory"),
-        // A FAT volume has no devices, and the compiler says so: a new node
-        // kind is an error in every match.
-        Ok(vfs::Node::Device(_)) => warn!("fat32: a listed file resolved to a device"),
-        Err(reason) => warn!("fat32: a listed name would not resolve: {reason:?}"),
-    }
-}
-
-/// Say what the other two backends hold.
-///
-/// `014` asks for more than one backend before the VFS's abstraction is worth
-/// believing, and this is the shipped kernel exercising all three through the
-/// same three operations. It is an unconditional sibling of bus discovery,
-/// because neither backend needs a device.
-fn survey_the_filesystems() {
-    tmpfs::init();
-
-    let mut files = 0usize;
-    let mut directories = 0usize;
-    let listed = vfs::enumerate(vfs::tmp_root(), |_, is_directory| {
-        if is_directory {
-            directories += 1;
-        } else {
-            files += 1;
-        }
-        true
-    });
-    match listed {
-        Ok(()) => {
-            info!("tmpfs: {files} file(s) and {directories} directory(ies) at the root");
-        }
-        Err(reason) => warn!("tmpfs: the root would not list: {reason:?}"),
-    }
-
-    for device in devfs::DEVICES {
-        match vfs::resolve(vfs::Directory::Dev, device.name()) {
-            Ok(vfs::Node::Device(found)) => info!(
-                "devfs: {} is {}",
-                core::str::from_utf8(found.name()).unwrap_or("?"),
-                found.describes()
-            ),
-            Ok(_) => warn!("devfs: a device resolved to something with bytes in it"),
-            Err(reason) => warn!("devfs: a device would not resolve: {reason:?}"),
-        }
-    }
-}
-
-/// Route the keyboard's line through the I/O APIC, so keystrokes interrupt.
-///
-/// The polled path is safe only after every described controller was proven
-/// masked. An incomplete inventory also vetoes `sti`.
-fn route_keyboard(routing: Option<mem::ExternalControllersMasked>) {
-    let Some(routing) = routing else {
-        warn!("keyboard: external controllers are unproven; interrupts and routing stay off");
-        return;
-    };
-    let routing = match routing.into_routing() {
-        Some(routing) if interrupt::are_enabled() => routing,
-        Some(routing) => {
-            if !rollback_keyboard_route(routing) {
-                warn!("keyboard: masked routing mapping remains quarantined; staying polled");
-                return;
-            }
-            info!("keyboard: interrupts stayed off; a poller thread drains it instead");
-            return;
-        }
-        None => {
-            info!("keyboard: no io apic owns its line; a poller thread drains it instead");
-            return;
-        }
-    };
-
-    if !matches!(pci::topology_presence(), pci::TopologyPresence::Empty) {
-        if !rollback_keyboard_route(routing) {
-            warn!("keyboard: masked routing owner remains quarantined; staying polled");
-            return;
-        }
-        info!("keyboard: PCI interrupt isolation keeps every io-apic line masked; polling");
-        return;
-    }
-
-    commit_keyboard_route(routing);
-}
-
-#[derive(Debug)]
-enum KeyboardRouteError {
-    NotOwned(u32),
-    Controller(ioapic::RoutingError),
-    Keyboard(crate::arch::current::i8042::InterruptEnableError),
-}
-
-impl fmt::Display for KeyboardRouteError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NotOwned(gsi) => write!(f, "gsi {gsi} is not this controller's"),
-            Self::Controller(reason) => fmt::Display::fmt(reason, f),
-            Self::Keyboard(reason) => fmt::Display::fmt(reason, f),
-        }
-    }
-}
-
-impl core::error::Error for KeyboardRouteError {}
-
-fn configure_keyboard_route(routing: &mut mem::Routing) -> Result<u32, KeyboardRouteError> {
-    let gsi = routing.interrupts.gsi_for(KEYBOARD_IRQ);
-    if !routing.io_apic.handles(gsi) {
-        return Err(KeyboardRouteError::NotOwned(gsi));
-    }
-
-    let wiring = match routing.interrupts.flags_for(KEYBOARD_IRQ) {
-        0 => ioapic::Wiring::isa_default(),
-        flags => ioapic::Wiring::from_flags(flags),
-    };
-    routing
-        .io_apic
-        .route(gsi, vector::KEYBOARD, wiring)
-        .map_err(KeyboardRouteError::Controller)?;
-
-    input::enable_interrupts().map_err(KeyboardRouteError::Keyboard)?;
-    Ok(gsi)
-}
-
-fn commit_keyboard_route(mut routing: mem::Routing) {
-    let gsi = match configure_keyboard_route(&mut routing) {
-        Ok(gsi) => gsi,
-        Err(reason) => {
-            if !rollback_keyboard_route(routing) {
-                warn!(
-                    "keyboard: routing refused after {reason}; rollback authority remains quarantined; staying polled"
-                );
-                return;
-            }
-            warn!("keyboard: routing refused: {reason}; staying polled");
-            return;
-        }
-    };
-    input::take_interrupts();
-    dev::keep_io_apic(routing.io_apic.retain());
-    info!(
-        "keyboard: irq {KEYBOARD_IRQ} on gsi {gsi} routed to vector {:#x}",
-        vector::KEYBOARD.get()
-    );
-}
-
-fn rollback_keyboard_route(mut routing: mem::Routing) -> bool {
-    let gsi = routing.interrupts.gsi_for(KEYBOARD_IRQ);
-    if routing.io_apic.handles(gsi)
-        && let Err(reason) = routing.io_apic.mask_and_verify(gsi)
-    {
-        warn!("keyboard: could not verify rollback mask for gsi {gsi}: {reason}");
-        mem::retain_routing(routing);
-        return false;
-    }
-    let Some(mut context) = thread::ThreadContext::claim() else {
-        warn!("keyboard: rollback could not claim thread context");
-        mem::retain_routing(routing);
-        return false;
-    };
-    if !mem::release_routing(&mut context, routing) {
-        warn!("keyboard: rollback could not retire its io-apic mapping");
-        return false;
-    }
-    true
-}
-
-/// Map and select the controller which owns the keyboard's resolved GSI.
-///
-/// This runs before [`start_interrupts`], so probing masks every described
-/// controller while the CPU still refuses external delivery.
-fn prepare_keyboard_routing(interrupts: Option<acpi::Interrupts>) -> mem::RoutingPreparation {
-    let Some(interrupts) = interrupts else {
-        warn!("ioapic: no complete firmware controller inventory; interrupts stay off");
-        return mem::RoutingPreparation::unproven();
-    };
-    let gsi = interrupts.gsi_for(KEYBOARD_IRQ);
-    let Some(mut context) = thread::ThreadContext::claim() else {
-        warn!("ioapic: no thread context for mapping; interrupts stay off");
-        return mem::RoutingPreparation::unproven();
-    };
-    mem::prepare_routing(&mut context, interrupts, gsi)
-}
-
-/// The legacy line the keyboard controller has always used.
-const KEYBOARD_IRQ: u8 = 1;

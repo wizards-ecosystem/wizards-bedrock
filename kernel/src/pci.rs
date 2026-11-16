@@ -772,6 +772,39 @@ fn retain_failed_function(function: pci::FunctionClaim) {
     *slot = Some(function);
 }
 
+static RETAINED_BARS: SpinLock<
+    [Option<BarQuarantine>; FUNCTION_AUTHORITY_LIMIT * pci_config::BARS],
+> = SpinLock::new([const { None }; FUNCTION_AUTHORITY_LIMIT * pci_config::BARS]);
+
+#[derive(Debug)]
+pub(crate) enum BarQuarantine {
+    Mapping {
+        _mapping: pci::BarMapping,
+    },
+    Releasable {
+        _bar: pci::ReleasableBar,
+    },
+    Authority {
+        _failure: pci_config::BarAuthorityFailure,
+    },
+}
+
+pub(crate) fn retain_bar(quarantine: BarQuarantine) {
+    let mut retained = RETAINED_BARS.lock_leaf();
+    let Some(slot) = retained.iter_mut().find(|slot| slot.is_none()) else {
+        panic!("retained BAR authority exceeds every BAR of the PCI function registry");
+    };
+    *slot = Some(quarantine);
+}
+
+pub(crate) fn retain_bar_mapping(mapping: pci::BarMapping) {
+    retain_bar(BarQuarantine::Mapping { _mapping: mapping });
+}
+
+pub(crate) fn retain_bar_authority(failure: pci_config::BarAuthorityFailure) {
+    retain_bar(BarQuarantine::Authority { _failure: failure });
+}
+
 pub(crate) fn lease(at: Address) -> Result<Device, ClaimError> {
     let function = pci::claim_function(at).map_err(|reason| match reason {
         pci::ClaimError::Unavailable => ClaimError::NoBus,

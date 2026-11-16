@@ -14,7 +14,6 @@ use crate::{thread, time, user};
 
 const UNSERVED_CALL: usize = 0x0BAD_0BAD;
 
-// Runs first: the refusal once logged in trap context and halted the machine.
 pub(super) fn an_unserved_call_is_refused_without_stopping_the_machine() -> bool {
     let (refused_before, _) = user::refusals();
     let faults_before = trap::last_user_fault().count;
@@ -211,8 +210,7 @@ impl AllocatorSnapshot {
     }
 }
 
-// Forty programs through sixteen slots beside a spinner: unless the service worker reclaims each
-// one, the seventeenth spawn is refused.
+// Forty programs through sixteen slots beside a spinner: the worker must reclaim each one.
 pub(super) fn a_dead_program_gives_its_memory_back() -> bool {
     if !runs_until(2000, || !user::has_zombies()) {
         return false;

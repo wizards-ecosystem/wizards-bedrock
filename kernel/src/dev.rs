@@ -1,6 +1,4 @@
-//! The kernel's output devices, as locked singletons the panic path reaches without plumbing.
-//! Their locks keep interrupts on because framebuffer scrolling can be slow; trap handlers
-//! therefore use only the non-blocking accessors.
+// The locks keep interrupts on, as scrolling is slow; trap handlers use only the `try_` ones.
 
 use wost::boot::Framebuffer;
 use wost::sync::{SpinLock, ThreadLock};
@@ -14,14 +12,12 @@ use crate::{debug, info, warn};
 static UART: ThreadLock<Option<Uart>> = ThreadLock::new(None);
 static CONSOLE: ThreadLock<Option<Console>> = ThreadLock::new(None);
 
-/// Bring up the serial console.
 pub(crate) fn init_uart() -> Result<(), UartError> {
     let uart = Uart::new()?;
     *UART.lock() = Some(uart);
     Ok(())
 }
 
-/// Take over the framebuffer with a text console.
 pub(crate) fn init_console(framebuffer: Framebuffer) {
     let geometry = framebuffer.info();
     info!(
@@ -35,7 +31,6 @@ pub(crate) fn init_console(framebuffer: Framebuffer) {
     *CONSOLE.lock() = Some(Console::new(framebuffer, theme::NORMAL));
 }
 
-/// Run `operation` against the serial console, doing nothing if there is none.
 pub(crate) fn with_uart(operation: impl FnOnce(&mut Uart)) {
     let mut guard = UART.lock();
     if let Some(uart) = guard.as_mut() {
@@ -43,7 +38,6 @@ pub(crate) fn with_uart(operation: impl FnOnce(&mut Uart)) {
     }
 }
 
-/// Run `operation` against the framebuffer console, doing nothing if there is none.
 pub(crate) fn with_console(operation: impl FnOnce(&mut Console)) {
     let mut guard = CONSOLE.lock();
     if let Some(console) = guard.as_mut() {
@@ -51,7 +45,6 @@ pub(crate) fn with_console(operation: impl FnOnce(&mut Console)) {
     }
 }
 
-/// Use the serial console only if no interrupted code holds its lock.
 pub(crate) fn try_with_uart(operation: impl FnOnce(&mut Uart)) {
     if let Some(mut guard) = UART.try_lock()
         && let Some(uart) = guard.as_mut()
@@ -60,7 +53,6 @@ pub(crate) fn try_with_uart(operation: impl FnOnce(&mut Uart)) {
     }
 }
 
-/// Use the framebuffer console only if no interrupted code holds its lock.
 pub(crate) fn try_with_console(operation: impl FnOnce(&mut Console)) {
     if let Some(mut guard) = CONSOLE.try_lock()
         && let Some(console) = guard.as_mut()
@@ -69,10 +61,7 @@ pub(crate) fn try_with_console(operation: impl FnOnce(&mut Console)) {
     }
 }
 
-/// Give the console's framebuffer a shadow in RAM; separate from [`init_console`] because the
-/// heap does not yet exist when the boot handoff installs the console.
-/// Logging takes UART's lock, so this reports only after releasing CONSOLE, adding no otherwise
-/// unchecked CONSOLE then UART order.
+// Reports only after releasing CONSOLE, because logging takes UART's lock.
 pub(crate) fn attach_back_buffer() {
     let attached = {
         let mut guard = CONSOLE.lock();
@@ -88,11 +77,8 @@ pub(crate) fn attach_back_buffer() {
     }
 }
 
-/// The I/O APIC, once a line has been routed through it.
-/// Kept because it owns its register window for the kernel's life.
 static IO_APIC: SpinLock<Option<IoApic>> = SpinLock::new(None);
 
-/// Keep the controller the keyboard was just routed through.
 pub(crate) fn keep_io_apic(io_apic: IoApic) {
     *IO_APIC.lock_leaf() = Some(io_apic);
 }
