@@ -206,8 +206,9 @@ Phase 7:
   arena and a `u32` waiter mask, and one `Binding` serves one thread (`kernel/src/thread.rs`,
   `wost/src/arch/x86_64/task.rs`). Processes need `entry(arg)` and many threads per root.
 - Each process has one fixed ring, timers expire only on kernel entry, and the time page is global
-  (`kernel/src/queue.rs`, `kernel/src/timepage.rs`). Channels need their own transport, and time
-  needs per-world clock modes and the trap on direct clock reads.
+  (`kernel/src/queue.rs`, `kernel/src/timepage.rs`). Ring 3 cannot read the counter and the page
+  carries no time, so every read is `Uptime`. Channels need their own transport, and time needs
+  per-world clock pages, the clock modes and the raw time right.
 - The ring 3 witness is hand-encoded machine code that restates `libs/native-abi` as literals
   (`xtask/src/image/program.rs`). Phase 7 needs witness programs built by cargo that import the ABI
   from `libs/`, and records of how each program ended. No ring 3 program faults on a kernel address to witness isolation,

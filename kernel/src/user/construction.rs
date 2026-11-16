@@ -110,6 +110,7 @@ pub(crate) enum SpawnError {
     NoInterruptAdmission,
     NoUserIsolation,
     NoExecuteProtection,
+    UntrappedCounter,
     NoExtendedState,
     NoClock,
     NoRandomness,
@@ -137,6 +138,9 @@ impl fmt::Display for SpawnError {
             }
             Self::NoExecuteProtection => {
                 formatter.write_str("no execute protection; ring 3 is closed")
+            }
+            Self::UntrappedCounter => {
+                formatter.write_str("the counter is not trapped; ring 3 is closed")
             }
             Self::NoExtendedState => {
                 formatter.write_str("no isolated extended state; ring 3 is closed")
@@ -238,6 +242,9 @@ fn admitted_space() -> Result<AddressSpace, SpawnError> {
     let isolation = crate::interrupts::user_isolation();
     if !cpu::Protections::enabled().nx {
         return Err(SpawnError::NoExecuteProtection);
+    }
+    if !cpu::counter_is_trapped() {
+        return Err(SpawnError::UntrappedCounter);
     }
     if !xstate::user_state_is_isolated() {
         return Err(SpawnError::NoExtendedState);

@@ -8,6 +8,7 @@ const PROBE: u64 = 2;
 const DUPLICATE: u64 = 3;
 const INVALID_RETURN_STACK: u64 = 6;
 const INVALID_RETURN_FLAGS: u64 = 7;
+const READ_COUNTER: u64 = 8;
 
 pub(crate) fn spawn_faulting() -> Result<Spawned, SpawnError> {
     spawn("user-fault", 2, FAULT)
@@ -37,4 +38,8 @@ pub(crate) fn spawn_with_invalid_return_stack() -> Result<Spawned, SpawnError> {
 
 pub(crate) fn spawn_with_invalid_return_flags() -> Result<Spawned, SpawnError> {
     spawn("user-invalid-flags", 11, INVALID_RETURN_FLAGS)
+}
+
+pub(crate) fn spawn_reading_the_counter() -> Result<Spawned, SpawnError> {
+    spawn("user-rdtsc", 12, READ_COUNTER)
 }

@@ -27,6 +27,8 @@ const SYSENTER_CS: u32 = 0x174;
 
 const PRED_CMD: u32 = 0x49;
 
+const TSC_AUX: u32 = 0xC000_0103;
+
 const PRED_CMD_IBPB: u64 = 1 << 0;
 
 const EFER_NO_EXECUTE: u64 = 1 << 11;
@@ -48,7 +50,7 @@ const CR4_PCE: u64 = 1 << 8;
 const CR4_FSGSBASE: u64 = 1 << 16;
 
 // A bootloader may leave these set; each would hand ring 3 a counter, a register or a breakpoint.
-const CR4_CLEARED: u64 = CR4_TSD | CR4_DE | CR4_PCE | CR4_FSGSBASE;
+const CR4_CLEARED: u64 = CR4_DE | CR4_PCE | CR4_FSGSBASE;
 
 pub(super) const FLAGS_RESERVED: u64 = 1 << 1;
 
@@ -239,14 +241,16 @@ pub enum ControlStateError {
     Cr0,
     Cr4,
     Flags,
+    TscAux,
 }
 
 impl fmt::Display for ControlStateError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::Cr0 => "cr0 did not keep ne set and em clear",
-            Self::Cr4 => "cr4 did not keep mce set and tsd, de, pce and fsgsbase clear",
+            Self::Cr4 => "cr4 did not keep mce and tsd set and de, pce and fsgsbase clear",
             Self::Flags => "rflags did not read back as only its reserved bit",
+            Self::TscAux => "ia32_tsc_aux did not read back as zero",
         })
     }
 }
@@ -261,21 +265,44 @@ pub fn establish_control_state() -> Result<(), ControlStateError> {
     );
     write_cr0((read_cr0() | CR0_NE) & !CR0_EM);
     let machine_check = if has_machine_check() { CR4_MCE } else { 0 };
-    write_cr4((read_cr4() | machine_check) & !CR4_CLEARED);
+    write_cr4((read_cr4() | machine_check | CR4_TSD) & !CR4_CLEARED);
     let flags = normalise_flags();
+    let tsc_aux = has_tsc_aux();
+    if tsc_aux {
+        // SAFETY: CPUID enumerated `RDTSCP` or `RDPID`, so the register exists; it only names a
+        // value those instructions return and nothing in the kernel reads it.
+        unsafe { msr::write(TSC_AUX, 0) };
+    }
 
     let cr0 = read_cr0();
     if cr0 & CR0_NE == 0 || cr0 & CR0_EM != 0 {
         return Err(ControlStateError::Cr0);
     }
     let cr4 = read_cr4();
-    if cr4 & machine_check != machine_check || cr4 & CR4_CLEARED != 0 {
+    if cr4 & machine_check != machine_check || cr4 & CR4_TSD == 0 || cr4 & CR4_CLEARED != 0 {
         return Err(ControlStateError::Cr4);
     }
     if flags != FLAGS_RESERVED {
         return Err(ControlStateError::Flags);
     }
+    if tsc_aux && msr::read(TSC_AUX) != 0 {
+        return Err(ControlStateError::TscAux);
+    }
     Ok(())
+}
+
+// `RDTSC`, `RDTSCP`, `TPAUSE` and `UMWAIT` raise #GP outside ring 0 while this holds.
+pub fn counter_is_trapped() -> bool {
+    read_cr4() & CR4_TSD != 0
+}
+
+fn has_tsc_aux() -> bool {
+    const RDTSCP: u32 = 1 << 27;
+    const RDPID: u32 = 1 << 22;
+
+    let rdtscp = max_leaf(0x8000_0000) >= 0x8000_0001 && cpuid(0x8000_0001, 0).edx & RDTSCP != 0;
+    let rdpid = max_leaf(0) >= 7 && cpuid(7, 0).ecx & RDPID != 0;
+    rdtscp || rdpid
 }
 
 fn has_machine_check() -> bool {
@@ -696,7 +723,7 @@ fn add_cr4(additions: Cr4Additions) {
 
 fn write_cr4(value: u64) {
     // SAFETY: private to this module, whose callers pass the value just read with only
-    // `Cr4Additions` bits or a supported `MCE` added, or `TSD`, `DE`, `PCE` and `FSGSBASE`
+    // `Cr4Additions` bits, `TSD` or a supported `MCE` added, or `DE`, `PCE` and `FSGSBASE`
     // cleared; paging-mode bits are written back unchanged and no memory changes, and the asm
     // stays a memory barrier because these bits change which accesses the processor permits.
     unsafe {

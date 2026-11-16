@@ -53,6 +53,30 @@ pub(super) fn a_faulting_program_dies_alone() -> bool {
     this_child && it_was_the_ud2 && in_user_memory && retired
 }
 
+// `rax` still holds the argument only if the trapped `rdtsc` never retired.
+pub(super) fn a_direct_clock_read_retires_its_program() -> bool {
+    const READ_COUNTER: u64 = 8;
+
+    let before = trap::last_user_fault();
+    let Ok(spawned) = user::spawn_reading_the_counter() else {
+        return false;
+    };
+
+    if !runs_until(2000, || {
+        let fault = trap::last_user_fault();
+        fault.count > before.count && fault.slot == spawned.slot
+    }) {
+        return false;
+    }
+    let fault = trap::last_user_fault();
+
+    let this_child = fault.slot == spawned.slot && fault.rax == READ_COUNTER;
+    let trapped = fault.vector == u64::from(exception::GENERAL_PROTECTION);
+    let retired = last_rites_for(&spawned, 2_000).is_some();
+
+    this_child && trapped && retired
+}
+
 // A refusal is process-local: the timer keeps arriving and a clean successor still crosses.
 pub(super) fn a_noncanonical_user_return_stack_retires_only_its_program() -> bool {
     const NESTED_TASK: u64 = 1 << 14;

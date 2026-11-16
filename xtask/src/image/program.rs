@@ -39,6 +39,12 @@ fn code() -> Result<Vec<u8>> {
     let dispatch = code.len();
     patch(&mut code, dispatching, dispatch)?;
 
+    code.extend_from_slice(&[0x48, 0x83, 0xF8, READ_COUNTER_BEHAVIOUR]);
+    let not_reading = branch(&mut code, 0x75);
+    code.extend_from_slice(&[0x0F, 0x31, 0x0F, 0x0B]);
+
+    let choose_stack = code.len();
+    patch(&mut code, not_reading, choose_stack)?;
     code.extend_from_slice(&[0x48, 0x83, 0xF8, INVALID_STACK_BEHAVIOUR]);
     let ordinary_stack = branch(&mut code, 0x75);
     code.extend_from_slice(&[0xB8]);
@@ -214,6 +220,9 @@ const INVALID_STACK_BEHAVIOUR: u8 = 6;
 
 // Enters the kernel with `RFLAGS.NT` set.
 const INVALID_FLAGS_BEHAVIOUR: u8 = 7;
+
+// Executes `rdtsc` with the argument still in `rax`, so a trapped read leaves it unchanged.
+const READ_COUNTER_BEHAVIOUR: u8 = 8;
 
 const NONCANONICAL_STACK: u64 = 0x0000_8000_0000_0000;
 

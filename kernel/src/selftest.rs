@@ -32,6 +32,9 @@ const CHECKS: &[Check] = &[
     ("a faulting program dies alone", |_| {
         processes::a_faulting_program_dies_alone()
     }),
+    ("a direct clock read retires its program", |_| {
+        processes::a_direct_clock_read_retires_its_program()
+    }),
     (
         "a noncanonical user return stack retires only its program",
         |_| processes::a_noncanonical_user_return_stack_retires_only_its_program(),
@@ -59,10 +62,6 @@ const CHECKS: &[Check] = &[
     ("a block read returns the block that was asked for", |_| {
         storage::a_block_read_returns_the_block_that_was_asked_for()
     }),
-    (
-        "the time page and the kernel clock tell the same time",
-        |_| clocks::the_time_page_and_the_kernel_clock_tell_the_same_time(),
-    ),
     ("a program sees the time page and cannot write it", |_| {
         clocks::a_program_sees_the_time_page_and_cannot_write_it()
     }),

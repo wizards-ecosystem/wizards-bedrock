@@ -1,8 +1,6 @@
 use core::hint::spin_loop;
 
 use native_abi::address::TIME;
-use native_abi::timepage::mode;
-use wost::arch::current::cpu;
 use wost::arch::current::paging::{AddressSpace, MapError};
 use wost::sync::SpinLock;
 use x86_paging::{Flags, PAGE_SIZE};
@@ -15,26 +13,6 @@ pub(super) fn spins_until(attempts: u32, done: impl Fn() -> bool) -> bool {
         spin_loop();
         done()
     })
-}
-
-pub(super) fn the_time_page_and_the_kernel_clock_tell_the_same_time() -> bool {
-    let Some(reading) = timepage::read() else {
-        return false;
-    };
-    if reading.mode != mode::COUNTER {
-        return false;
-    }
-
-    let before = time::now_ns();
-    let published = reading.at(cpu::timestamp());
-    let after = time::now_ns();
-    let agrees = before <= published && published <= after;
-
-    // A page whose conversion is zero answers one number, which falls inside any quick sandwich.
-    let first = reading.at(cpu::timestamp());
-    let moved = spins_until(1_000_000, || reading.at(cpu::timestamp()) > first);
-
-    agrees && moved && reading.conversion.is_calibrated()
 }
 
 pub(super) fn a_program_sees_the_time_page_and_cannot_write_it() -> bool {

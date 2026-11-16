@@ -1,7 +1,6 @@
 use core::fmt;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
-use native_abi::timepage::mode;
 use timebase::Timebase;
 use wost::arch::current::{apic, cpu, interrupt};
 use wost::sync::SpinLock;
@@ -515,15 +514,6 @@ pub(crate) fn scheduler_now_ns() -> u64 {
     }
 }
 
-// The time page reader computes `convert(rdtsc - origin)` exactly as `now_ns` does.
-pub(crate) fn origin_ticks() -> u64 {
-    ORIGIN.load(Ordering::Relaxed)
-}
-
-pub(crate) fn conversion() -> Timebase {
-    Timebase::from_bits(TSC_TO_NANOSECONDS.load(Ordering::Relaxed))
-}
-
 pub(crate) fn uptime_ms() -> u64 {
     now_ns() / NANOSECONDS_PER_MS
 }
@@ -661,9 +651,6 @@ fn revoke(reason: Revocation) -> bool {
         return false;
     }
     disarm();
-    match crate::timepage::publish(mode::NONE, origin_ticks(), conversion()) {
-        crate::timepage::Publication::Published | crate::timepage::Publication::Deferred => {}
-    }
     true
 }
 

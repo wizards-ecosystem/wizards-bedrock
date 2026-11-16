@@ -99,6 +99,12 @@ number and is added here, as one entry or as an amending id on the entry it chan
   `CR0.NE` and `CR4.MCE` set, `CR0.EM` and `CR4.TSD`, `DE`, `PCE` and `FSGSBASE` clear and `RFLAGS`
   reset, each read back. Every bit the kernel does not own stays as the bootloader set it. Each
   thread switch reloads the data selectors, so one program's selector never reaches the next.
+- **D-471** Boot sets `CR4.TSD` and writes zero to `IA32_TSC_AUX` where it exists (amends D-460),
+  and process construction refuses while `TSD` reads clear. A world without the raw time right
+  must not read the counter, so `RDTSC`, `RDTSCP`, `TPAUSE` and `UMWAIT` fault in ring 3 and the
+  thread is retired. A trapped read is refused, never emulated, because an emulated read costs a
+  kernel entry per call where a value on a clock page costs a load.
+  `RDPID` cannot be trapped, so it reads a zero `IA32_TSC_AUX`.
 - **D-91** `libs/x86-cpuid` decodes `IA32_ARCH_CAPABILITIES` and decides the speculation posture,
   and `wost` keeps only the `cpuid` and MSR reads; an absent capability word is never read as
   immunity.
@@ -291,6 +297,10 @@ number and is added here, as one entry or as an amending id on the entry it chan
   constants region and a seqlocked clock region whose `mode` word permits its use, so a program
   converts `rdtsc` without a trap (D-166). It is global until Phase 7 replaces ambient time with
   per-world clock modes.
+- **D-472** The time page no longer publishes a counter conversion (amends D-152): its clock region
+  stays zero, so its mode reads none and a program asks with `Uptime`. With `CR4.TSD` set
+  (D-471) ring 3 has no counter to convert, and the page publishes a value again only once each
+  world has its own clock page.
 - **D-240** An NVMe or VT-d wait is bounded by the clock, through `timebase::PollLimit` for NVMe,
   with a spin count only where no clock exists yet or the clock has stopped, because an iteration
   bound depends on processor speed.

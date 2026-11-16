@@ -17,11 +17,6 @@ pub struct Timebase {
 }
 
 impl Timebase {
-    pub const UNCALIBRATED: Self = Self {
-        multiplier: 0,
-        shift: 0,
-    };
-
     pub const fn new(numerator: u64, denominator: u64) -> Option<Self> {
         if numerator == 0 || denominator == 0 {
             return None;
@@ -41,34 +36,6 @@ impl Timebase {
             }
             shift -= 1;
         }
-    }
-
-    pub const fn from_parts(multiplier: u64, shift: u32) -> Option<Self> {
-        if multiplier > MAX_MULTIPLIER {
-            return None;
-        }
-        if shift > MAX_SHIFT {
-            return None;
-        }
-        Some(Self { multiplier, shift })
-    }
-
-    pub const fn multiplier(self) -> u64 {
-        self.multiplier
-    }
-
-    pub const fn shift(self) -> u32 {
-        self.shift
-    }
-
-    // The base is split because `base_ns << shift` overflows within seconds.
-    pub const fn resume(self, base_ns: u64, base_fraction: u64, ticks: u64) -> u64 {
-        let advanced = base_fraction as u128 + (ticks as u128 * self.multiplier as u128);
-        let whole = advanced >> self.shift;
-        if whole > u64::MAX as u128 {
-            return u64::MAX;
-        }
-        base_ns.saturating_add(whole as u64)
     }
 
     pub const fn nanoseconds(hz: u64) -> Option<Self> {
@@ -101,28 +68,6 @@ impl Timebase {
             multiplier: bits & MAX_MULTIPLIER,
             shift: ((bits >> SHIFT_BITS) as u32) & MAX_SHIFT,
         }
-    }
-}
-
-// The caller supplies both memory-ordering barriers; a read must not span a full `u32` cycle.
-#[derive(Debug)]
-pub struct Seq;
-
-impl Seq {
-    pub const fn is_stable(seq: u32) -> bool {
-        seq.is_multiple_of(2)
-    }
-
-    pub const fn begin(seq: u32) -> u32 {
-        seq.wrapping_add(1)
-    }
-
-    pub const fn end(seq: u32) -> u32 {
-        seq.wrapping_add(1)
-    }
-
-    pub const fn agrees(before: u32, after: u32) -> bool {
-        before == after && Self::is_stable(before)
     }
 }
 

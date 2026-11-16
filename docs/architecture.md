@@ -123,11 +123,14 @@ it as a call only when the saved `CS` is ring 3. `cpu::enable_protections` clear
 either is set. The calls are in section 6.
 
 `cpu::establish_control_state` and `cpu::enable_protections` run after the IDT is installed, so a
-bad bootloader mapping becomes a reported fault. The first sets `CR0.NE` and `CR4.MCE`, clears
-`CR0.EM` and `CR4.TSD`, `DE`, `PCE` and `FSGSBASE`, and resets `RFLAGS`; bits the kernel does not
-own stay as the bootloader set them. The second sets `CR0.WP` and `EFER.NXE` and enables SMEP,
-SMAP and UMIP where CPUID reports them, arming the entry path's `clac` with SMAP. Ring 3 requires
-NX; missing SMEP, SMAP or UMIP is logged and tolerated.
+bad bootloader mapping becomes a reported fault. The first sets `CR0.NE`, `CR4.MCE` and `CR4.TSD`,
+clears `CR0.EM` and `CR4.DE`, `PCE` and `FSGSBASE`, writes zero to `IA32_TSC_AUX` where `RDTSCP` or
+`RDPID` exists, and resets `RFLAGS`; bits the kernel does not own stay as the bootloader set them.
+With `CR4.TSD` set, `RDTSC`, `RDTSCP`, `TPAUSE` and `UMWAIT` raise #GP in ring 3 before they retire,
+and the fault path retires the program; the kernel never emulates them. `RDPID` cannot be trapped
+and reads the zeroed `IA32_TSC_AUX`. The second sets `CR0.WP` and `EFER.NXE` and enables SMEP, SMAP
+and UMIP where CPUID reports them, arming the entry path's `clac` with SMAP. Ring 3 requires NX;
+missing SMEP, SMAP or UMIP is logged and tolerated.
 
 Extended state is saved eagerly on every switch into a per-slot area sized from `CPUID.0DH`, with
 `XSAVEC` where present and `XSAVE` otherwise (`wost/src/arch/x86_64/xstate.rs`). `XCR0` enables
@@ -265,7 +268,7 @@ as the TSC rate and measures only the APIC timer against it. Otherwise it measur
 the 8254 PIT over 20 ms windows and accepts a rate when two windows agree to one part in 64; leaf
 0x16 is never used as a rate. When the PIT was the source it also checks live APIC windows as a
 watchdog. Two consecutive conclusive disagreements revoke
-public time: the time page switches to mode `NONE` and scheduling continues on a private epoch.
+public time: `Uptime` stays at the last trusted value and scheduling continues on a private epoch.
 An NVMe or VT-d wait is bounded by the clock, through `timebase::PollLimit` for NVMe, with a spin
 count only when no clock exists.
 
@@ -371,23 +374,24 @@ A program starts at its ELF entry with `RSP` 16-byte aligned on a 24-byte entry 
 16).
 
 The time page is mapped read-only at `0x0000100000000000` in every program
-(`kernel/src/timepage.rs`, layout in `native_abi::timepage`). Its constants are written once before any mapping exists: version
-(`u32` at 0, value `1`), page size (`u32` at 4) and counter rate in hertz (`u64` at 8). The clock
-region starts at offset 64 under a sequence lock: sequence (`u32` at 64, odd during a write), mode
-(`u32` at 68), base nanoseconds (`u64` at 72), fraction (`u64` at 80), the counter reading for
-that base (`u64` at 88), multiplier (`u64` at 96) and shift (`u32` at 104). Mode `1`
-(`mode::COUNTER`) lets a program convert `rdtsc` itself; mode `0` (`mode::NONE`) means it must ask
-with `Uptime`. The page is global until Phase 7 replaces ambient time with per-world clock modes.
+(`kernel/src/timepage.rs`, layout in `native_abi::timepage`). Its constants are written once before
+any mapping exists: version (`u32` at 0, value `1`), page size (`u32` at 4) and counter rate in
+hertz (`u64` at 8). The clock region from offset 64 is the version 1 sequence-locked layout:
+sequence (`u32` at 64), mode (`u32` at 68), base nanoseconds (`u64` at 72), fraction (`u64` at 80),
+the counter reading for that base (`u64` at 88), multiplier (`u64` at 96) and shift (`u32` at 104).
+The kernel leaves it zero, so the mode reads `0` (none) and a program asks with `Uptime`: ring 3
+cannot execute `rdtsc`, so there is no conversion to publish. The page is global until Phase 7 gives
+each world its own clock page.
 
 ## 7. Processes and the loader
 
-`user::spawn` (`kernel/src/user/construction.rs`) refuses unless every ring 3 precondition holds,
-in this order: interrupts admitted, the boot thread on a guarded stack, NX on, extended state
-isolated, the clock calibrated, the random generator seeded, the service worker running, and a shared or paired isolation mode.
-It then builds the address space, loads the image, maps a one-page user stack at
-`0x0000300000000000`, maps the time page and the ring, creates the handle table with its birth
-handle, binds the space and publishes a thread. `ProcessConstruction` owns the space and every
-mapped range until the thread is published, so any refusal rolls back through one owner.
+`user::spawn` (`kernel/src/user/construction.rs`) refuses unless every ring 3 precondition holds, in
+this order: interrupts admitted, the boot thread on a guarded stack, NX on, `CR4.TSD` set, extended
+state isolated, the clock calibrated, the random generator seeded, the service worker running, and a
+shared or paired isolation mode. It then builds the address space, loads the image, maps a one-page
+user stack at `0x0000300000000000`, maps the time page and the ring, creates the handle table with
+its birth handle, binds the space and publishes a thread. `ProcessConstruction` owns the space and
+every mapped range until the thread is published, so any refusal rolls back through one owner.
 
 A process today is a thread slot. Its record (`Bootstrap` in `kernel/src/user.rs`) is one thread,
 one address space, one ring and one handle table, in global arrays indexed by slot. There is no

@@ -155,27 +155,12 @@ fn start_clock() {
     }
 }
 
-// A program reading `TIME` must find mode `NONE`, not a page fault.
+// A program reading `TIME` must find the mode word, not a page fault.
 fn publish_time_page() {
     if timepage::init(time::counter_hz()) {
-        let mode = if time::is_calibrated() {
-            native_abi::timepage::mode::COUNTER
-        } else {
-            native_abi::timepage::mode::NONE
-        };
-        assert_eq!(
-            timepage::publish(mode, time::origin_ticks(), time::conversion()),
-            timepage::Publication::Published,
-            "the initialized time page refused its first publication"
-        );
         info!(
-            "time: published at {:#x}, {}",
-            native_abi::address::TIME,
-            if mode == native_abi::timepage::mode::COUNTER {
-                "readable without a call"
-            } else {
-                "revoked; readers must ask ring Uptime"
-            }
+            "time: published at {:#x} with no counter conversion; readers ask ring Uptime",
+            native_abi::address::TIME
         );
     } else {
         warn!("time: no page to publish the clock in; every query is ring Uptime");

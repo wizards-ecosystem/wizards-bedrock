@@ -4,6 +4,8 @@ pub const INVALID_OPCODE: u8 = 6;
 
 pub const DOUBLE_FAULT: u8 = 8;
 
+pub const GENERAL_PROTECTION: u8 = 13;
+
 pub const PAGE_FAULT: u8 = 14;
 
 pub const ERROR_CODE_VECTORS: u32 = 0x6022_7D00;

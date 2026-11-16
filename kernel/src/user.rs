@@ -29,7 +29,8 @@ pub(crate) use reap::{LastRites, last_rites_of};
 #[cfg(feature = "selftest")]
 pub(crate) use selftest::{
     spawn_duplicating, spawn_faulting, spawn_for_bootstrap, spawn_into_the_copy_window,
-    spawn_probing, spawn_with_invalid_return_flags, spawn_with_invalid_return_stack,
+    spawn_probing, spawn_reading_the_counter, spawn_with_invalid_return_flags,
+    spawn_with_invalid_return_stack,
 };
 
 #[cfg(feature = "selftest")]
