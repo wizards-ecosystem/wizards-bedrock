@@ -168,6 +168,9 @@ dependencies = [
 [[package]]
 name = "lock-order"
 version = "0.3.1"
+dependencies = [
+ "vstd",
+]
 
 [[package]]
 name = "log"
