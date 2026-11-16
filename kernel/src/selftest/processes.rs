@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 
-use boot_record::{Exit, Record};
+use boot_record::{Exit, Fault, Record};
 use wost::arch::current::interrupt;
 use wost::arch::current::paging::AddressSpace;
 use wost::arch::current::usercopy;
@@ -147,6 +147,74 @@ pub(super) fn a_program_cannot_aim_at_the_copy_window() -> bool {
     let real_window = start < end;
 
     this_child && page_fault && retired && not_recovered && real_window
+}
+
+// The witness's ending once it retired, or `None` if it never did within `ms`.
+fn ending_of(spawned: &user::Spawned, ms: u64) -> Option<Record> {
+    last_rites_for(spawned, ms)?.ending
+}
+
+// The fault was raised in ring 3 code, not on the address the program reached for.
+fn in_user_code(rip: u64) -> bool {
+    rip < usercopy::USER_END
+}
+
+// Present, user, read: the page is there and only its supervisor bit refuses ring 3.
+const PRESENT_USER_READ: u64 = 0b101;
+
+// The entry enclave's text is present in every user root, shared or paired, as supervisor pages.
+pub(super) fn a_program_cannot_read_the_kernel() -> bool {
+    let address = wost::boot::sections().entry_enclave.text.start;
+    let Ok(spawned) = user::spawn_reading_the_kernel(address) else {
+        return false;
+    };
+    matches!(
+        ending_of(&spawned, 2_000),
+        Some(Record::Fault(Fault { vector, error, address: faulted, rip }))
+            if vector == u64::from(exception::PAGE_FAULT)
+                && error == PRESENT_USER_READ
+                && faulted == address
+                && in_user_code(rip)
+    )
+}
+
+// `syscall` is a closed door: it faults where it stands and the kernel is never entered.
+pub(super) fn a_syscall_instruction_never_enters_the_kernel() -> bool {
+    const SYSCALL: u64 = 12;
+
+    let calls_before = trap::last_syscall().count;
+    let faults_before = trap::last_user_fault().count;
+    let Ok(spawned) = user::spawn_executing_syscall() else {
+        return false;
+    };
+    let ended = matches!(
+        ending_of(&spawned, 2_000),
+        Some(Record::Fault(Fault { vector, rip, .. }))
+            if vector == u64::from(exception::INVALID_OPCODE) && in_user_code(rip)
+    );
+    let fault = trap::last_user_fault();
+
+    ended
+        && fault.count > faults_before
+        && fault.slot == spawned.slot
+        && fault.rax == SYSCALL
+        && trap::last_syscall().count == calls_before
+}
+
+// Idle, the wait returns at once; with a timer in flight, only that timer's completion wakes it.
+pub(super) fn ring_wait_sleeps_only_while_work_is_in_flight() -> bool {
+    let Ok(spawned) = user::spawn_waiting_on_the_ring() else {
+        return false;
+    };
+    last_rites_for(&spawned, 2_000).is_some_and(|rites| agreed(&rites) && rites.served == 1)
+}
+
+// A user base is read back through `fs`, and a kernel-half or noncanonical one is refused.
+pub(super) fn a_thread_base_is_taken_only_inside_user_memory() -> bool {
+    let Ok(spawned) = user::spawn_setting_its_thread_base() else {
+        return false;
+    };
+    last_rites_for(&spawned, 2_000).is_some_and(|rites| agreed(&rites))
 }
 
 const SEGMENT_FLAGS: usize = elf64::HEADER_BYTES + 4;

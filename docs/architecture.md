@@ -526,7 +526,11 @@ Phase 7 user-space loader replaces it.
 `witness.elf` is the ring 3 witness, the Rust program `witness/ring3` over the runtime
 `witness/rt`, which alone outside `wost` may write `unsafe`. Its entry block argument picks a
 behaviour: an `Echo` or a `Duplicate` through the ring, an unserved call, a fault, a jump into the
-kernel half, a direct counter read, or an invalid return stack or flags. It checks the entry block
+kernel half, a direct counter read, an invalid return stack or flags, a read of the kernel-half
+address in the entry block's operand, `RingWait` idle and after a `Timer`, `ThreadBase` with a user
+base and with refused ones, or `syscall`, which faults with `#UD` because `EFER.SCE` is clear.
+Self-tests in `kernel/src/selftest/processes.rs` attribute each ending to its program. It checks
+the entry block
 and ring versions, and it reports by how it ends: exit status 0 is agreement, a nonzero status
 names the first wrong answer, and a behaviour built to fault ends in that fault. It is a boundary
 check, not a userland. The runtime sets `AC` only across `int 0x80`, so no program access runs

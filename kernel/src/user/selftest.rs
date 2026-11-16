@@ -9,6 +9,10 @@ const DUPLICATE: u64 = 3;
 const INVALID_RETURN_STACK: u64 = 6;
 const INVALID_RETURN_FLAGS: u64 = 7;
 const READ_COUNTER: u64 = 8;
+const READ_KERNEL: u64 = 9;
+const RING_WAIT: u64 = 10;
+const THREAD_BASE: u64 = 11;
+const SYSCALL: u64 = 12;
 
 pub(crate) fn spawn_faulting() -> Result<Spawned, SpawnError> {
     spawn("user-fault", 2, FAULT, 0)
@@ -42,4 +46,21 @@ pub(crate) fn spawn_with_invalid_return_flags() -> Result<Spawned, SpawnError> {
 
 pub(crate) fn spawn_reading_the_counter() -> Result<Spawned, SpawnError> {
     spawn("user-rdtsc", 12, READ_COUNTER, 0)
+}
+
+// The operand is the kernel-half address the witness reads from ring 3.
+pub(crate) fn spawn_reading_the_kernel(address: u64) -> Result<Spawned, SpawnError> {
+    spawn("user-kernel-read", 13, READ_KERNEL, address)
+}
+
+pub(crate) fn spawn_waiting_on_the_ring() -> Result<Spawned, SpawnError> {
+    spawn("user-ring-wait", 14, RING_WAIT, 0)
+}
+
+pub(crate) fn spawn_setting_its_thread_base() -> Result<Spawned, SpawnError> {
+    spawn("user-thread-base", 15, THREAD_BASE, 0)
+}
+
+pub(crate) fn spawn_executing_syscall() -> Result<Spawned, SpawnError> {
+    spawn("user-syscall", 16, SYSCALL, 0)
 }

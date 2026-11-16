@@ -42,6 +42,18 @@ const CHECKS: &[Check] = &[
     ("a program cannot aim at the copy window", |_| {
         processes::a_program_cannot_aim_at_the_copy_window()
     }),
+    ("a program cannot read the kernel", |_| {
+        processes::a_program_cannot_read_the_kernel()
+    }),
+    ("a syscall instruction never enters the kernel", |_| {
+        processes::a_syscall_instruction_never_enters_the_kernel()
+    }),
+    ("ring wait sleeps only while work is in flight", |_| {
+        processes::ring_wait_sleeps_only_while_work_is_in_flight()
+    }),
+    ("a thread base is taken only inside user memory", |_| {
+        processes::a_thread_base_is_taken_only_inside_user_memory()
+    }),
     ("two spaces map one address to different memory", |_| {
         address_spaces::two_spaces_map_one_address_to_different_memory()
     }),

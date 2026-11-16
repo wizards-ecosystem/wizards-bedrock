@@ -123,6 +123,50 @@ pub fn jump_to_kernel(target: u64) -> ! {
     unsafe { asm!("jmp rax", in("rax") target, options(noreturn, nomem, nostack)) }
 }
 
+// Only a kernel-half address, whose read from ring 3 always faults, so no program memory is read.
+pub fn read_kernel(address: u64) -> ! {
+    if address < KERNEL_HALF {
+        fault_with(address);
+    }
+    // SAFETY: a ring 3 load from the kernel half faults and ends the program.
+    unsafe {
+        asm!(
+            "mov rax, [rax]",
+            "ud2",
+            in("rax") address,
+            options(noreturn, readonly, nostack),
+        )
+    }
+}
+
+// The kernel keeps `EFER.SCE` clear, so `syscall` raises `#UD` with the marker still in `rax`.
+pub fn execute_syscall(marker: u64) -> ! {
+    // SAFETY: `syscall` either raises `#UD` or enters the kernel, which ends the program; `ud2`
+    // ends it if neither does.
+    unsafe {
+        asm!(
+            "syscall",
+            "ud2",
+            in("rax") marker,
+            options(noreturn, nomem, nostack),
+        )
+    }
+}
+
+// The word at the thread base; a base that names no readable page ends the program.
+pub fn thread_word() -> u64 {
+    let word;
+    // SAFETY: the load reads through `FS` only, writes nothing and either returns a value or faults.
+    unsafe {
+        asm!(
+            "mov {word}, qword ptr fs:[0]",
+            word = out(reg) word,
+            options(readonly, nostack, preserves_flags),
+        );
+    }
+    word
+}
+
 // `rdtsc` with the marker in `rax`, so a trapped read leaves the marker for the fault record.
 pub fn read_counter_with(marker: u64) -> ! {
     // SAFETY: `rdtsc` either traps, which ends the program, or returns into `ud2`, which does.

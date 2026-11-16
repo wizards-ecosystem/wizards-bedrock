@@ -206,8 +206,6 @@ Phase 7:
   (`kernel/src/queue.rs`, `kernel/src/timepage.rs`): every process reads the one root world clock.
   Channels need their own transport, and time needs a clock per world, the recorded mode and the raw
   time right.
-- No ring 3 program reads a kernel address to witness isolation, issues `RingWait` or
-  `ThreadBase`, or executes `syscall` (`witness/ring3`), so those witnesses must cover all three.
 - Collection searches zombies from slot 0, so one whose reclaim is refused blocks every later
   one, and a refused loader rollback drops its ledger, so spawn cleanup then panics
   (`kernel/src/user/reap.rs`, `kernel/src/user/load.rs`). Neither refusal has a known trigger.
