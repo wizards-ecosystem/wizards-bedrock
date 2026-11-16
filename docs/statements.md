@@ -140,3 +140,27 @@ against them. A statement changes only together with the code it governs.
   until the receiver reads it into its own.
 - **Donation.** While a server serves a synchronous call, its running time is charged to the
   caller.
+
+## Processors
+
+- **Per-processor state.** In ring 0 the `GS` base names this processor's entry area, and in ring 3
+  it is zero. A thread runs on at most one processor. While a thread is on a processor, no other
+  processor picks it, frees its stack or reuses its switch record.
+- **Lock order.** Every lock has a rank. A processor takes a lock only above every rank it holds,
+  and two locks of one rank only in ascending order of their objects. Under a leaf guard no
+  caller-supplied work, block, flush wait, interrupt wait or user copy runs.
+- **Wakeup.** Each thread has one wake word. If a waker claims a thread's wait after the thread
+  registered, the thread is not left blocked. A blocked thread is always linked where a waker can
+  reach it, and a wait completes once.
+- **Shootdown.** A frame or table returns to its pool only after every flush that covers a removed
+  translation has completed on every processor that could hold it. No processor waits for an
+  acknowledgement with interrupts off or a spin lock held.
+- **Queues.** A thread is picked only by the processor whose queue holds it, and moves between
+  queues only while it is on neither a queue nor a processor.
+- **Grace period.** A dead world's frames are zeroed and reused only when its threads are off every
+  processor, no pin or kernel-held count on it remains, and every flush of its address spaces has
+  completed.
+- **Panic stop.** Before a panic releases any lock by force, every other processor has acknowledged
+  a stop and never resumes. If one does not answer in bounded time, no lock is forced.
+- **Clock publication.** One processor owns the clock. A reader on any processor sees a rate and
+  origin that were published together.
