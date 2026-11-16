@@ -4,11 +4,10 @@ use boot_record::{Fact, Record};
 use native_abi::Call;
 use native_abi::entry::{self, offset};
 use native_abi::error::{EINVAL, ENOSYS};
-use wost::arch::current::interrupt::{self, TrapFrame};
+use wost::arch::current::interrupt::UserRegisters;
 use wost::arch::current::task;
 use wost::arch::current::{cpu, usercopy};
 
-use super::reap::orphan;
 use super::{BOOTSTRAPS, LAUNCHES, STACK_BYTES};
 use crate::handle::HandleTable;
 use crate::{info, queue, thread, warn};
@@ -52,45 +51,27 @@ pub(crate) fn refusals() -> (usize, usize) {
     )
 }
 
-fn answer_call(frame: &TrapFrame, value: u64) {
-    assert!(
-        interrupt::answer(frame, value),
-        "the live syscall frame could not be answered"
-    );
-}
-
-// Trap context: no allocation, no blocking path but `wait_from_trap`, no lock but a leaf.
-pub(crate) fn call(frame: &TrapFrame) {
+// The calling thread's own context: it may allocate, block and be preempted.
+pub(crate) fn call(context: &mut thread::ThreadContext, registers: &mut UserRegisters<'_>) {
     let slot = task::current();
     EXECUTED.store(true, Ordering::Release);
-    match Call::decode(frame.rax()) {
-        Call::Exit => {
-            assert!(
-                thread::retire_from_trap(frame),
-                "a ring 3 thread called in and could not be retired"
-            );
-        }
-        Call::RingEnter => {
-            let served = serve_ring(slot);
-            answer_call(frame, served);
-        }
-        Call::RingWait => {
-            let completed = wait_ring(slot, frame);
-            answer_call(frame, completed);
-        }
+    match Call::decode(registers.rax()) {
+        Call::Exit => thread::retire(),
+        Call::RingEnter => registers.set_return(serve_ring(slot)),
+        Call::RingWait => registers.set_return(wait_ring(context, slot)),
         Call::ThreadBase => {
             // Refused, not faulted: `wrmsr` of a non-canonical base is a `#GP` in kernel context.
-            let answer = if task::set_thread_base(frame.rdi()) {
+            let answer = if task::set_thread_base(registers.rdi()) {
                 0
             } else {
                 EINVAL
             };
-            answer_call(frame, answer);
+            registers.set_return(answer);
         }
         Call::Unknown(number) => {
             // Answered, so a program can tell a wrong call from a dropped one.
-            answer_call(frame, ENOSYS);
-            // Counted, never logged: trap context cannot take the console lock.
+            registers.set_return(ENOSYS);
+            // Counted, and reported once by the idle thread, so a looping program cannot flood.
             REFUSED_CALLS.fetch_add(1, Ordering::Relaxed);
             LAST_REFUSED.store(number as usize, Ordering::Relaxed);
         }
@@ -126,27 +107,27 @@ fn authority_of(
     ))
 }
 
-fn wait_ring(slot: usize, frame: &TrapFrame) -> u64 {
+fn wait_ring(context: &mut thread::ThreadContext, slot: usize) -> u64 {
     let Some((ring, _)) = authority_of(slot) else {
         return ENOSYS;
     };
 
-    ring.wait_from_trap(frame) as u64
+    ring.wait(context) as u64
 }
 
 // The switch that scheduled this thread already set `RSP0` and installed its tables.
-pub(super) fn cross(_: &mut thread::ThreadContext, _: usize) {
+pub(super) fn cross(context: &mut thread::ThreadContext, _: usize) {
     let slot = task::current();
     let Some(launch) = LAUNCHES.lock_leaf().get(slot).copied().flatten() else {
         warn!("user: thread {slot} has no program to run");
-        refuse_cross(slot);
+        thread::retire();
     };
     let which = launch.which;
 
     // Checked, not assumed: a missed switch would put one program's argument on another's stack.
     if cpu::page_table_base() != launch.root {
         warn!("user {which}: running on tables that are not its own");
-        refuse_cross(slot);
+        thread::retire();
     }
 
     let top = launch.stack + STACK_BYTES - ENTRY_STACK_BYTES;
@@ -163,7 +144,7 @@ pub(super) fn cross(_: &mut thread::ThreadContext, _: usize) {
         .is_err()
     {
         warn!("user {which}: could not write its entry block");
-        refuse_cross(slot);
+        thread::retire();
     }
 
     info!(
@@ -172,15 +153,9 @@ pub(super) fn cross(_: &mut thread::ThreadContext, _: usize) {
     );
     if !crate::interrupts::maskable_interrupts_are_ready() {
         warn!("user {which}: maskable interrupts are not admitted");
-        refuse_cross(slot);
+        thread::retire();
     }
-    let refused = task::enter_user(launch.entry, top);
+    let refused = task::enter_user(context, launch.entry, top);
     warn!("user {which}: refused entry to ring 3: {refused}");
-    refuse_cross(slot);
-}
-
-fn refuse_cross(slot: usize) -> ! {
-    let _disabled = interrupt::disable();
-    orphan(slot);
-    thread::exit()
+    thread::retire();
 }

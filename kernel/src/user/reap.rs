@@ -95,7 +95,7 @@ pub(crate) fn last_rites_of(slot: usize) -> Option<LastRites> {
     RITES.lock_leaf().get(slot).copied().flatten()
 }
 
-// Trap context on the retiring thread: no allocation, no blocking, no touching its own space.
+// On the retiring thread, interrupts off: no allocation, no blocking, no touching its own space.
 pub(crate) fn orphan(slot: usize) {
     let taken = BOOTSTRAPS.lock_leaf().get_mut(slot).and_then(Option::take);
     let stored = taken.is_some();

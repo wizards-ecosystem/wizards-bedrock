@@ -5,10 +5,11 @@ use core::sync::atomic::Ordering;
 use trap_cause::TrapCause;
 use wost::arch::current::apic;
 use wost::arch::current::cpu;
-use wost::arch::current::interrupt::{self, TrapFrame};
+use wost::arch::current::interrupt::{self, TrapFrame, UserEntry, UserRegisters};
 use wost::arch::current::usercopy;
 
 use super::vector;
+use crate::thread::{self, ThreadContext};
 
 #[cfg(feature = "selftest")]
 mod selftest;
@@ -24,19 +25,37 @@ pub(crate) use selftest::{
 };
 
 static HANDLERS: interrupt::Handlers =
-    interrupt::Handlers::new(on_trap, refuse_invalid_user_return);
+    interrupt::Handlers::new(on_trap, on_user_entry, refuse_invalid_user_return);
 
 pub(crate) fn init() {
     interrupt::init(&HANDLERS, Some(vector::SYSCALL));
 }
 
-fn refuse_invalid_user_return(frame: &TrapFrame, error: interrupt::UserReturnError) -> ! {
-    #[cfg(feature = "selftest")]
-    LAST_INVALID_USER_RETURN.record(frame);
-    if crate::thread::retire_from_trap(frame) {
-        unreachable!("retiring an invalid user return resumed its context");
+fn on_user_entry(context: &mut ThreadContext, registers: &mut UserRegisters<'_>, entry: UserEntry) {
+    match entry {
+        UserEntry::Call => {
+            #[cfg(feature = "selftest")]
+            observe_syscall_entry(registers);
+            crate::user::call(context, registers);
+        }
+        UserEntry::Fault(_) => {
+            #[cfg(feature = "selftest")]
+            LAST_USER_FAULT.record(registers);
+            thread::retire()
+        }
+        UserEntry::Interrupted => thread::preempt(context),
     }
-    panic!("invalid user return could not be retired: {error:?}");
+}
+
+fn refuse_invalid_user_return(
+    _: &mut ThreadContext,
+    registers: &UserRegisters<'_>,
+    _: interrupt::UserReturnError,
+) -> ! {
+    #[cfg(feature = "selftest")]
+    LAST_INVALID_USER_RETURN.record(registers);
+    let _ = registers;
+    thread::retire()
 }
 
 // Nothing here logs: a fault may arrive under a held lock, and the console lock could deadlock.
@@ -50,13 +69,7 @@ fn on_trap(frame: &TrapFrame) {
             let eoi = claim_eoi(frame, vector::TIMER);
             crate::time::on_expiry();
             dismiss(eoi);
-            crate::thread::reschedule(frame);
-        }
-
-        TrapCause::Interrupt(raw) if raw == vector::SYSCALL.get() && frame.is_from_user() => {
-            #[cfg(feature = "selftest")]
-            observe_syscall_entry(frame);
-            crate::user::call(frame);
+            thread::reschedule(frame);
         }
 
         // A spurious interrupt sets no in-service bit, so an EOI would retire a real one beneath.
@@ -73,16 +86,6 @@ fn on_trap(frame: &TrapFrame) {
         {
             #[cfg(feature = "selftest")]
             USER_COPY_RECOVERIES.fetch_add(1, Ordering::Relaxed);
-        }
-
-        TrapCause::Fault(fault) if is_the_programs(frame, fault) => {
-            #[cfg(feature = "selftest")]
-            LAST_USER_FAULT.record(frame);
-            assert!(
-                crate::thread::retire_from_trap(frame),
-                "{}",
-                Report { frame, cause }
-            );
         }
 
         _ => panic!("{}", Report { frame, cause }),
@@ -104,16 +107,6 @@ fn dismiss(token: apic::EoiToken<'_>) {
         apic::end_of_interrupt(token).is_ok(),
         "APIC in-service authority changed before dismissal"
     );
-}
-
-fn is_the_programs(frame: &TrapFrame, fault: trap_cause::Fault) -> bool {
-    let survivable = !matches!(
-        fault,
-        trap_cause::Fault::DoubleFault
-            | trap_cause::Fault::MachineCheck
-            | trap_cause::Fault::NonMaskable
-    );
-    frame.is_from_user() && survivable
 }
 
 #[derive(Debug)]

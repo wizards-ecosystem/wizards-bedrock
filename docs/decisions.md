@@ -273,6 +273,13 @@ number and is added here, as one entry or as an amending id on the entry it chan
 - **D-62** `ThreadContext` is a zero-sized, non-`Send`, non-`Sync` token that only thread context
   can mint, and every call that may block takes it, so blocking from a trap handler does not
   compile.
+- **D-474** A ring 3 entry runs as its thread: after any trap phase, `dispatch` mints a
+  `ThreadContext` and calls `on_user_entry` with `UserEntry::{Call, Fault, Interrupted}` and the
+  frame as `UserRegisters`, with interrupts on (amends D-466). Calls that allocate, block or spawn
+  need thread context, and one exit path for every ring 3 entry replaces the trap-context retire.
+  Ring 3 is preempted in that handoff, so `switch_from_trap` serves only ring 0 frames, and the
+  frame is validated with interrupts off until `iretq`. Wait queues are slot lists linked under the
+  scheduler lock instead of an intrusive `wost` list, which keeps them free of `unsafe`.
 - **D-466** `wost` mints `ThreadContext` only at boot entry and at thread start, and there is no
   runtime claim (amends D-62). A claim that checked the trap depth let any helper mint a token, so a
   blocking call's safety rested on where it was called from rather than on what it was given.

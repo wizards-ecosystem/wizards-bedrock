@@ -7,13 +7,13 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use native_abi::Rights;
 use native_abi::ring::{COMPLETIONS, Completion, Opcode, SUBMISSIONS, Submission, header, status};
 use ring_proto::{Capacity, Queues, SharedLayout};
-use wost::arch::current::interrupt::TrapFrame;
 use wost::arch::current::paging::{AddressSpace, MapError};
 use wost::mm::{self, SharedRing, USegment};
 use wost::sync::SpinLock;
 use x86_paging::{Flags, PAGE_SIZE};
 
 use crate::handle::HandleTable;
+use crate::thread::ThreadContext;
 use crate::wait::WaitQueue;
 
 mod ring;
@@ -387,7 +387,7 @@ impl Queue {
             .min()
     }
 
-    pub(crate) fn wait_from_trap(&self, frame: &TrapFrame) -> usize {
+    pub(crate) fn wait(&self, context: &mut ThreadContext) -> usize {
         let before = self.served_count();
         let due = self.expire(crate::time::now_ns());
         if due > 0 || self.is_quiet() {
@@ -395,7 +395,7 @@ impl Queue {
         }
 
         self.waiters
-            .wait_from_trap_until(frame, self.earliest_deadline(), || {
+            .wait_until(context, self.earliest_deadline(), || {
                 self.served_count() != before
             });
         self.expire(crate::time::now_ns());

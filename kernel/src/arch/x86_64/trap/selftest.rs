@@ -1,11 +1,11 @@
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use wost::arch::current::cpu;
-use wost::arch::current::interrupt::TrapFrame;
+use wost::arch::current::interrupt::UserRegisters;
 
 // SMAP is read inside the handler, after the entry path ran.
-pub(super) fn observe_syscall_entry(frame: &TrapFrame) {
-    LAST_SYSCALL.record(frame);
+pub(super) fn observe_syscall_entry(registers: &UserRegisters<'_>) {
+    LAST_SYSCALL.record(registers);
     SMAP_ON_ENTRY.store(!cpu::access_flag_is_set(), Ordering::Release);
 }
 
@@ -39,7 +39,7 @@ pub(crate) fn last_syscall() -> Record {
     LAST_SYSCALL.read()
 }
 
-// Atomics, not a lock, because this is written from trap context.
+// Atomics, not a lock, so a reader never waits on a writer that was preempted.
 pub(super) struct Recorder {
     count: AtomicUsize,
     slot: AtomicUsize,
@@ -62,15 +62,15 @@ impl Recorder {
     }
 
     // The count is published last, so a reader that sees it sees the rest.
-    pub(super) fn record(&self, frame: &TrapFrame) {
+    pub(super) fn record(&self, registers: &UserRegisters<'_>) {
         self.slot
             .store(wost::arch::current::task::current(), Ordering::Relaxed);
-        self.rax.store(frame.rax(), Ordering::Relaxed);
+        self.rax.store(registers.rax(), Ordering::Relaxed);
         self.vector
-            .store(u64::from(frame.vector()), Ordering::Relaxed);
-        self.flags.store(frame.flags(), Ordering::Relaxed);
+            .store(u64::from(registers.vector()), Ordering::Relaxed);
+        self.flags.store(registers.flags(), Ordering::Relaxed);
         self.stack_pointer
-            .store(frame.stack_pointer(), Ordering::Relaxed);
+            .store(registers.stack_pointer(), Ordering::Relaxed);
         self.count.fetch_add(1, Ordering::Release);
     }
 

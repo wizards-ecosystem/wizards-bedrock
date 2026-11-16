@@ -98,29 +98,43 @@ Every IDT gate is an interrupt gate, so a handler starts with interrupts off. Ge
 stubs push a zero error code where the CPU pushes none, so every frame has one shape, and join
 one common entry in `wost/src/arch/x86_64/interrupt.rs`. It executes `cld`, executes `clac` when
 SMAP is on, loads `KERNEL_DATA` into `SS`, saves every general register and calls `dispatch` in
-Rust. `dispatch` raises the trap depth, records the live frame and calls the kernel's handler in
-`kernel/src/arch/x86_64/trap.rs`, which matches on a `TrapCause` decoded by `libs/trap-cause`:
+Rust. `dispatch` splits by the pushed `CS`.
+
+A frame from ring 0 is trap context. `dispatch` raises the trap depth, records the live frame and
+calls `on_trap` in `kernel/src/arch/x86_64/trap.rs`, which matches on a `TrapCause` decoded by
+`libs/trap-cause`:
 
 - A breakpoint resumes.
 - A page fault inside the user-copy routine resumes at its fixup (section 7).
-- Any other fault from ring 3, judged by the pushed `CS`, retires the faulting program and the
-  machine continues. A double fault, machine check or NMI is terminal from either ring.
 - Any other fault in ring 0 is a kernel bug and panics with the vector, error code, `RIP`, `CS`,
-  `RFLAGS` and `RSP`.
+  `RFLAGS` and `RSP`. A double fault, machine check or NMI is terminal from either ring.
 - The timer interrupt is acknowledged through an `EoiToken` minted from the live in-service bit. A
   spurious interrupt is not acknowledged, and a local APIC error panics. An unexpected vector
   panics, so a leaked legacy line cannot pass for something else.
 
-A handler never logs, because the interrupted code may hold the console lock; it records a number
-that the idle thread reports later. Before the common `iretq` to ring 3, `dispatch` validates the
-return: exact user selectors, a `RIP` below `USER_END` that is user-executable in the live
-tables, an `RSP` below `USER_END`, and `RFLAGS` with `IF` set and only user flags (no `NT`, `VM`,
-`IOPL` or reserved bits). A refused return retires the program instead of faulting in ring 0.
+A trap handler never logs, because the interrupted code may hold the console lock, and never
+blocks. Only `task::switch_from_trap` switches from a trap, and it refuses a ring 3 frame.
 
-Ring 3 enters the kernel only through vector `0x80`, the one DPL-3 gate, and the handler serves
-it as a call only when the saved `CS` is ring 3. `cpu::enable_protections` clears `EFER.SCE` and
-`IA32_SYSENTER_CS`, so `syscall` and `sysenter` fault, and `task::enter_user` refuses while
-either is set. The calls are in section 6.
+A frame from ring 3 is handed to the thread it interrupted. An interrupt first runs `on_trap` as
+above for its acknowledgement and clock work. Then the trap depth is zero again, and `dispatch`
+mints a `ThreadContext`, wraps the frame in `UserRegisters`, sets the interrupt flag and calls
+`on_user_entry` with `UserEntry::Call` (the `0x80` gate), `UserEntry::Fault(cause)` or
+`UserEntry::Interrupted`. The handler runs as that thread on its own kernel stack, with the
+frame at the stack top: it may allocate, block and be preempted. `UserRegisters` reads `rax`,
+`rdi`, `rsi`, `rdx`, `r10`, `r8`, `r9`, the vector, `RIP`, `RFLAGS` and `RSP`, and
+`set_return` writes `rax`; nothing else in `wost` writes a ring 3 frame. A call is served, a
+fault retires the program, and an interrupt lets the scheduler preempt the thread
+(`thread::preempt`).
+
+When the handler returns, `dispatch` clears the interrupt flag and validates the return: exact
+user selectors, a `RIP` below `USER_END` that is user-executable in the live tables, an `RSP`
+below `USER_END`, and `RFLAGS` with `IF` set and only user flags (no `NT`, `VM`, `IOPL` or
+reserved bits). The flag stays clear until `iretq`, so ring 3 resumes exactly the image checked.
+A refused return calls `on_invalid_return`, which retires the program.
+
+Ring 3 enters the kernel only through vector `0x80`, the one DPL-3 gate.
+`cpu::enable_protections` clears `EFER.SCE` and `IA32_SYSENTER_CS`, so `syscall` and `sysenter`
+fault, and `task::enter_user` refuses while either is set. The calls are in section 6.
 
 `cpu::establish_control_state` and `cpu::enable_protections` run after the IDT is installed, so a
 bad bootloader mapping becomes a reported fault. The first sets `CR0.NE`, `CR4.MCE` and `CR4.TSD`,
@@ -233,14 +247,16 @@ address-space root, extended state and `FS_BASE` for the next thread.
 `kernel/src/thread.rs` is the policy: names, states and EEVDF entities over the same slots, with
 the arithmetic in `libs/eevdf` and a 3 ms slice. If the policy ever returns nobody while every
 thread is a candidate, the kernel takes the first candidate. The idle thread sits outside the
-policy, runs only when nothing else can, halts, and emits the reports trap handlers left behind.
-The other kernel threads are the keyboard poller and the service worker. Preemption happens only
-at trap exit, after end-of-interrupt, and only when the interrupted frame had interrupts enabled.
-Every spin lock clears that flag, so critical sections need no preempt count.
+policy, runs only when nothing else can, halts, and emits the reports calls left behind. The
+other kernel threads are the keyboard poller and the service worker. A ring 0 frame is preempted
+at trap exit, after end-of-interrupt, and only when it had interrupts enabled. Every spin lock
+clears that flag, so critical sections need no preempt count. A ring 3 thread is preempted in its
+handoff, as a thread.
 
-A `WaitQueue` (`kernel/src/wait.rs`) is a bitmask of thread slots, so a wake from a handler
-allocates nothing. A waiter registers and rechecks its condition with interrupts off, which on one
-processor closes the lost-wakeup race.
+A `WaitQueue` (`kernel/src/wait.rs`) is a list of thread slots linked through
+`Threads::next_waiter` under the scheduler lock, so a wake from a handler allocates nothing. A
+waiter checks its condition and links itself under that lock with interrupts off, so no wake can
+fall between the check and the block. A wait may also end at a deadline.
 
 `wost/src/sync.rs` has two lock kinds. `SpinLock` clears the interrupt flag while held and
 restores the flag it found; setting the flag or switching threads while one is held panics.
@@ -364,8 +380,9 @@ The `0x80` gate dispatches on `rax` (`kernel/src/user/call.rs`, numbers in `nati
 | 3 | `RingWait` | returns at once when nothing is in flight, else sleeps until an operation is due and serves it |
 
 An unknown number answers `-ENOSYS` (`-38`) and is counted for the idle thread to report. Calls
-run in trap context with interrupts off, so they neither allocate nor block on a lock; `RingWait`
-yields through the saved trap frame, and file work goes to the service worker (section 9).
+run in the calling thread's context with interrupts on. `RingWait` blocks on the ring's wait queue
+until a completion is posted or the earliest deadline passes, and file work goes to the service
+worker (section 9).
 
 ### Entry block and time page
 

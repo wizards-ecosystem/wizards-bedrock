@@ -1,5 +1,5 @@
 use core::fmt;
-use core::sync::atomic::{AtomicU8, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
 use eevdf::{BASE_WEIGHT, Entity};
 use stack_layout::StackLayout;
@@ -177,11 +177,15 @@ struct RunQueue {
     slots: [Scheduled; CAPACITY],
 }
 
+pub(crate) const NO_WAITER: usize = usize::MAX;
+
 #[derive(Debug)]
 struct Threads {
     identities: [Identity; CAPACITY],
     queue: RunQueue,
     spawnable: usize,
+    // A wait queue's head and these links change only under `THREADS`, so `Relaxed` suffices.
+    next_waiter: [usize; CAPACITY],
 }
 
 impl Threads {
@@ -190,8 +194,42 @@ impl Threads {
             slot != BOOT && slot <= self.spawnable && self.queue.slots[slot].state != State::Free,
             "only a live non-boot thread slot can be released"
         );
+        assert!(
+            self.next_waiter[slot] == NO_WAITER,
+            "a released thread is still linked into a wait queue"
+        );
         self.identities[slot] = Identity::FREE;
         self.queue.slots[slot] = Scheduled::FREE;
+    }
+
+    fn link_waiter(&mut self, head: &AtomicUsize, slot: usize) {
+        self.next_waiter[slot] = NO_WAITER;
+        let first = head.load(Ordering::Relaxed);
+        if first == NO_WAITER {
+            head.store(slot, Ordering::Relaxed);
+            return;
+        }
+        let mut last = first;
+        while self.next_waiter[last] != NO_WAITER {
+            last = self.next_waiter[last];
+        }
+        self.next_waiter[last] = slot;
+    }
+
+    fn unlink_waiter(&mut self, head: &AtomicUsize, slot: usize) {
+        let first = head.load(Ordering::Relaxed);
+        if first == slot {
+            head.store(self.next_waiter[slot], Ordering::Relaxed);
+        } else {
+            let mut cursor = first;
+            while cursor != NO_WAITER && self.next_waiter[cursor] != slot {
+                cursor = self.next_waiter[cursor];
+            }
+            if cursor != NO_WAITER {
+                self.next_waiter[cursor] = self.next_waiter[slot];
+            }
+        }
+        self.next_waiter[slot] = NO_WAITER;
     }
 }
 
@@ -313,6 +351,7 @@ static THREADS: SpinLock<Threads> = SpinLock::new(Threads {
         slots: [Scheduled::FREE; CAPACITY],
     },
     spawnable: 0,
+    next_waiter: [NO_WAITER; CAPACITY],
 });
 
 const IDLE_UNSTARTED: u8 = 0;
@@ -570,6 +609,15 @@ fn mark_runnable(slot: usize) {
 }
 
 pub(crate) fn yield_now(context: &mut ThreadContext) {
+    give_way(context, CurrentEligibility::Excluded);
+}
+
+// A ring 3 thread is preempted here, in its own handoff, rather than from the trap.
+pub(crate) fn preempt(context: &mut ThreadContext) {
+    give_way(context, CurrentEligibility::Eligible);
+}
+
+fn give_way(context: &mut ThreadContext, eligibility: CurrentEligibility) {
     // Interrupts off from decision to switch, or an expiry could act on a half-made decision.
     let saved = interrupt::disable();
     let now = time::scheduler_now_ns();
@@ -578,10 +626,13 @@ pub(crate) fn yield_now(context: &mut ThreadContext) {
         let current = task::current();
         threads.queue.charge(current, now);
         threads.queue.wake_due(now);
-        let next = threads.queue.choose(current, CurrentEligibility::Excluded);
-        if let Some(next) = next {
-            threads.queue.hand_over(current, next, State::Ready, now);
-        }
+        let next = match threads.queue.choose(current, eligibility) {
+            Some(next) if next != current => {
+                threads.queue.hand_over(current, next, State::Ready, now);
+                Some(next)
+            }
+            _ => None,
+        };
         (next, threads.queue.next_event(next.unwrap_or(current), now))
     };
 
@@ -589,7 +640,7 @@ pub(crate) fn yield_now(context: &mut ThreadContext) {
     if let Some(next) = next
         && let Err(reason) = task::switch_to(next)
     {
-        panic!("yield to slot {next} refused: {reason}");
+        panic!("switch to slot {next} refused: {reason}");
     }
     saved.restore();
 }
@@ -603,23 +654,100 @@ pub(crate) fn sleep_ms(context: &mut ThreadContext, milliseconds: u64) {
     let wake_at = time::now_ns().saturating_add(milliseconds.saturating_mul(NANOSECONDS_PER_MS));
     // A loop: the halt below returns on any interrupt, and the deadline is what this promised.
     while time::is_calibrated() && time::now_ns() < wake_at {
-        THREADS.lock(context).queue.slots[task::current()].wake_at = wake_at;
-        park(context, State::Sleeping, Some(wake_at), &mut saved);
+        park(
+            context,
+            State::Sleeping,
+            Some(wake_at),
+            &mut saved,
+            |threads, current| {
+                threads.queue.slots[current].wake_at = wake_at;
+                true
+            },
+        );
     }
     saved.restore();
 }
 
-// Called with interrupts off; they stay off until after the switch.
+// `ready` runs under `THREADS`, so it may take only leaf locks no waker holds while waking.
+pub(crate) fn wait_on(
+    context: &mut ThreadContext,
+    head: &AtomicUsize,
+    until: Option<u64>,
+    ready: impl Fn() -> bool,
+) {
+    if until.is_some() && !time::is_calibrated() {
+        return;
+    }
+    // Off from the check to the block, which makes them one step on one CPU.
+    let mut saved = interrupt::disable();
+    if until.is_some_and(|deadline| time::now_ns() >= deadline) {
+        saved.restore();
+        return;
+    }
+    let leaving = if until.is_some() {
+        State::Sleeping
+    } else {
+        State::Blocked
+    };
+    let parked = park(context, leaving, until, &mut saved, |threads, current| {
+        if ready() {
+            return false;
+        }
+        threads.link_waiter(head, current);
+        if let Some(deadline) = until {
+            threads.queue.slots[current].wake_at = deadline;
+        }
+        true
+    });
+    // Woken or not: a wake already unlinked this thread, and a timeout or halt did not.
+    if parked {
+        THREADS.lock(context).unlink_waiter(head, task::current());
+    }
+    saved.restore();
+}
+
+// A linked thread that is no longer waiting is skipped: something else already woke it.
+pub(crate) fn wake_waiters(head: &AtomicUsize) -> usize {
+    let woken = {
+        let mut threads = THREADS.lock_leaf();
+        let mut woken = 0;
+        let mut slot = head.swap(NO_WAITER, Ordering::Relaxed);
+        while slot != NO_WAITER {
+            let next = core::mem::replace(&mut threads.next_waiter[slot], NO_WAITER);
+            if matches!(
+                threads.queue.slots[slot].state,
+                State::Blocked | State::Sleeping
+            ) {
+                threads.queue.ready(slot);
+                woken += 1;
+            }
+            slot = next;
+        }
+        woken
+    };
+
+    // Armed always: a handler that woke it may return to ring 3 and strand the woken thread.
+    if woken > 0 {
+        reschedule_timer(Some(time::scheduler_now_ns()));
+    }
+    woken
+}
+
+// Called with interrupts off; they stay off until after the switch. `arrange` may refuse.
 fn park(
     context: &mut ThreadContext,
     leaving: State,
     until: Option<u64>,
     saved: &mut interrupt::InterruptState,
-) {
+    arrange: impl FnOnce(&mut Threads, usize) -> bool,
+) -> bool {
     let now = time::scheduler_now_ns();
     let (next, event) = {
         let mut threads = THREADS.lock(context);
         let current = task::current();
+        if !arrange(&mut threads, current) {
+            return false;
+        }
         threads.queue.charge(current, now);
         threads.queue.wake_due(now);
         threads.queue.park(current);
@@ -652,40 +780,17 @@ fn park(
         // A nested or disabled exclusion cannot halt; the caller re-checks as after any wake.
         None => {}
     }
+    true
 }
 
-pub(crate) fn retire_from_trap(frame: &TrapFrame) -> bool {
-    let now = time::scheduler_now_ns();
-    let current = task::current();
-    // A zombie: it stands on the stack and tables it would free; orphaned before the slot frees.
-    crate::user::orphan(current);
-    let (next, event) = {
-        let mut threads = THREADS.lock_leaf();
-        threads.queue.wake_due(now);
-        // Freed now because the switch below leaves this stack for good.
-        threads.identities[current] = Identity::FREE;
-        threads.queue.slots[current] = Scheduled::FREE;
-        match threads.queue.choose(current, CurrentEligibility::Excluded) {
-            Some(next) => {
-                threads.queue.slots[next].state = State::Running;
-                threads.queue.slots[next].started = now;
-                (Some(next), threads.queue.next_event(next, now))
-            }
-            None => (None, None),
-        }
-    };
-
-    reschedule_timer(event);
-    match next {
-        Some(next) => {
-            // After `orphan`, so an acquiring observer of the new count can read the last rites.
-            #[cfg(feature = "selftest")]
-            RETIREMENTS.fetch_add(1, Ordering::AcqRel);
-            // `retire_to`, not `switch_from_trap`: `wost`'s slot must go `Dead` to match `Free`.
-            task::retire_to(next, frame).is_ok()
-        }
-        None => false,
-    }
+// A zombie: it stands on the stack and tables it would free, so it is orphaned before exiting.
+pub(crate) fn retire() -> ! {
+    let _off = interrupt::disable();
+    crate::user::orphan(task::current());
+    // After `orphan`, so an acquiring observer of the new count can read the last rites.
+    #[cfg(feature = "selftest")]
+    RETIREMENTS.fetch_add(1, Ordering::AcqRel);
+    exit()
 }
 
 fn earliest(one: Option<u64>, other: Option<u64>) -> Option<u64> {
@@ -693,37 +798,6 @@ fn earliest(one: Option<u64>, other: Option<u64>) -> Option<u64> {
         (Some(one), Some(other)) => Some(one.min(other)),
         (only, None) | (None, only) => only,
     }
-}
-
-pub(crate) fn block(context: &mut ThreadContext, saved: &mut interrupt::InterruptState) {
-    park(context, State::Blocked, None, saved);
-}
-
-// A registered slot that is not blocked is skipped: it found nothing to wait for.
-pub(crate) fn unblock(slots: u32) -> usize {
-    let woken = {
-        let mut threads = THREADS.lock_leaf();
-        let mut woken = 0;
-        for slot in 0..CAPACITY {
-            if slots & (1 << slot) == 0
-                || !matches!(
-                    threads.queue.slots[slot].state,
-                    State::Blocked | State::Sleeping
-                )
-            {
-                continue;
-            }
-            threads.queue.ready(slot);
-            woken += 1;
-        }
-        woken
-    };
-
-    // Armed always: the syscall path returns to ring 3 and would strand the woken thread.
-    if woken > 0 {
-        reschedule_timer(Some(time::scheduler_now_ns()));
-    }
-    woken
 }
 
 // `try_lock`: the caller is the panic handler, and the panicking code may hold this.
@@ -736,10 +810,10 @@ pub(crate) fn current_name() -> &'static str {
     }
 }
 
-// A cleared interrupted flag prevents only the switch; nothing promises a later re-arm.
+// A cleared interrupted flag prevents only the switch; a ring 3 frame switches in its handoff.
 pub(crate) fn reschedule(frame: &TrapFrame) {
     let now = time::scheduler_now_ns();
-    let switchable = frame.was_interruptible();
+    let switchable = frame.was_interruptible() && !frame.is_from_user();
     let (next, event) = {
         let mut threads = THREADS.lock_leaf();
         if threads.spawnable == 0 {
@@ -767,55 +841,6 @@ pub(crate) fn reschedule(frame: &TrapFrame) {
     {
         panic!("preemption to slot {next} refused: {reason}");
     }
-}
-
-pub(crate) fn wait_from_trap(frame: &TrapFrame, wake_at: Option<u64>) -> bool {
-    if wake_at.is_some() && !time::is_calibrated() {
-        return false;
-    }
-    let now = time::scheduler_now_ns();
-    if wake_at.is_some_and(|deadline| now >= deadline) {
-        return false;
-    }
-
-    let current = task::current();
-    let (next, event) = {
-        let mut threads = THREADS.lock_leaf();
-        threads.queue.charge(current, now);
-        threads.queue.wake_due(now);
-        if let Some(deadline) = wake_at {
-            threads.queue.slots[current].wake_at = deadline;
-        }
-        threads.queue.park(current);
-        let leaving = if wake_at.is_some() {
-            State::Sleeping
-        } else {
-            State::Blocked
-        };
-        threads.queue.slots[current].state = leaving;
-
-        match threads.queue.choose(current, CurrentEligibility::Excluded) {
-            Some(next) => {
-                threads.queue.slots[next].state = State::Running;
-                threads.queue.slots[next].started = now;
-                (Some(next), threads.queue.next_event(next, now))
-            }
-            // A handler cannot halt on the interrupted thread's stack, so the caller hears no.
-            None => {
-                threads.queue.slots[current].state = State::Running;
-                (None, threads.queue.next_event(current, now))
-            }
-        }
-    };
-
-    reschedule_timer(earliest(event, wake_at));
-    let Some(next) = next else {
-        return false;
-    };
-    if let Err(reason) = task::switch_from_trap(next, frame) {
-        panic!("trap wait switch to slot {next} refused: {reason}");
-    }
-    true
 }
 
 fn reschedule_timer(event: Option<u64>) {

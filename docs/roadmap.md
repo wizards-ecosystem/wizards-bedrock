@@ -182,9 +182,6 @@ Phase 7:
 - A process is a thread slot in global by-slot arrays (`kernel/src/user.rs`,
   `kernel/src/user/reap.rs`, `kernel/src/user/construction.rs`), with no parent, exit status or
   child observation. Phase 7 needs a counted process object owned by its world.
-- Syscalls run as trap context, where the heap refuses to allocate and interrupts are off
-  (`wost/src/arch/x86_64/interrupt.rs`, `wost/src/mm/heap.rs`). Spawn, channel and memory-object
-  calls must allocate and block, so a call from ring 3 must become thread context.
 - Kernel memory comes from one frame bitmap with no owner or colour, one heap that never shrinks and
   one handle arena behind one lock (`wost/src/mm.rs`, `wost/src/mm/heap.rs`,
   `kernel/src/handle.rs`), so handle values reveal the shared arena's allocation order across
@@ -202,9 +199,9 @@ Phase 7:
 - The kernel parses ELF and loads one borrowed Limine module (`kernel/src/user/load.rs`,
   `wost/src/boot/limine_glue.rs`). The user-space loader replaces it and needs every module as owned
   frames; the kernel keeps its mapper checks.
-- User threads take no entry argument, threads are capped by a 32-slot task table, a 16-slot stack
-  arena and a `u32` waiter mask, and one `Binding` serves one thread (`kernel/src/thread.rs`,
-  `wost/src/arch/x86_64/task.rs`). Processes need `entry(arg)` and many threads per root.
+- Threads are capped by a 32-slot task table and a 16-slot stack arena, and one `Binding` serves
+  one thread (`kernel/src/thread.rs`, `wost/src/arch/x86_64/task.rs`). Processes need many threads
+  per root.
 - Each process has one fixed ring, timers expire only on kernel entry, and the time page is global
   (`kernel/src/queue.rs`, `kernel/src/timepage.rs`). Ring 3 cannot read the counter and the page
   carries no time, so every read is `Uptime`. Channels need their own transport, and time needs
@@ -218,18 +215,14 @@ Phase 7:
   one, and a refused loader rollback drops its ledger, so spawn cleanup then panics
   (`kernel/src/user/reap.rs`, `kernel/src/user/load.rs`). Neither refusal has a known trigger.
   Teardown of a process must never block another's and never panic.
-- `interrupt::answer` rewrites the saved `rax` of any live frame, a ring 0 one included
-  (`wost/src/arch/x86_64/interrupt.rs`). Only a ring 3 frame may be rewritten.
 
 Phase 8:
 - Every piece of processor state is a single global, there is no per-CPU base, and the GDT, TSS,
   fault stacks and paired-root entry route are one static each that init loads once (`percpu.rs`,
   `interrupt.rs`, `task.rs`, `segment.rs` and `kpti.rs` in `wost/src/arch/x86_64/`). Phase 8 needs a
   `GS`-based per-CPU block and per-processor tables.
-- Wait queues and stack reuse are safe only with interrupts off on one processor: a waiter registers
-  before it parks, and `exit` frees a slot still running on its stack (`kernel/src/wait.rs`,
-  `kernel/src/thread.rs`). Phase 8 needs a wake state under the run-queue lock and an on-CPU flag
-  the next thread clears.
+- Stack reuse is safe only on one processor: `exit` frees a slot still running on its stack
+  (`kernel/src/thread.rs`). Phase 8 needs an on-CPU flag the next thread clears.
 - There is one run queue and one idle thread, and one PIT watchdog judges one APIC window for a
   global clock published with relaxed stores (`kernel/src/thread.rs`, `kernel/src/time.rs`). Phase 8
   needs per-CPU queues and timers, one clock owner and release and acquire publication.

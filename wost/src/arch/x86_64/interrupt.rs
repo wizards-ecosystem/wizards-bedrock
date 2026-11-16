@@ -1,7 +1,8 @@
 use core::arch::asm;
 use core::marker::PhantomData;
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU16, AtomicUsize, Ordering};
 
+use trap_cause::{Fault, TrapCause};
 use x86_apic::vector::InterruptVector;
 use x86_paging::Flags;
 use x86_tables::exception;
@@ -14,7 +15,7 @@ use super::pic;
 use super::segment;
 use super::table::TablePointer;
 use crate::cell::HardwareCell;
-use crate::sync::Once;
+use crate::sync::{Once, ThreadContext};
 
 const CONTEXTS: usize = 32;
 const MAX_EXCLUSIONS: usize = usize::BITS as usize;
@@ -115,14 +116,6 @@ pub struct TrapFrame {
 }
 
 impl TrapFrame {
-    pub const fn rdi(&self) -> u64 {
-        self.raw.rdi
-    }
-
-    pub const fn rax(&self) -> u64 {
-        self.raw.rax
-    }
-
     pub const fn vector(&self) -> u8 {
         // Lossless: the stub generator below pushes only IDT indices, asserted to fit a byte.
         self.raw.vector as u8
@@ -148,10 +141,6 @@ impl TrapFrame {
         self.raw.stack_pointer
     }
 
-    pub(crate) const fn stack_selector(&self) -> u64 {
-        self.raw.stack_selector
-    }
-
     pub const fn is_from_user(&self) -> bool {
         self.raw.code_selector & PRIVILEGE_MASK == USER_PRIVILEGE
     }
@@ -165,22 +154,95 @@ const PRIVILEGE_MASK: u64 = 0b11;
 
 const USER_PRIVILEGE: u64 = 3;
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum UserEntry {
+    Call,
+    Fault(TrapCause),
+    Interrupted,
+}
+
+// The running thread's own ring 3 frame at its kernel stack top; validated before `iretq`.
+#[derive(Debug)]
+pub struct UserRegisters<'frame> {
+    raw: &'frame mut RawTrapFrame,
+    stays_here: PhantomData<*mut ()>,
+}
+
+impl UserRegisters<'_> {
+    pub const fn rax(&self) -> u64 {
+        self.raw.rax
+    }
+
+    pub const fn rdi(&self) -> u64 {
+        self.raw.rdi
+    }
+
+    pub const fn rsi(&self) -> u64 {
+        self.raw.rsi
+    }
+
+    pub const fn rdx(&self) -> u64 {
+        self.raw.rdx
+    }
+
+    pub const fn r10(&self) -> u64 {
+        self.raw.r10
+    }
+
+    pub const fn r8(&self) -> u64 {
+        self.raw.r8
+    }
+
+    pub const fn r9(&self) -> u64 {
+        self.raw.r9
+    }
+
+    pub const fn vector(&self) -> u8 {
+        // Lossless: the stub generator pushes only IDT indices, asserted to fit a byte.
+        self.raw.vector as u8
+    }
+
+    pub const fn instruction_pointer(&self) -> u64 {
+        self.raw.instruction_pointer
+    }
+
+    pub const fn flags(&self) -> u64 {
+        self.raw.flags
+    }
+
+    pub const fn stack_pointer(&self) -> u64 {
+        self.raw.stack_pointer
+    }
+
+    pub const fn set_return(&mut self, value: u64) {
+        self.raw.rax = value;
+    }
+}
+
 // Fault handlers must redirect or stop: the saved instruction pointer names the faulting one.
 pub type Handler = fn(&TrapFrame);
 
-pub(crate) type InvalidUserReturnHandler = fn(&TrapFrame, UserReturnError) -> !;
+pub type UserEntryHandler = fn(&mut ThreadContext, &mut UserRegisters<'_>, UserEntry);
+
+pub type InvalidReturnHandler = fn(&mut ThreadContext, &UserRegisters<'_>, UserReturnError) -> !;
 
 #[derive(Debug)]
 pub struct Handlers {
     on_trap: Handler,
-    invalid_user_return: InvalidUserReturnHandler,
+    on_user_entry: UserEntryHandler,
+    on_invalid_return: InvalidReturnHandler,
 }
 
 impl Handlers {
-    pub const fn new(on_trap: Handler, invalid_user_return: InvalidUserReturnHandler) -> Self {
+    pub const fn new(
+        on_trap: Handler,
+        on_user_entry: UserEntryHandler,
+        on_invalid_return: InvalidReturnHandler,
+    ) -> Self {
         Self {
             on_trap,
-            invalid_user_return,
+            on_user_entry,
+            on_invalid_return,
         }
     }
 }
@@ -190,6 +252,10 @@ static IDT: HardwareCell<[Gate; idt::TABLE_LEN]> =
     HardwareCell::new([Gate::MISSING; idt::TABLE_LEN]);
 static HANDLERS: AtomicPtr<Handlers> = AtomicPtr::new(core::ptr::null_mut());
 static INIT: Once = Once::new();
+
+const NO_USER_GATE: u16 = u16::MAX;
+
+static USER_GATE: AtomicU16 = AtomicU16::new(NO_USER_GATE);
 
 static TRAP_DEPTH: AtomicUsize = AtomicUsize::new(0);
 
@@ -214,19 +280,6 @@ pub(super) fn resume_usercopy(frame: &TrapFrame, target: super::usercopy::Recove
     // SAFETY: as above. Only `usercopy` can construct the target, from its
     // in-crate fixup label, so `iretq` cannot be redirected by another caller.
     unsafe { core::ptr::write(slot, target.address()) };
-    true
-}
-
-#[must_use = "a refused answer changed no trap frame"]
-pub fn answer(frame: &TrapFrame, value: u64) -> bool {
-    if !is_live_frame(frame) {
-        return false;
-    }
-    // SAFETY: `origin` is the pushed assembly frame, still the innermost by the check above, so it
-    // is on this thread's kernel stack and the stub has not yet popped it.
-    let slot = unsafe { core::ptr::addr_of_mut!((*frame.origin).rax) };
-    // SAFETY: as above, and `rax` is caller-saved, so no compiled code holds the replaced value.
-    unsafe { core::ptr::write(slot, value) };
     true
 }
 
@@ -266,6 +319,9 @@ pub fn init(handlers: &'static Handlers, user_gate: Option<InterruptVector>) {
     );
 
     HANDLERS.store(core::ptr::from_ref(handlers).cast_mut(), Ordering::Release);
+    if let Some(user) = user_gate {
+        USER_GATE.store(u16::from(user.get()), Ordering::Release);
+    }
 
     // SAFETY: `INIT` admitted this caller alone and only this module reaches the table, so no other
     // reference exists, and the CPU is not pointed at it until the `lidt` below.
@@ -619,27 +675,71 @@ extern "C" fn dispatch(raw: *mut RawTrapFrame) {
         stays_here: PhantomData,
     };
 
+    if !frame.is_from_user() {
+        trap(handlers, &frame);
+        return;
+    }
+    let entry = user_entry(&frame).unwrap_or_else(|| {
+        trap(handlers, &frame);
+        UserEntry::Interrupted
+    });
+    hand_off(handlers, raw, entry);
+}
+
+fn trap(handlers: &Handlers, frame: &TrapFrame) {
     TRAP_DEPTH.fetch_add(1, Ordering::Relaxed);
     // Swapped so a nested trap restores its outer frame on the way out.
-    let outer = LIVE_FRAME.swap(raw, Ordering::Relaxed);
-    (handlers.on_trap)(&frame);
-    if let Some(error) = invalid_user_return(&frame) {
-        (handlers.invalid_user_return)(&frame, error);
-    }
+    let outer = LIVE_FRAME.swap(frame.origin, Ordering::Relaxed);
+    (handlers.on_trap)(frame);
     LIVE_FRAME.store(outer, Ordering::Relaxed);
     TRAP_DEPTH.fetch_sub(1, Ordering::Relaxed);
 }
 
-fn invalid_user_return(frame: &TrapFrame) -> Option<UserReturnError> {
-    if !frame.is_from_user() {
-        return None;
+// `None` is an interrupt, or a fault no program survives: both take the trap path first.
+fn user_entry(frame: &TrapFrame) -> Option<UserEntry> {
+    if u16::from(frame.vector()) == USER_GATE.load(Ordering::Acquire) {
+        return Some(UserEntry::Call);
     }
+    match TrapCause::decode(frame.vector(), frame.error_code()) {
+        TrapCause::Fault(Fault::DoubleFault | Fault::MachineCheck | Fault::NonMaskable)
+        | TrapCause::Interrupt(_)
+        | TrapCause::Reserved(_) => None,
+        cause @ TrapCause::Fault(_) => Some(UserEntry::Fault(cause)),
+    }
+}
+
+// Ring 3 enters only from trap depth zero, so the handler runs as its thread, interrupts on.
+fn hand_off(handlers: &Handlers, raw: *mut RawTrapFrame, entry: UserEntry) {
+    assert!(!in_trap(), "a ring 3 entry arrived inside a trap");
+    // SAFETY: the entry stub passes this thread's frame at its own kernel stack top, aligned and
+    // initialised; nested traps push below it and nothing else names it until the return tail.
+    let frame = unsafe { &mut *raw };
+    let mut registers = UserRegisters {
+        raw: frame,
+        stays_here: PhantomData,
+    };
+    let mut context = ThreadContext::mint();
+    enable();
+    (handlers.on_user_entry)(&mut context, &mut registers, entry);
+
+    // Off from the check to `iretq`, so ring 3 resumes exactly the image accepted here.
+    let disabled = disable();
+    match invalid_user_return(registers.raw) {
+        None => disabled.commit_disabled(),
+        Some(error) => {
+            disabled.restore();
+            (handlers.on_invalid_return)(&mut context, &registers, error)
+        }
+    }
+}
+
+fn invalid_user_return(frame: &RawTrapFrame) -> Option<UserReturnError> {
     let state = UserReturnState::new(
-        frame.instruction_pointer(),
-        frame.code_selector(),
-        frame.flags(),
-        frame.stack_pointer(),
-        frame.stack_selector(),
+        frame.instruction_pointer,
+        frame.code_selector,
+        frame.flags,
+        frame.stack_pointer,
+        frame.stack_selector,
     );
     if let Err(error) = state.validate(
         segment::USER_CODE,
@@ -648,12 +748,12 @@ fn invalid_user_return(frame: &TrapFrame) -> Option<UserReturnError> {
     ) {
         return Some(error);
     }
-    match super::paging::translate(frame.instruction_pointer()) {
+    match super::paging::translate(frame.instruction_pointer) {
         Some((_, flags)) if flags.contains(Flags::USER) && !flags.contains(Flags::NO_EXECUTE) => {
             None
         }
         _ => Some(UserReturnError::InstructionNotExecutable(
-            frame.instruction_pointer(),
+            frame.instruction_pointer,
         )),
     }
 }

@@ -39,6 +39,7 @@ pub enum TaskError {
     NotInTrap,
     InTrap,
     ForeignFrame,
+    UserFrame,
 }
 
 impl fmt::Display for TaskError {
@@ -65,6 +66,9 @@ impl fmt::Display for TaskError {
             Self::InTrap => formatter.write_str("inside a trap handler"),
             Self::ForeignFrame => {
                 formatter.write_str("not the frame the live handler was entered with")
+            }
+            Self::UserFrame => {
+                formatter.write_str("a ring 3 frame switches only through its handoff")
             }
         }
     }
@@ -283,6 +287,9 @@ pub fn switch_from_trap(slot: usize, frame: &TrapFrame) -> Result<(), TaskError>
     if !interrupt::is_live_frame(frame) {
         return Err(TaskError::ForeignFrame);
     }
+    if frame.is_from_user() {
+        return Err(TaskError::UserFrame);
+    }
     if !frame.was_interruptible() {
         return Err(TaskError::Uninterruptible);
     }
@@ -298,37 +305,6 @@ pub fn switch_from_trap(slot: usize, frame: &TrapFrame) -> Result<(), TaskError>
     interrupt::resume_trap(suspended);
     saved.restore();
     outcome
-}
-
-pub fn retire_to(slot: usize, frame: &TrapFrame) -> Result<(), TaskError> {
-    if !interrupt::in_trap() {
-        return Err(TaskError::NotInTrap);
-    }
-    if !interrupt::is_live_frame(frame) {
-        return Err(TaskError::ForeignFrame);
-    }
-    if !frame.was_interruptible() {
-        return Err(TaskError::Uninterruptible);
-    }
-
-    let saved = interrupt::disable();
-    let suspended = interrupt::suspend_trap();
-    match prepare(slot, State::Dead) {
-        Ok((save, load)) => {
-            // This handler and every exclusion parked on its stack die with the context.
-            saved.commit_context_disabled();
-            interrupt::switch_context(slot);
-            // SAFETY: as in `switch_from_trap`, and the slot being left is now `Dead`, so this
-            // saved state is never loaded again.
-            unsafe { switch(save, load) };
-            unreachable!("a task retired from a trap was resumed");
-        }
-        Err(error) => {
-            interrupt::resume_trap(suspended);
-            saved.restore();
-            Err(error)
-        }
-    }
 }
 
 pub fn exit_to(slot: usize) -> TaskError {
@@ -672,7 +648,8 @@ impl fmt::Display for UserError {
 
 impl core::error::Error for UserError {}
 
-pub fn enter_user(entry: u64, stack_top: u64) -> UserError {
+pub fn enter_user(context: &mut ThreadContext, entry: u64, stack_top: u64) -> UserError {
+    let _ = context;
     let disabled = interrupt::disable();
     if !disabled.were_enabled() {
         disabled.restore();
