@@ -123,7 +123,8 @@ pub(crate) fn force_unlock(panic: &crate::panic::PanicToken) {
 struct KernelAllocator;
 
 // SAFETY: `alloc` gives null or an unheld slot or run aligned at least as asked: slots sit at
-// class-size multiples in a frame-aligned slab, runs on a frame; `dealloc` returns that, same lock.
+// class-size multiples in a frame-aligned slab, and a run's address is checked against the
+// requested alignment; `dealloc` returns that, same lock.
 unsafe impl GlobalAlloc for KernelAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         assert!(!interrupt::in_trap(), "allocation in trap context");
@@ -159,6 +160,10 @@ unsafe impl GlobalAlloc for KernelAllocator {
                 let Some(address) = direct_pointer(run.address(), run.len()) else {
                     return ptr::null_mut();
                 };
+                // A physically aligned run is virtually aligned only if the direct-map offset is.
+                if !address.addr().is_multiple_of(layout.align()) {
+                    return ptr::null_mut();
+                }
                 let mut heap = HEAP.lock_leaf();
                 let Some(large_frames) = heap.large_frames.checked_add(count) else {
                     drop(heap);
@@ -207,8 +212,9 @@ unsafe impl GlobalAlloc for KernelAllocator {
                 };
                 assert!(returned, "heap refused a live frame return");
 
-                // SAFETY: `GlobalAlloc` promises `pointer` came from `alloc` with this layout, so
-                // `count` frames at `physical` are exactly its allocated run, not since freed.
+                // SAFETY: `GlobalAlloc` promises `pointer` came from `alloc` with this layout, so the
+                // `count` frames at `physical` are the run it allocated and forgot, not since freed
+                // and named by nothing else.
                 drop(unsafe { Segment::from_raw(physical, count) });
             }
             Err(reason) => panic!("heap refused a live allocation's layout: {reason}"),
