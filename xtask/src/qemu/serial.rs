@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, ensure};
-use boot_record::{Fact, Memory, Protections, Record, Verdict};
+use boot_record::{Fact, Memory, Processors, Protections, Record, Verdict};
 use panic_record::OPEN_PREFIX;
 
 // QEMU exits with `(value << 1) | 1`, so the kernel's 0x10 arrives as 33.
@@ -68,20 +68,22 @@ pub(super) struct Selftest {
     failed: Vec<String>,
     verdict: Option<Verdict>,
     colours: Option<usize>,
+    processors: usize,
+    online: Option<usize>,
 }
 
-impl Default for Selftest {
-    fn default() -> Self {
+impl Selftest {
+    pub(super) fn new(processors: usize) -> Self {
         Self {
             records: Records::new(SELFTEST_REQUIRED),
             failed: Vec::new(),
             verdict: None,
             colours: None,
+            processors,
+            online: None,
         }
     }
-}
 
-impl Selftest {
     pub(super) fn observe(&mut self, line: &str) -> Result<()> {
         ensure!(
             self.verdict.is_none(),
@@ -98,6 +100,7 @@ impl Selftest {
         match read_record(line)? {
             Some(Record::Verdict(verdict)) => self.verdict = Some(verdict),
             Some(Record::Memory(Memory { colours })) => self.colours = Some(colours),
+            Some(Record::Processors(Processors { online })) => self.online = Some(online),
             Some(record) => self.records.observe(record),
             None => {}
         }
@@ -127,6 +130,14 @@ impl Selftest {
         ensure!(
             colours > 1,
             "the self-test machine has {colours} cache colour, so colour masks cannot differ"
+        );
+        let online = self
+            .online
+            .context("the self-test kernel never wrote its `processors` record")?;
+        ensure!(
+            online == self.processors,
+            "the self-test machine has {} processors but {online} came online",
+            self.processors
         );
         self.records.require_all("self-test")
     }

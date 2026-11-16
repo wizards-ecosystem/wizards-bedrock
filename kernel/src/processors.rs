@@ -1,5 +1,6 @@
 use core::sync::atomic::{AtomicU8, Ordering};
 
+use boot_record::{Processors as Online, Record};
 use stack_layout::StackLayout;
 use wost::arch::current::{apic, cpu, percpu, xstate};
 use wost::boot::{HandoffError, Processors};
@@ -44,6 +45,7 @@ pub(crate) fn bring_up(
     start_others(context, processors, table);
     let online = percpu::online_count();
     info!("cpu: {online} processors online");
+    info!("{}", Record::Processors(Online { online }));
 }
 
 fn start_others(

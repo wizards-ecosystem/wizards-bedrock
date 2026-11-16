@@ -190,6 +190,9 @@ number and is added here, as one entry or as an amending id on the entry it chan
 - **D-574** A panic sends an NMI to every other online processor by APIC ID, never the all-but-self
   shorthand, and forces locks only after every one acknowledged within a bounded poll; an NMI
   during a panic is a stop that never resumes (amends D-34).
+- **D-575** The gate's release self-test and shipped boot run on two QEMU processors and require
+  the `processors` boot record to count both, the debug self-test and the degraded boots run on
+  one, and the VMware machines have four virtual CPUs.
 
 ## Memory
 

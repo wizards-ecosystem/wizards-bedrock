@@ -3,10 +3,10 @@ use std::process::Command;
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail, ensure};
-use boot_record::{Exit, Fact, Protections, Record};
+use boot_record::{Exit, Fact, Processors as Online, Protections, Record};
 
 use super::serial::{FULL_PROTECTIONS, Records, read_record, require_no_panic};
-use super::{Control, Event, Installation, Machine, Remapping};
+use super::{Control, Event, Installation, Machine, Processors, Remapping};
 use crate::paths::RunDirectory;
 
 const BOOT_TIMEOUT: Duration = Duration::from_secs(180);
@@ -31,6 +31,9 @@ const SHIPPED_REQUIRED: &[Record] = &[
     Record::Fact(Fact::KeyboardPolled),
     // The boot witness is the shipped kernel's only program, and status 0 is its agreement.
     Record::Exit(Exit { status: 0 }),
+    Record::Processors(Online {
+        online: Processors::Two.count(),
+    }),
 ];
 
 const NO_X2APIC_REQUIRED: &[Record] = &[
@@ -142,7 +145,7 @@ impl Boot {
 }
 
 pub(crate) fn boot_check(run: &RunDirectory) -> Result<()> {
-    let command = Installation::locate()?.command(run, Remapping::Present)?;
+    let command = Installation::locate()?.command(run, Remapping::Present, Processors::Two)?;
     println!("[xtask] booting the shipped kernel");
     let mut boot = Boot::launch(command, Control::Qmp, "shipped", SHIPPED_REQUIRED)?;
     boot.until_settled()?;
@@ -171,7 +174,7 @@ pub(crate) fn boot_check(run: &RunDirectory) -> Result<()> {
 }
 
 pub(crate) fn degraded_check(run: &RunDirectory) -> Result<()> {
-    let mut command = Installation::locate()?.command(run, Remapping::Present)?;
+    let mut command = Installation::locate()?.command(run, Remapping::Present, Processors::One)?;
     command.args(["-cpu", DEGRADED_CPU]);
     println!("[xtask] booting the shipped kernel with no x2apic");
     settle(Boot::launch(
@@ -182,7 +185,7 @@ pub(crate) fn degraded_check(run: &RunDirectory) -> Result<()> {
     )?)?;
     println!("[xtask] optional CPU protection fallback remains diagnostic-only");
 
-    let command = Installation::locate()?.command(run, Remapping::Absent)?;
+    let command = Installation::locate()?.command(run, Remapping::Absent, Processors::One)?;
     println!("[xtask] booting the shipped kernel with no DMA-remapping unit");
     settle(Boot::launch(
         command,

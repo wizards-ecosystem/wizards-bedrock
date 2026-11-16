@@ -133,7 +133,7 @@ in x2APIC mode software-disabled, and runs the clock check (section 5). Only the
 processor admit it to the online set with `percpu::admit`. An admitted processor halts with
 interrupts off: it runs no thread, takes no part in scheduling and answers only the stop NMI. The
 online set is the boot processor and every admitted processor; building the first user root
-closes it.
+closes it. Its size is the `processors` boot record.
 
 Every IDT gate is an interrupt gate, so a handler starts with interrupts off. Generated assembly
 stubs push a zero error code where the CPU pushes none, so every frame has one shape, and join
@@ -714,10 +714,12 @@ every locked crate a reviewed license row, and the only source is crates.io. Ker
 exact rustflags list with `--remap-path-prefix`, so shipped debug information names no host path.
 
 The QEMU machine is fixed (`xtask/src/qemu.rs`): `pc-q35-9.2` under TCG with
-`-cpu max,hypervisor=on,tcg-cpuid=on`, one CPU, 512 MiB, an `intel-iommu` with interrupt
+`-cpu max,hypervisor=on,tcg-cpuid=on`, 512 MiB, an `intel-iommu` with interrupt
 remapping, a PCI bridge, two NVMe controllers, EDK2 firmware from the QEMU install and the `WZDH`
-table. QMP drives controlled boots over bounded exchanges. `cargo xtask vmware` generates
-`vm/self-test/` or `vm/shipped/` with the same devices in VMware form and two virtual CPUs.
+table. The release self-test and the shipped boot check run with `-smp 2`; the debug self-test
+and the degraded boots run with one processor. QMP drives controlled boots over bounded exchanges.
+`cargo xtask vmware` generates `vm/self-test/` or `vm/shipped/` with the same devices in VMware form
+and four virtual CPUs.
 
 Checks that need a machine are compiled into the kernel under the `selftest` feature
 (`kernel/src/selftest.rs`) and report a verdict through QEMU's `isa-debug-exit` port. The feature
@@ -728,10 +730,11 @@ degraded boots
 without x2APIC and without an IOMMU. `README.md` lists the steps and the tasks outside the gate.
 
 The gate judges a boot only by boot records (`libs/boot-record`), the panic record and the exit
-code. A boot record is one serial line, `[info ] record v3 <kind> <key>=<value>...`, that the
+code. A boot record is one serial line, `[info ] record v4 <kind> <key>=<value>...`, that the
 kernel writes beside the sentence a person reads. The kinds are `verdict` (`passed`, `failed`,
 `expected`), `fact` (`name`, from a closed list), `protections` (`wp`, `smep`, `smap`, `umip`,
-`nx`, each `0` or `1`), `memory` (`colours`, the cache colour count), `exit` (`status`) and
+`nx`, each `0` or `1`), `memory` (`colours`, the cache colour count), `processors` (`online`, the
+processors brought online), `exit` (`status`) and
 `fault` (`vector`, `error`, `address`, `rip`). The self-test boot
 requires more than one colour: its `-cpu` line sets `x-vendor-cpuid-only=off`, so QEMU's
 AMD-branded TCG processor answers `CPUID` leaf 4. Every field is required and in order, and

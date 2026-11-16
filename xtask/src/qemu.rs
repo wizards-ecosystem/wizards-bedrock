@@ -45,6 +45,22 @@ enum Remapping {
     Absent,
 }
 
+// The release self-test and the shipped boot run on two; the debug self-test and degraded runs on one.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Processors {
+    One,
+    Two,
+}
+
+impl Processors {
+    pub(crate) const fn count(self) -> usize {
+        match self {
+            Self::One => 1,
+            Self::Two => 2,
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Control {
     Qmp,
@@ -72,7 +88,12 @@ impl Installation {
     }
 
     // The run directory is the working directory because `-acpitable file=` cannot escape a comma.
-    fn command(&self, run: &RunDirectory, remapping: Remapping) -> Result<Command> {
+    fn command(
+        &self,
+        run: &RunDirectory,
+        remapping: Remapping,
+        processors: Processors,
+    ) -> Result<Command> {
         std::fs::copy(&self.vars_firmware, run.path().join(VARS_NAME))
             .with_context(|| format!("copying {}", self.vars_firmware.display()))?;
         std::fs::write(
@@ -93,7 +114,8 @@ impl Installation {
                 "max,hypervisor=on,tcg-cpuid=on,x-vendor-cpuid-only=off",
                 "-m",
                 "512M",
-            ]);
+            ])
+            .args(["-smp", &processors.count().to_string()]);
         if remapping == Remapping::Present {
             // Caching mode caches not-present DMA entries, so every mapping change is invalidated.
             command.args(["-device", "intel-iommu,intremap=on,eim=on,caching-mode=on"]);
@@ -200,7 +222,7 @@ pub(crate) fn run(run: &RunDirectory, extra: &[OsString]) -> Result<()> {
     let installation = Installation::locate()?;
     println!("[xtask] launching QEMU (serial on stdio, close the window to exit)");
     let status = installation
-        .command(run, Remapping::Present)?
+        .command(run, Remapping::Present, Processors::Two)?
         .args(["-serial", "stdio"])
         .args(extra)
         .status()
@@ -214,7 +236,7 @@ pub(crate) fn run(run: &RunDirectory, extra: &[OsString]) -> Result<()> {
 pub(crate) fn debug(run: &RunDirectory, port: u16) -> Result<Child> {
     let installation = Installation::locate()?;
     installation
-        .command(run, Remapping::Present)?
+        .command(run, Remapping::Present, Processors::One)?
         .args(["-S", "-gdb", &format!("tcp:127.0.0.1:{port}")])
         .args(["-display", "none", "-serial", "null", "-no-reboot"])
         .spawn()

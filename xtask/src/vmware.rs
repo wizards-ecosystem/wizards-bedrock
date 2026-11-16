@@ -201,7 +201,7 @@ fn print_checklist(kernel: Kernel) {
     match kernel {
         Kernel::SelfTest => {
             println!("[xtask] this is the self-test kernel; it needs no input:");
-            println!("        look for `record v3 verdict` in the fresh serial log");
+            println!("        look for `record v4 verdict` in the fresh serial log");
         }
         Kernel::Shipped => {
             println!("[xtask] this is the shipped kernel, verify its fresh serial log:");

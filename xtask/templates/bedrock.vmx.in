@@ -9,7 +9,7 @@ vvtd.enable = "TRUE"
 # The CPU-resident hypervisor identity authenticates this DMA handoff table.
 acpi.addtable.filename = "{{DMA_HANDOFF_FILE}}"
 memsize = "512"
-numvcpus = "2"
+numvcpus = "4"
 sata0.present = "TRUE"
 sata0:0.present = "TRUE"
 sata0:0.fileName = "{{VMDK_NAME}}"

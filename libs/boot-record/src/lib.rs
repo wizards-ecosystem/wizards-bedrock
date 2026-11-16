@@ -8,7 +8,7 @@
 use core::fmt;
 
 // Bumped with any change to the grammar, the kinds, their fields or the fact names.
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 
 // The kernel writes each record as one `info` line, and nothing else it logs opens this way.
 const LEVEL: &str = "[info ] ";
@@ -21,6 +21,7 @@ pub enum Record {
     Fact(Fact),
     Protections(Protections),
     Memory(Memory),
+    Processors(Processors),
     Exit(Exit),
     Fault(Fault),
 }
@@ -50,6 +51,12 @@ pub struct Protections {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Memory {
     pub colours: usize,
+}
+
+// Processors brought online at boot, the boot processor included.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Processors {
+    pub online: usize,
 }
 
 // How a program ended, written when it is collected.
@@ -194,6 +201,9 @@ impl Record {
             "memory" => Self::Memory(Memory {
                 colours: words.count("colours")?,
             }),
+            "processors" => Self::Processors(Processors {
+                online: words.count("online")?,
+            }),
             "exit" => Self::Exit(Exit {
                 status: words.count("status")?,
             }),
@@ -233,6 +243,9 @@ impl fmt::Display for Record {
                 u8::from(protections.nx)
             ),
             Self::Memory(Memory { colours }) => write!(formatter, "memory colours={colours}"),
+            Self::Processors(Processors { online }) => {
+                write!(formatter, "processors online={online}")
+            }
             Self::Exit(Exit { status }) => write!(formatter, "exit status={status}"),
             Self::Fault(Fault {
                 vector,

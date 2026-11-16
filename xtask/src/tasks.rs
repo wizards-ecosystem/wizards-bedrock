@@ -89,11 +89,11 @@ pub(crate) fn test(paths: &Paths) -> Result<()> {
 pub(crate) fn test_boot(paths: &Paths, profile: Profile) -> Result<()> {
     let run = RunDirectory::create(paths)?;
     image::build(paths, profile, Kernel::SelfTest, &run.image())?;
-    let timeout = match profile {
-        Profile::Release => SELFTEST_TIMEOUT,
-        Profile::Dev => DEBUG_SELFTEST_TIMEOUT,
+    let (timeout, processors) = match profile {
+        Profile::Release => (SELFTEST_TIMEOUT, qemu::Processors::Two),
+        Profile::Dev => (DEBUG_SELFTEST_TIMEOUT, qemu::Processors::One),
     };
-    qemu::run_selftest(&run, timeout)
+    qemu::run_selftest(&run, timeout, processors)
 }
 
 pub(crate) fn boot_check(paths: &Paths, profile: Profile) -> Result<()> {
