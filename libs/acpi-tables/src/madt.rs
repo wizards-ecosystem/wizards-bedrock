@@ -1,9 +1,14 @@
 use core::fmt;
 
-use crate::{AcpiError, Sdt, u32_at};
+use crate::{AcpiError, Sdt, u16_at, u32_at};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum MadtEntry {
+    LocalApic {
+        uid: u8,
+        apic_id: u8,
+        flags: u32,
+    },
     IoApic {
         id: u8,
         address: u32,
@@ -14,6 +19,21 @@ pub(crate) enum MadtEntry {
         source: u8,
         gsi: u32,
         flags: u16,
+    },
+    LocalApicNmi {
+        uid: u8,
+        flags: u16,
+        lint: u8,
+    },
+    LocalX2Apic {
+        apic_id: u32,
+        flags: u32,
+        uid: u32,
+    },
+    LocalX2ApicNmi {
+        flags: u16,
+        uid: u32,
+        lint: u8,
     },
     Other,
 }
@@ -54,8 +74,10 @@ impl<'table> MadtEntries<'table> {
             let entry_length = usize::from(prefix[1]);
             let minimum = match kind {
                 0 => 8,
-                1 => 12,
+                1 | 0xa => 12,
                 2 => 10,
+                4 => 6,
+                9 => 16,
                 _ => 2,
             };
             if entry_length < minimum || entry_length > available {
@@ -84,6 +106,11 @@ impl Iterator for MadtEntries<'_> {
         self.offset += length;
 
         Some(match kind {
+            0 => MadtEntry::LocalApic {
+                uid: entry[2],
+                apic_id: entry[3],
+                flags: u32_at(entry, 4).unwrap_or(0),
+            },
             1 => MadtEntry::IoApic {
                 id: entry[2],
                 address: u32_at(entry, 4).unwrap_or(0),
@@ -94,6 +121,21 @@ impl Iterator for MadtEntries<'_> {
                 source: entry[3],
                 gsi: u32_at(entry, 4).unwrap_or(0),
                 flags: u16::from_le_bytes([entry[8], entry[9]]),
+            },
+            4 => MadtEntry::LocalApicNmi {
+                uid: entry[2],
+                flags: u16_at(entry, 3).unwrap_or(0),
+                lint: entry[5],
+            },
+            9 => MadtEntry::LocalX2Apic {
+                apic_id: u32_at(entry, 4).unwrap_or(0),
+                flags: u32_at(entry, 8).unwrap_or(0),
+                uid: u32_at(entry, 12).unwrap_or(0),
+            },
+            0xa => MadtEntry::LocalX2ApicNmi {
+                flags: u16_at(entry, 2).unwrap_or(0),
+                uid: u32_at(entry, 4).unwrap_or(0),
+                lint: entry[8],
             },
             _ => MadtEntry::Other,
         })
@@ -205,9 +247,7 @@ impl<const IO_APICS: usize> MadtInterrupts<IO_APICS> {
                     let Some(slot) = model.overrides.get_mut(usize::from(source)) else {
                         return Err(InterruptError::InvalidOverrideSource(source));
                     };
-                    let polarity = flags & 0b11;
-                    let trigger = (flags >> 2) & 0b11;
-                    if flags & !0xf != 0 || polarity == 0b10 || trigger == 0b10 {
+                    if !inti_flags_are_valid(flags) {
                         return Err(InterruptError::ReservedOverrideFlags { source, flags });
                     }
                     if slot.is_some() {
@@ -215,7 +255,7 @@ impl<const IO_APICS: usize> MadtInterrupts<IO_APICS> {
                     }
                     *slot = Some((gsi, flags));
                 }
-                MadtEntry::Other => {}
+                _ => {}
             }
         }
         Ok(model)
@@ -239,5 +279,254 @@ impl<const IO_APICS: usize> MadtInterrupts<IO_APICS> {
 
     pub fn override_for(&self, irq: u8) -> Option<(u32, u16)> {
         self.overrides.get(usize::from(irq)).copied().flatten()
+    }
+}
+
+const fn inti_flags_are_valid(flags: u16) -> bool {
+    let polarity = flags & 0b11;
+    let trigger = (flags >> 2) & 0b11;
+    flags & !0xf == 0 && polarity != 0b10 && trigger != 0b10
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ProcessorState {
+    Enabled,
+    OnlineCapable,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct LocalNmi {
+    lint: u8,
+    flags: u16,
+}
+
+impl LocalNmi {
+    pub const fn lint(self) -> u8 {
+        self.lint
+    }
+
+    pub const fn flags(self) -> u16 {
+        self.flags
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Processor {
+    apic_id: u32,
+    uid: u32,
+    state: ProcessorState,
+    nmi: Option<LocalNmi>,
+}
+
+impl Processor {
+    pub const fn apic_id(self) -> u32 {
+        self.apic_id
+    }
+
+    pub const fn uid(self) -> u32 {
+        self.uid
+    }
+
+    pub const fn state(self) -> ProcessorState {
+        self.state
+    }
+
+    pub const fn nmi(self) -> Option<LocalNmi> {
+        self.nmi
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ProcessorError {
+    Table(AcpiError),
+    TooManyProcessors { limit: usize },
+    ReservedProcessorFlags { apic_id: u32, flags: u32 },
+    BroadcastApicId(u32),
+    DuplicateApicId(u32),
+    DuplicateUid(u32),
+    InvalidNmiLine { lint: u8 },
+    ReservedNmiFlags(u16),
+    DuplicateNmi { apic_id: u32 },
+}
+
+impl fmt::Display for ProcessorError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Table(reason) => write!(formatter, "madt is unusable: {reason}"),
+            Self::TooManyProcessors { limit } => {
+                write!(
+                    formatter,
+                    "madt describes more than {limit} usable processors"
+                )
+            }
+            Self::ReservedProcessorFlags { apic_id, flags } => write!(
+                formatter,
+                "madt processor {apic_id} has reserved flags {flags:#x}"
+            ),
+            Self::BroadcastApicId(apic_id) => {
+                write!(
+                    formatter,
+                    "madt names the broadcast id {apic_id:#x} as a processor"
+                )
+            }
+            Self::DuplicateApicId(apic_id) => {
+                write!(formatter, "madt repeats processor apic id {apic_id}")
+            }
+            Self::DuplicateUid(uid) => write!(formatter, "madt repeats processor uid {uid}"),
+            Self::InvalidNmiLine { lint } => {
+                write!(formatter, "madt nmi names local interrupt line {lint}")
+            }
+            Self::ReservedNmiFlags(flags) => {
+                write!(formatter, "madt nmi has reserved flags {flags:#x}")
+            }
+            Self::DuplicateNmi { apic_id } => {
+                write!(formatter, "madt gives processor {apic_id} a second nmi")
+            }
+        }
+    }
+}
+
+impl core::error::Error for ProcessorError {}
+
+const ENABLED: u32 = 1;
+const ONLINE_CAPABLE: u32 = 2;
+const XAPIC_BROADCAST: u32 = 0xff;
+const X2APIC_BROADCAST: u32 = u32::MAX;
+const NMI_ALL_XAPIC: u32 = 0xff;
+const NMI_ALL_X2APIC: u32 = u32::MAX;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct MadtProcessors<const PROCESSORS: usize> {
+    processors: [Option<Processor>; PROCESSORS],
+    count: usize,
+}
+
+impl<const PROCESSORS: usize> MadtProcessors<PROCESSORS> {
+    pub fn parse(table: &[u8]) -> Result<Self, ProcessorError> {
+        let mut model = Self {
+            processors: [None; PROCESSORS],
+            count: 0,
+        };
+        for entry in MadtEntries::new(table).map_err(ProcessorError::Table)? {
+            match entry {
+                MadtEntry::LocalApic {
+                    uid,
+                    apic_id,
+                    flags,
+                } => model.admit(u32::from(apic_id), u32::from(uid), flags, XAPIC_BROADCAST)?,
+                MadtEntry::LocalX2Apic {
+                    apic_id,
+                    flags,
+                    uid,
+                } => model.admit(apic_id, uid, flags, X2APIC_BROADCAST)?,
+                _ => {}
+            }
+        }
+        for entry in MadtEntries::new(table).map_err(ProcessorError::Table)? {
+            match entry {
+                MadtEntry::LocalApicNmi { uid, flags, lint } => {
+                    let uid = u32::from(uid);
+                    let target = if uid == NMI_ALL_XAPIC {
+                        None
+                    } else {
+                        Some(uid)
+                    };
+                    model.route_nmi(target, flags, lint)?;
+                }
+                MadtEntry::LocalX2ApicNmi { flags, uid, lint } => {
+                    let target = if uid == NMI_ALL_X2APIC {
+                        None
+                    } else {
+                        Some(uid)
+                    };
+                    model.route_nmi(target, flags, lint)?;
+                }
+                _ => {}
+            }
+        }
+        Ok(model)
+    }
+
+    fn admit(
+        &mut self,
+        apic_id: u32,
+        uid: u32,
+        flags: u32,
+        broadcast: u32,
+    ) -> Result<(), ProcessorError> {
+        let state = match flags {
+            0 => return Ok(()),
+            ENABLED => ProcessorState::Enabled,
+            ONLINE_CAPABLE => ProcessorState::OnlineCapable,
+            _ => return Err(ProcessorError::ReservedProcessorFlags { apic_id, flags }),
+        };
+        if apic_id == broadcast {
+            return Err(ProcessorError::BroadcastApicId(apic_id));
+        }
+        let mut index = 0;
+        while index < self.count {
+            if let Some(kept) = self.processors[index] {
+                if kept.apic_id == apic_id {
+                    return Err(ProcessorError::DuplicateApicId(apic_id));
+                }
+                if kept.uid == uid {
+                    return Err(ProcessorError::DuplicateUid(uid));
+                }
+            }
+            index += 1;
+        }
+        let Some(slot) = self.processors.get_mut(self.count) else {
+            return Err(ProcessorError::TooManyProcessors { limit: PROCESSORS });
+        };
+        *slot = Some(Processor {
+            apic_id,
+            uid,
+            state,
+            nmi: None,
+        });
+        self.count += 1;
+        Ok(())
+    }
+
+    // A `None` target is every processor.
+    fn route_nmi(
+        &mut self,
+        target: Option<u32>,
+        flags: u16,
+        lint: u8,
+    ) -> Result<(), ProcessorError> {
+        if lint > 1 {
+            return Err(ProcessorError::InvalidNmiLine { lint });
+        }
+        if !inti_flags_are_valid(flags) {
+            return Err(ProcessorError::ReservedNmiFlags(flags));
+        }
+        let mut index = 0;
+        while index < self.count {
+            if let Some(processor) = &mut self.processors[index]
+                && (target.is_none() || target == Some(processor.uid))
+            {
+                if processor.nmi.is_some() {
+                    return Err(ProcessorError::DuplicateNmi {
+                        apic_id: processor.apic_id,
+                    });
+                }
+                processor.nmi = Some(LocalNmi { lint, flags });
+            }
+            index += 1;
+        }
+        Ok(())
+    }
+
+    pub const fn count(&self) -> usize {
+        self.count
+    }
+
+    pub const fn processor(&self, index: usize) -> Option<Processor> {
+        if index < self.count {
+            self.processors[index]
+        } else {
+            None
+        }
     }
 }

@@ -11,7 +11,10 @@ mod requesters;
 
 pub use attestation::{DmaCoverage, DmaCoverageError, DmaHandoff, DmaHandoffError};
 pub use dmar::{Bdf, BusRange};
-pub use madt::{InterruptError, IoApic, MadtInterrupts};
+pub use madt::{
+    InterruptError, IoApic, LocalNmi, MadtInterrupts, MadtProcessors, Processor, ProcessorError,
+    ProcessorState,
+};
 pub use requesters::{
     Dmar, DmarError, GoverningUnit, RequesterInventory, RequesterInventoryError, ReservedRegions,
 };
