@@ -70,7 +70,7 @@ pub(crate) fn build_kernel(paths: &Paths, profile: Profile, features: &[&str]) -
     if !features.is_empty() {
         args.extend(["--features".to_string(), features.join(",")]);
     }
-    args.extend(["--config".to_string(), remap_config(paths)?]);
+    args.extend(["--config".to_string(), target_config(paths, &[])?]);
     run(paths, "kernel build", &args)?;
 
     let elf = paths.kernel_elf(profile);
@@ -80,9 +80,37 @@ pub(crate) fn build_kernel(paths: &Paths, profile: Profile, features: &[&str]) -
     Ok(bytes)
 }
 
+// Always release: one witness serves both kernel profiles, and its stack is a single page.
+pub(crate) fn build_witness(paths: &Paths) -> Result<Vec<u8>> {
+    println!("[xtask] building the ring 3 witness");
+    let mut args = vec!["build".to_string(), "--locked".to_string()];
+    args.extend(package_args(&[paths::WITNESS_PACKAGE]));
+    args.extend(["--target".to_string(), paths::KERNEL_TARGET.to_string()]);
+    args.push("--release".to_string());
+    // The appended model wins; fat LTO cannot merge it with the sysroot's kernel-model `core`.
+    args.extend([
+        "--config".to_string(),
+        target_config(paths, &["-C", "code-model=small"])?,
+        "--config".to_string(),
+        "profile.release.lto=false".to_string(),
+    ]);
+    let status = command(paths)
+        .env("CARGO_TARGET_DIR", paths.witness_target_dir())
+        .args(&args)
+        .status()
+        .context("could not spawn cargo to build the ring 3 witness")?;
+    ensure!(
+        status.success(),
+        "the ring 3 witness build failed ({status})"
+    );
+
+    let elf = paths.witness_elf();
+    std::fs::read(&elf).with_context(|| format!("reading {}", elf.display()))
+}
+
 // `--config` appends to the rustflags array in .cargo/config.toml; RUSTFLAGS would replace it.
-fn remap_config(paths: &Paths) -> Result<String> {
-    let mut flags = Vec::new();
+fn target_config(paths: &Paths, extra: &[&str]) -> Result<String> {
+    let mut flags: Vec<String> = extra.iter().map(|flag| toml_string(flag)).collect();
     for (root, virtual_root) in [
         (paths.root().to_path_buf(), VIRTUAL_SOURCE_ROOT),
         (toolchain_root()?, VIRTUAL_TOOLCHAIN_ROOT),

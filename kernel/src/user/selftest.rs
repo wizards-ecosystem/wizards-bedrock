@@ -2,7 +2,7 @@ use wost::arch::current::usercopy;
 
 use super::{BEHAVE, SpawnError, Spawned, spawn};
 
-// Arguments that select a behaviour of the witness `xtask/src/image/program.rs` emits.
+// Arguments that select a behaviour of the witness `witness/ring3`.
 const FAULT: u64 = 1;
 const PROBE: u64 = 2;
 const DUPLICATE: u64 = 3;

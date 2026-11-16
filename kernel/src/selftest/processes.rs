@@ -168,7 +168,7 @@ fn relocated(original: &[u8], address: u64) -> Vec<u8> {
 
 fn refusal(bytes: &[u8]) -> Option<user::LoadError> {
     let mut space = AddressSpace::for_user().ok()?;
-    let refused = user::load_image(&mut space, bytes, 0).err();
+    let refused = user::load_image(&mut space, bytes).err();
     space.reclaim(None).ok()?;
     refused
 }

@@ -1,0 +1,21 @@
+[package]
+name = "ring3-witness"
+description = "The ring 3 program each Bedrock boot runs to witness the ABI"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "ring3-witness"
+test = false
+bench = false
+
+[dependencies]
+native-abi.workspace = true
+witness-rt.workspace = true

@@ -7,8 +7,8 @@
 xtask = "run --locked --profile xtask --package xtask --"
 
 # The kernel half; bare `cargo check`/`clippy`/`test` cover the host half through default-members.
-kcheck = "check --package wost --package wizard-kernel --target x86_64-unknown-none"
-kclippy = "clippy --package wost --package wizard-kernel --target x86_64-unknown-none"
+kcheck = "check --package wost --package wizard-kernel --package witness-rt --package ring3-witness --target x86_64-unknown-none"
+kclippy = "clippy --package wost --package wizard-kernel --package witness-rt --package ring3-witness --target x86_64-unknown-none"
 kbuild = "build --package wizard-kernel --target x86_64-unknown-none --release"
 
 [target.x86_64-unknown-none]

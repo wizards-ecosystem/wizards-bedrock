@@ -86,6 +86,7 @@ kernel/          the kernel binary; no hand-written unsafe
 wost/            the privileged framework, the only crate that writes unsafe
 libs/            hardware-free no_std libraries, tested on the host
 xtask/           build, image, QEMU and VMware runners, the gate
+witness/         the ring 3 witness program and its runtime, the one other crate with unsafe
 boot/            limine.conf and the digest-pinned Limine UEFI binary
 models/          TLA+ models of the ring, call, wakeup, shootdown and pin protocols
 tools/tla/       the digest-pinned TLC jar

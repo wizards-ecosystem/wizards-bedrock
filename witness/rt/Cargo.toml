@@ -1,0 +1,15 @@
+[package]
+name = "witness-rt"
+description = "The entry, call gate, ring access and probes of Bedrock's ring 3 witnesses"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+native-abi.workspace = true

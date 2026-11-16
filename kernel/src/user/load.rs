@@ -104,9 +104,9 @@ impl core::fmt::Display for LoadError {
 
 impl core::error::Error for LoadError {}
 
-pub(super) fn load(space: &mut AddressSpace, shift: u64) -> Result<LoadedImage, LoadError> {
+pub(super) fn load(space: &mut AddressSpace) -> Result<LoadedImage, LoadError> {
     let bytes = (*IMAGE.lock_leaf()).ok_or(LoadError::Missing)?;
-    load_image(space, bytes, shift)
+    load_image(space, bytes)
 }
 
 #[derive(Debug)]
@@ -158,11 +158,7 @@ struct Placement {
     flags: Flags,
 }
 
-pub(crate) fn load_image(
-    space: &mut AddressSpace,
-    bytes: &[u8],
-    shift: u64,
-) -> Result<LoadedImage, LoadError> {
+pub(crate) fn load_image(space: &mut AddressSpace, bytes: &[u8]) -> Result<LoadedImage, LoadError> {
     let elf = Elf::parse(bytes).map_err(LoadError::NotAnElf)?;
 
     let mut placements = [None; MAX_SEGMENTS];
@@ -187,11 +183,7 @@ pub(crate) fn load_image(
             });
         }
 
-        // Checked: a `p_vaddr` near the top would wrap past the refusal below.
-        let at = segment
-            .address()
-            .checked_add(shift)
-            .ok_or(LoadError::NotUserMemory(segment.address()))?;
+        let at = segment.address();
         if !at.is_multiple_of(PAGE_SIZE) {
             return Err(LoadError::Unaligned(at));
         }
@@ -246,10 +238,7 @@ pub(crate) fn load_image(
         return Err(LoadError::Empty);
     }
 
-    let entry = elf
-        .entry()
-        .checked_add(shift)
-        .ok_or(LoadError::NotUserMemory(elf.entry()))?;
+    let entry = elf.entry();
     let entry_is_executable = placements.iter().flatten().any(|placement| {
         !placement.flags.contains(Flags::NO_EXECUTE)
             && entry >= placement.at

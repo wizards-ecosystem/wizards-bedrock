@@ -26,11 +26,12 @@ pub(crate) fn write_file<D: ReadWriteSeek>(
         .with_context(|| format!("writing {name}"))
 }
 
-// The program sits in /boot beside the kernel because Limine's `module_path` is volume-relative.
+// The witness sits in /boot beside the kernel because Limine's `module_path` is volume-relative.
 pub(crate) fn populate<D: ReadWriteSeek>(
     filesystem: &FileSystem<D>,
     paths: &Paths,
     kernel: &[u8],
+    witness: &[u8],
 ) -> Result<()> {
     let root = filesystem.root_dir();
     let efi_boot = root
@@ -42,8 +43,7 @@ pub(crate) fn populate<D: ReadWriteSeek>(
 
     let boot = root.create_dir("boot").context("creating /boot")?;
     write_file(&boot, paths::KERNEL_ON_ESP, kernel)?;
-    let program = super::program::build().context("building the fixed ring-3 witness")?;
-    write_file(&boot, paths::PROGRAM_ON_ESP, &program)?;
+    write_file(&boot, paths::WITNESS_ON_ESP, witness)?;
 
     let configuration = paths.limine_conf();
     let configuration = std::fs::read(&configuration)

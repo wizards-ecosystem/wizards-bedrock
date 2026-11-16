@@ -26,6 +26,12 @@ number and is added here, as one entry or as an amending id on the entry it chan
   instruction adapter takes the narrowest typed operand that proves its precondition, the raw
   instruction is visible only to its sibling module, and `wost` has no unrestricted `pub unsafe fn`
   (D-266).
+- **D-480** The ring 3 runtime `witness/rt` is the second crate that may write `unsafe`, beside
+  `wost` and not a `wost` feature, because ring 3 needs `_start`, the `int 0x80` gate, the ring view
+  and probe instructions but none of the kernel's statics, Limine glue or locks. Each export is sound
+  for any caller: a probe is the instruction that ends the program, the ring view is handed out
+  once, and a jump is taken only into the kernel half. Its `entry!` expands `allow(unsafe_code)`
+  glue into the witness, which therefore carries `deny`, not `forbid` (amends D-13).
 - **D-183** Code that runs in kernel context is Rust, and no language runtime, interpreter or
   compiler enters the kernel beyond the extension checker `docs/roadmap.md` plans. First-party
   software that runs on the kernel is Wizzy, with exceptions only for minimal runtime shims, host
@@ -418,6 +424,11 @@ number and is added here, as one entry or as an amending id on the entry it chan
   thread (D-203). It keeps its ring and everything its in-flight operations can touch until
   `Queue::abandon` has ended each with a `CANCELLED` completion (D-153, D-167); reclaim then
   releases the handle table, the ring and the address space.
+- **D-481** The ring 3 witness is a cargo-built static `ET_EXEC` linked at `0x400000`, and the
+  loader maps each segment at its `p_vaddr` with no per-program shift, because a position-dependent
+  image holds absolute addresses that a shift breaks and the in-kernel loader takes no `ET_DYN`;
+  each address space is already separate. Position independence and randomized placement return
+  with the user-space loader (amends D-100).
 - **D-191** `ProcessConstruction` owns the new address space and every mapped range until the thread
   is published, so any refusal in spawn rolls back through one owner, and `load_image` checks that
   the entry lies in an executable segment before taking a frame.
@@ -532,6 +543,11 @@ number and is added here, as one entry or as an amending id on the entry it chan
   segment in the higher half, page aligned and disjoint, the entry inside an executable segment, no
   writable executable segment, a `.bss` that costs no file bytes, and `.text` and `.requests`
   loaded, because a linker script that is incomplete still links.
+- **D-482** `xtask` builds the witness in its own target directory, always in release, with
+  `-C code-model=small` appended after the kernel target's `code-model=kernel`, where the last
+  value wins, and without LTO, because fat LTO refuses to merge small-model code with the
+  sysroot's kernel-model `core`. `xtask/src/image/witness.rs` checks the image against what the
+  loader maps before packing it as the one Limine module.
 - **D-220** Every locked crate has a reviewed license row in `supply-chain/inventory.txt`, and
   sources are crates.io only.
 - **D-346** Controlled boots drive QEMU through QMP with bounded exchanges.

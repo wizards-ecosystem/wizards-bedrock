@@ -41,6 +41,8 @@ members = [
     "libs/x86-paging",
     "libs/x86-pit",
     "libs/x86-tables",
+    "witness/ring3",
+    "witness/rt",
     "wost",
     "xtask",
 ]
@@ -134,6 +136,7 @@ x86-cpuid = { path = "libs/x86-cpuid" }
 x86-paging = { path = "libs/x86-paging" }
 x86-pit = { path = "libs/x86-pit" }
 x86-tables = { path = "libs/x86-tables" }
+witness-rt = { path = "witness/rt" }
 
 # limine 0.6 needs nightly; 0.5.0 builds on stable and requests base revision 4 via `with_revision`.
 limine = "=0.5.0"

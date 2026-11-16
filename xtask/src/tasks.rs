@@ -167,11 +167,11 @@ fn package_selection(packages: Packages) -> Vec<String> {
     match packages {
         Packages::Host => {
             let mut args = vec!["--workspace".to_string()];
-            for name in paths::KERNEL_PACKAGES {
+            for name in paths::TARGET_PACKAGES {
                 args.extend(["--exclude".to_string(), (*name).to_string()]);
             }
             args
         }
-        Packages::Kernel => cargo::package_args(paths::KERNEL_PACKAGES),
+        Packages::Kernel => cargo::package_args(paths::TARGET_PACKAGES),
     }
 }

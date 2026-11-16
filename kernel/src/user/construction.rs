@@ -9,7 +9,7 @@ use super::call::cross;
 use super::load::{LoadError, load, place_stack};
 use super::reap::slot_has_zombie;
 use super::{
-    APART, BOOTSTRAPS, Bootstrap, BootstrapAuthority, LAUNCHES, Launch, RING, Regions, STACK_BYTES,
+    BOOTSTRAPS, Bootstrap, BootstrapAuthority, LAUNCHES, Launch, RING, Regions, STACK_BYTES,
     Spawned,
 };
 use crate::handle::{HandleError, HandleTable};
@@ -273,7 +273,7 @@ fn map_program(
     construction: &mut ProcessConstruction,
     which: u64,
 ) -> Result<(u64, u64), SpawnError> {
-    let image = load(construction.space()?, which * APART).map_err(SpawnError::Load)?;
+    let image = load(construction.space()?).map_err(SpawnError::Load)?;
     construction.regions = image.regions;
 
     let stack = place_stack(construction.space()?, which).ok_or(SpawnError::NoStack)?;

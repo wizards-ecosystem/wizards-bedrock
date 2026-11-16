@@ -6,7 +6,7 @@ next, and `docs/decisions.md` the reasons behind individual choices.
 
 ## 1. Crates and the unsafe rule
 
-The repository is one Cargo workspace with four kinds of crate.
+The repository is one Cargo workspace with five kinds of crate.
 
 | Path | Builds for | `unsafe` | Holds |
 |---|---|---|---|
@@ -14,8 +14,9 @@ The repository is one Cargo workspace with four kinds of crate.
 | `kernel/` | `x86_64-unknown-none` | `#![deny(unsafe_code)]` | the kernel binary: policy, drivers, scheduler, ABI, filesystems |
 | `libs/*` | host and kernel | `#![forbid(unsafe_code)]` | hardware-free `no_std` encodings and arithmetic, tested on the host |
 | `xtask/` | host | `#![forbid(unsafe_code)]` | build, image, QEMU and VMware runners, the gate |
+| `witness/` | `x86_64-unknown-none`, ring 3 | allowed in `witness/rt` only | the ring 3 witness and its runtime |
 
-`wost` is the only crate that writes `unsafe`. Its exports are safe functions and types, and each
+`wost` is the only kernel crate that writes `unsafe`. Its exports are safe functions and types, and each
 one must leave no way for any safe caller, including a wrong one, to reach undefined behaviour.
 Where a safety argument needs arithmetic, the arithmetic lives in a `libs/` crate and `wost` keeps
 only the lock and the instruction: `libs/port-space` decides which ports a claim covers, and
@@ -44,7 +45,7 @@ and `.requests` loaded.
 
 `cargo xtask image` writes `target/bedrock.img`, a 64 MiB raw disk with an MBR and one FAT32 EFI
 system partition from LBA 2048. It holds `/EFI/BOOT/BOOTX64.EFI` (the vendored Limine in
-`boot/limine/`), `/boot/limine/limine.conf`, `/boot/wizard-kernel.elf` and `/boot/hello.elf`,
+`boot/limine/`), `/boot/limine/limine.conf`, `/boot/wizard-kernel.elf` and `/boot/witness.elf`,
 which Limine hands the kernel as its one module.
 
 The kernel requests Limine base revision 4 and refuses to continue without it. `BootInfo`
@@ -79,7 +80,8 @@ is treated like a reserved one: never allocated and never direct-mapped.
    every interrupt source is masked or remapped, and only then sets the interrupt flag.
 7. `random::seed` seeds the kernel's random generator (section 5). The keyboard comes up polled,
    the I/O APIC mappings are released with every line still masked, its poller and the service
-   worker start, the idle thread starts, and `user::run` spawns `hello.elf`. The boot thread then blocks reading keys and draws each one.
+   worker start, the idle thread starts, and `user::run` spawns `witness.elf`. The boot thread
+   then blocks reading keys and draws each one.
 
 Storage comes up before the clock is calibrated, so its bring-up waits use bounded spin counts.
 A failed stage logs a typed reason and the boot continues with less: no paging keeps the
@@ -460,10 +462,19 @@ reaches the kernel half, and checks that the entry lies in an executable segment
 before they are mapped read-only or executable. This in-kernel ELF loader is temporary until the
 Phase 7 user-space loader replaces it.
 
-`hello.elf` is the ring 3 witness, hand-encoded machine code that `xtask/src/image/program.rs`
-emits as one read and execute segment linked at `0x0000400000000000`. It checks the entry block
-version, submits `Echo` with argument `0x00C0FFEE`, enters the kernel, checks the completion and
-exits; every wrong answer reaches `ud2`. It is a boundary check, not a userland. The idle thread
+`witness.elf` is the ring 3 witness, the Rust program `witness/ring3` over the runtime
+`witness/rt`, which alone outside `wost` may write `unsafe`. Its entry block argument picks a
+behaviour: an `Echo` or a `Duplicate` through the ring, an unserved call, a fault, a jump into the
+kernel half, a direct counter read, or an invalid return stack or flags. It checks the entry block and ring versions, and
+every wrong answer reaches `ud2`. It is a boundary check, not a userland. The runtime sets `AC` only
+across `int 0x80`, so no program access runs under alignment checking.
+
+`xtask` builds it always in release, in `target/witness`, with `-C code-model=small` appended to
+the kernel target's flags and no LTO. It links a static `ET_EXEC` at `0x400000` through
+`witness/ring3/link.ld`. Its text, read-only and writable loads are page aligned, and program
+header 0 is the text load. `xtask/src/image/witness.rs` refuses an image with a dynamic section or
+interpreter, an empty, misaligned or writable and executable load, more than 8 loads, or a load
+past 2 GiB. The loader maps each segment at its `p_vaddr`; only stacks move per program. The idle thread
 logs `user: ring 3 call observed` once after the first call from CPL 3.
 
 `copy_from_user` and `copy_to_user` (`wost/src/arch/x86_64/usercopy.rs`) are the only code that

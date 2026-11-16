@@ -60,6 +60,16 @@ impl Call {
             other => Self::Unknown(other),
         }
     }
+
+    pub const fn number(self) -> u64 {
+        match self {
+            Self::Exit => 0,
+            Self::RingEnter => 1,
+            Self::ThreadBase => 2,
+            Self::RingWait => 3,
+            Self::Unknown(other) => other,
+        }
+    }
 }
 
 #[cfg(test)]

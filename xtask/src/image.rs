@@ -1,7 +1,7 @@
 pub(crate) mod corpus;
 mod esp;
 mod mbr;
-mod program;
+mod witness;
 
 use std::fs::File;
 use std::io::Read;
@@ -55,12 +55,13 @@ pub(crate) fn build(
     destination: &Path,
 ) -> Result<()> {
     let bytes = cargo::build_kernel(paths, profile, kernel.features())?;
+    let witness = witness::build(paths)?;
     println!("[xtask] creating disk image {}", destination.display());
     let partial = destination.with_extension("partial");
     let assembled = paths::create_read_write(&partial)
         .with_context(|| format!("creating {}", partial.display()))
         .and_then(|mut disk| {
-            assemble(paths, kernel, &bytes, &mut disk)?;
+            assemble(paths, kernel, &bytes, &witness, &mut disk)?;
             disk.sync_all()
                 .with_context(|| format!("syncing {}", partial.display()))
         });
@@ -72,7 +73,13 @@ pub(crate) fn build(
         .with_context(|| format!("publishing {}", destination.display()))
 }
 
-fn assemble(paths: &Paths, wanted: Kernel, kernel: &[u8], disk: &mut File) -> Result<()> {
+fn assemble(
+    paths: &Paths,
+    wanted: Kernel,
+    kernel: &[u8],
+    witness: &[u8],
+    disk: &mut File,
+) -> Result<()> {
     let bytes = paths::DISK_MIB * 1024 * 1024;
     disk.set_len(bytes).context("sizing the disk image")?;
     let partition =
@@ -83,7 +90,7 @@ fn assemble(paths: &Paths, wanted: Kernel, kernel: &[u8], disk: &mut File) -> Re
     esp::format(&mut volume, FatType::Fat32)?;
     let filesystem =
         FileSystem::new(volume, FsOptions::new()).context("mounting the EFI system partition")?;
-    esp::populate(&filesystem, paths, kernel)?;
+    esp::populate(&filesystem, paths, kernel, witness)?;
     filesystem
         .unmount()
         .context("flushing the EFI system partition")?;

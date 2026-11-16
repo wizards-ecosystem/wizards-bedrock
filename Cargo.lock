@@ -313,6 +313,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ring3-witness"
+version = "0.3.1"
+dependencies = [
+ "native-abi",
+ "witness-rt",
+]
+
+[[package]]
 name = "slab-layout"
 version = "0.3.1"
 
@@ -446,6 +454,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3268f3d866458b787f390cf61f4bbb563b922d091359f9608842999eaee3943c"
 dependencies = [
  "bitflags 2.13.1",
+]
+
+[[package]]
+name = "witness-rt"
+version = "0.3.1"
+dependencies = [
+ "native-abi",
 ]
 
 [[package]]

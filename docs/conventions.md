@@ -17,8 +17,10 @@ arguments, assert messages, no wildcard imports).
 
 | Crate | May write `unsafe` | Purpose |
 |---|---|---|
-| `wost/` | yes, and no other crate does | the privileged framework and the kernel's memory-safety base |
+| `wost/` | yes | the privileged framework and the kernel's memory-safety base |
+| `witness/rt/` | yes, and no crate but `wost` | the ring 3 runtime: entry, call gate, ring access and probes |
 | `kernel/` | no (`#![deny(unsafe_code)]`) | the kernel binary |
+| `witness/ring3/` | no (`#![deny(unsafe_code)]`) | the ring 3 witness program |
 | `libs/` | no (`#![forbid(unsafe_code)]`) | pure, hardware-free logic, tested on the host |
 | `xtask/` | no (`#![forbid(unsafe_code)]`) | host build tooling, not part of the kernel |
 

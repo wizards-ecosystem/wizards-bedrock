@@ -7,13 +7,16 @@ use anyhow::{Context, Result};
 use crate::cargo::Profile;
 
 pub(crate) const KERNEL_PACKAGE: &str = "wizard-kernel";
-pub(crate) const KERNEL_PACKAGES: &[&str] = &["wost", KERNEL_PACKAGE];
+pub(crate) const WITNESS_PACKAGE: &str = "ring3-witness";
+// Every package that builds only for the bare-metal target.
+pub(crate) const TARGET_PACKAGES: &[&str] =
+    &["wost", KERNEL_PACKAGE, "witness-rt", WITNESS_PACKAGE];
 pub(crate) const KERNEL_TARGET: &str = "x86_64-unknown-none";
 pub(crate) const SELFTEST_FEATURE: &str = "selftest";
 pub(crate) const SELFTEST_FEATURE_SPEC: &str = "wizard-kernel/selftest";
-// Must match the `path:` line in boot/limine.conf.
+// Each must match its `path:` or `module_path:` line in boot/limine.conf.
 pub(crate) const KERNEL_ON_ESP: &str = "wizard-kernel.elf";
-pub(crate) const PROGRAM_ON_ESP: &str = "hello.elf";
+pub(crate) const WITNESS_ON_ESP: &str = "witness.elf";
 pub(crate) const IMAGE_NAME: &str = "bedrock.img";
 pub(crate) const NVME_IMAGE_NAME: &str = "nvme.img";
 pub(crate) const DISK_MIB: u64 = 64;
@@ -21,6 +24,7 @@ pub(crate) const SECTOR_SIZE: u64 = 512;
 pub(crate) const PART_START_LBA: u64 = 2048;
 pub(crate) const ESP_LABEL: [u8; 11] = *b"WIZARD-ESP ";
 const QEMU_RUNS: &str = "qemu-runs";
+const WITNESS_TARGET: &str = "witness";
 const VM_DIRECTORY: &str = "vm";
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -57,6 +61,18 @@ impl Paths {
             .join(KERNEL_TARGET)
             .join(profile.directory())
             .join(KERNEL_PACKAGE)
+    }
+
+    // Its own target directory, so the witness's flags never invalidate the kernel's artifacts.
+    pub(crate) fn witness_target_dir(&self) -> PathBuf {
+        self.target_dir.join(WITNESS_TARGET)
+    }
+
+    pub(crate) fn witness_elf(&self) -> PathBuf {
+        self.witness_target_dir()
+            .join(KERNEL_TARGET)
+            .join(Profile::Release.directory())
+            .join(WITNESS_PACKAGE)
     }
 
     pub(crate) fn image(&self) -> PathBuf {

@@ -15,13 +15,15 @@ hardware, memory, scheduling, storage and the native capability ABI.
 
 | Crate | `unsafe` | Holds |
 |---|---|---|
-| `wost/` | yes, and only here | instructions, registers, raw pointers and locks, behind safe APIs |
+| `wost/` | yes | instructions, registers, raw pointers and locks, behind safe APIs |
+| `witness/rt/` | yes, beside `wost` | `_start`, the call gate, ring access and probes for ring 3 witnesses |
 | `kernel/` | no (`#![deny(unsafe_code)]`) | the kernel binary |
+| `witness/ring3/` | no (`#![deny(unsafe_code)]`) | the ring 3 witness program |
 | `libs/*` | no (`#![forbid(unsafe_code)]`) | hardware-free `no_std` logic, tested on the host |
 | `xtask/` | no (`#![forbid(unsafe_code)]`) | build, image, QEMU, VMware and the gate |
 
-- Write `unsafe` only in `wost`, and only for a novel abstraction, a measured performance need, or
-  FFI and the platform. Never add `#[allow(unsafe_code)]` anywhere else.
+- Write `unsafe` only in `wost` and `witness/rt`, and only for a novel abstraction, a measured
+  performance need, or FFI and the platform. Never add `#[allow(unsafe_code)]` anywhere else.
 - Each `unsafe` block carries `// SAFETY:` and holds one unsafe operation. Each `pub unsafe fn`
   carries `# Safety`.
 - A safe `wost` export must not let any caller reach undefined behaviour.
