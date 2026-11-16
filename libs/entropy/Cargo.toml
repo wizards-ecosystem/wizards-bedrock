@@ -1,0 +1,11 @@
+[package]
+name = "entropy"
+description = "ChaCha20 and BLAKE2s generator state"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true

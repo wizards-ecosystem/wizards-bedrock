@@ -58,6 +58,10 @@ name = "elf64"
 version = "0.3.1"
 
 [[package]]
+name = "entropy"
+version = "0.3.1"
+
+[[package]]
 name = "fat32"
 version = "0.3.1"
 

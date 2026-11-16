@@ -99,6 +99,7 @@ docs/            architecture, conventions, roadmap and decisions
 | `address` | physical addresses below the page-table limit |
 | `eevdf` | virtual-deadline scheduling arithmetic |
 | `elf64` | ELF64 headers and loadable segments |
+| `entropy` | ChaCha20, BLAKE2s and the seeded random generator state |
 | `fat32` | a read-only FAT32 reader over any sector source |
 | `frame-space` | the physical frame bitmap |
 | `handle-space` | handle encoding, rights and quotas |

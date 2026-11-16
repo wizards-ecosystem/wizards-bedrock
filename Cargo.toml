@@ -7,6 +7,7 @@ members = [
     "libs/address",
     "libs/eevdf",
     "libs/elf64",
+    "libs/entropy",
     "libs/fat32",
     "libs/frame-space",
     "libs/handle-space",
@@ -41,6 +42,7 @@ default-members = [
     "libs/address",
     "libs/eevdf",
     "libs/elf64",
+    "libs/entropy",
     "libs/fat32",
     "libs/frame-space",
     "libs/handle-space",
@@ -80,6 +82,7 @@ acpi-tables = { path = "libs/acpi-tables" }
 address = { path = "libs/address" }
 eevdf = { path = "libs/eevdf" }
 elf64 = { path = "libs/elf64" }
+entropy = { path = "libs/entropy" }
 fat32 = { path = "libs/fat32" }
 frame-space = { path = "libs/frame-space" }
 handle-space = { path = "libs/handle-space" }
