@@ -131,12 +131,12 @@ fn start_others(
         };
         let index = joining.index();
         let stage = &STAGES[index];
-        if !answers(stage, READY) {
+        if answer(stage, |seen| seen != STARTED).is_none() {
             warn!("cpu: processor {apic_id:#x} never reached its counter check; it is not online");
             continue;
         }
         let forward = time::counter_steps_forward(STEP_ROUNDS);
-        if !answers(stage, PASSED) || !forward {
+        if answer(stage, |seen| seen == PASSED || seen == REFUSED) != Some(PASSED) || !forward {
             warn!(
                 "cpu: processor {apic_id:#x} does not match the boot processor or its counter; it is not online"
             );
@@ -150,16 +150,18 @@ fn start_others(
     }
 }
 
-// True once `stage` reads `wanted`; false at a refusal or after `ANSWER_NS`.
-fn answers(stage: &AtomicU8, wanted: u8) -> bool {
+// The first stage `reached` admits, or `None` after `ANSWER_NS`; a processor may pass several at once.
+fn answer(stage: &AtomicU8, reached: impl Fn(u8) -> bool) -> Option<u8> {
     let deadline = time::now_ns().saturating_add(ANSWER_NS);
     loop {
-        match stage.load(Ordering::Acquire) {
-            seen if seen == wanted => return true,
-            REFUSED => return false,
-            _ if time::now_ns() >= deadline => return false,
-            _ => core::hint::spin_loop(),
+        let seen = stage.load(Ordering::Acquire);
+        if reached(seen) {
+            return Some(seen);
         }
+        if time::now_ns() >= deadline {
+            return None;
+        }
+        core::hint::spin_loop();
     }
 }
 
