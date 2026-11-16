@@ -6,6 +6,7 @@ members = [
     "libs/acpi-tables",
     "libs/address",
     "libs/boot-record",
+    "libs/channel-state",
     "libs/eevdf",
     "libs/elf64",
     "libs/entropy",
@@ -49,6 +50,7 @@ default-members = [
     "libs/acpi-tables",
     "libs/address",
     "libs/boot-record",
+    "libs/channel-state",
     "libs/eevdf",
     "libs/elf64",
     "libs/entropy",
@@ -97,6 +99,7 @@ repository = "https://github.com/wizards-ecosystem/wizards-bedrock"
 acpi-tables = { path = "libs/acpi-tables" }
 address = { path = "libs/address" }
 boot-record = { path = "libs/boot-record" }
+channel-state = { path = "libs/channel-state" }
 eevdf = { path = "libs/eevdf" }
 elf64 = { path = "libs/elf64" }
 entropy = { path = "libs/entropy" }

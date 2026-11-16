@@ -98,6 +98,7 @@ docs/            architecture, conventions, roadmap and decisions
 | `acpi-tables` | RSDP, XSDT, MADT, DMAR and the platform DMA tables, validated before use |
 | `address` | physical addresses below the page-table limit |
 | `boot-record` | the versioned one-line records a boot is judged by |
+| `channel-state` | inbox rings, the call cell machine, receiver queues and the peer check |
 | `eevdf` | virtual-deadline scheduling arithmetic |
 | `elf64` | ELF64 headers and loadable segments |
 | `entropy` | ChaCha20, BLAKE2s and the seeded random generator state |
