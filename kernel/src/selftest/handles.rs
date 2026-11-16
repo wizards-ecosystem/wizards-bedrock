@@ -7,7 +7,9 @@ use crate::object;
 use crate::queue::Queue;
 
 pub(super) fn a_completion_cannot_widen_what_was_offered() -> bool {
-    let (Some(queue), Some(table), Some(full_table)) = (Queue::new(), table(8), table(1)) else {
+    let (Some(queue), Some(table), Some(full_table)) =
+        (Queue::new(crate::timepage::root()), table(8), table(1))
+    else {
         return false;
     };
     let full = Rights::UNIVERSAL;

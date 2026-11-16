@@ -653,7 +653,3 @@ fn revoke(reason: Revocation) -> bool {
     disarm();
     true
 }
-
-pub(crate) fn counter_hz() -> u64 {
-    TSC_HZ.load(Ordering::Relaxed)
-}

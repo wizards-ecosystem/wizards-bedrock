@@ -157,13 +157,14 @@ fn start_clock() {
 
 // A program reading `TIME` must find the mode word, not a page fault.
 fn publish_time_page() {
-    if timepage::init(time::counter_hz()) {
-        info!(
-            "time: published at {:#x} with no counter conversion; readers ask ring Uptime",
-            native_abi::address::TIME
-        );
-    } else {
-        warn!("time: no page to publish the clock in; every query is ring Uptime");
+    match timepage::root().start() {
+        Ok(()) => info!(
+            "time: world clock page v{} at {:#x}, world time from 0 in steps of {} ns",
+            native_abi::timepage::VERSION,
+            native_abi::address::TIME,
+            timepage::PRECISION_NS
+        ),
+        Err(reason) => warn!("time: {reason}; ring 3 stays closed"),
     }
 }
 

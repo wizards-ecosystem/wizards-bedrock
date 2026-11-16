@@ -62,9 +62,10 @@ const CHECKS: &[Check] = &[
     ("a block read returns the block that was asked for", |_| {
         storage::a_block_read_returns_the_block_that_was_asked_for()
     }),
-    ("a program sees the time page and cannot write it", |_| {
-        clocks::a_program_sees_the_time_page_and_cannot_write_it()
-    }),
+    (
+        "a program reads served time from a page it cannot write",
+        |_| clocks::a_program_reads_served_time_from_a_page_it_cannot_write(),
+    ),
     ("a completion cannot widen what was offered", |_| {
         handles::a_completion_cannot_widen_what_was_offered()
     }),

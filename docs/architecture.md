@@ -306,17 +306,17 @@ interrupts for good, refuses re-entry, force-releases every `wost` lock through 
 `try_lock` only, writes a framed record (`libs/panic-record`) to serial and a panic screen to the
 console, and halts the machine.
 
-The TSC is the clock and the local APIC timer is a one-shot alarm (`kernel/src/time.rs`). The
-alarm is armed only for the next slice end or sleeper deadline, so an idle kernel with nothing due
-takes no timer interrupts. Time is nanoseconds through one multiply and shift (`libs/timebase`).
-Where the TSC is invariant and CPUID leaf 0x15 reports a complete rate, `time::init` takes that
-as the TSC rate and measures only the APIC timer against it. Otherwise it measures both against
-the 8254 PIT over 20 ms windows and accepts a rate when two windows agree to one part in 64; leaf
-0x16 is never used as a rate. When the PIT was the source it also checks live APIC windows as a
-watchdog. Two consecutive conclusive disagreements revoke
-public time: `Uptime` stays at the last trusted value and scheduling continues on a private epoch.
-An NVMe or VT-d wait is bounded by the clock, through `timebase::PollLimit` for NVMe, with a spin
-count only when no clock exists.
+The TSC is the clock and the local APIC timer is a one-shot alarm (`kernel/src/time.rs`). The alarm
+is armed only for the next slice end, sleeper deadline or world clock refresh, so an idle kernel
+with nothing due takes no timer interrupts. Time is nanoseconds through one multiply and shift
+(`libs/timebase`). Where the TSC is invariant and CPUID leaf 0x15 reports a complete rate,
+`time::init` takes that as the TSC rate and measures only the APIC timer against it. Otherwise it
+measures both against the 8254 PIT over 20 ms windows and accepts a rate when two windows agree to
+one part in 64; leaf 0x16 is never used as a rate. When the PIT was the source it also checks live
+APIC windows as a watchdog. Two consecutive conclusive disagreements revoke public time: `Uptime`
+stays at the last trusted value and scheduling continues on a private epoch. An NVMe or VT-d wait is
+bounded by the clock, through `timebase::PollLimit` for NVMe, with a spin count only when no clock
+exists.
 
 The kernel's random generator (`kernel/src/random.rs`) is a `libs/entropy` `Base` behind a leaf
 lock: a BLAKE2s pool and a ChaCha20 key with fast key erasure. `random::seed` credits 64-bit
@@ -380,9 +380,9 @@ kernel narrows it with `try_from` and refuses or saturates.
 | Opcode | Name | Effect |
 |---:|---|---|
 | 1 | `Echo` | completes with the argument |
-| 2 | `Uptime` | completes with kernel uptime in nanoseconds |
+| 2 | `Uptime` | completes with world time in nanoseconds, the value the time page shows |
 | 3 | `Duplicate` | needs `DUPLICATE`; completes with a new handle whose rights may only narrow |
-| 4 | `Timer` | completes after `argument` nanoseconds |
+| 4 | `Timer` | completes once world time reaches `argument` nanoseconds past now, rounded up to the precision; the value is that deadline |
 | 5 | `Cancel` | ends the oldest operation whose token is `argument`; the target still completes once, with `CANCELLED` |
 | 6 | `OpenAt` | resolves a path in the data page from a directory handle; completes with a new handle. A path naming the directory itself is `BAD_PATH` |
 | 7 | `Read` | reads file `handle` from `offset` into the data page |
@@ -421,14 +421,21 @@ A program starts at its ELF entry with `RSP` 16-byte aligned on a 24-byte entry 
 16). The argument is also in `rdi`; every other general register is zero.
 
 The time page is mapped read-only at `0x0000100000000000` in every program
-(`kernel/src/timepage.rs`, layout in `native_abi::timepage`). Its constants are written once before
-any mapping exists: version (`u32` at 0, value `1`), page size (`u32` at 4) and counter rate in
-hertz (`u64` at 8). The clock region from offset 64 is the version 1 sequence-locked layout:
-sequence (`u32` at 64), mode (`u32` at 68), base nanoseconds (`u64` at 72), fraction (`u64` at 80),
-the counter reading for that base (`u64` at 88), multiplier (`u64` at 96) and shift (`u32` at 104).
-The kernel leaves it zero, so the mode reads `0` (none) and a program asks with `Uptime`: ring 3
-cannot execute `rdtsc`, so there is no conversion to publish. The page is global until Phase 7 gives
-each world its own clock page.
+(`kernel/src/timepage.rs`, layout in `native_abi::timepage`). Version 2 holds constants written
+before any mapping exists: version (`u32` at 0, value `2`), page size (`u32` at 4), mode (`u32` at
+8: `0` none, `1` normal), precision in nanoseconds (`u64` at 16) and generation (`u64` at 24, never
+0). One aligned `u64` at 64 holds world time in nanoseconds. Ring 3 cannot execute `rdtsc`, so the
+page carries a value, not a conversion, and needs no sequence lock.
+
+World time belongs to a world's clock, a `timepage::WorldClock`: host time minus the host time at
+which the world started, so it starts at 0 and never reveals host uptime. A served value is world
+time rounded down to the precision (1 ms) and raised by an atomic maximum, so it never goes back;
+the page word is raised by a compare-and-swap loop in `wost`. `Uptime` serves the same value, and a
+`Timer` deadline is a multiple of the precision. The page is refreshed before every return to ring
+3, and while a thread of the world runs the scheduler arms its alarm at least every max(precision,
+1 ms), so a program spinning in ring 3 sees time advance. The cost is one timer interrupt per
+millisecond on a processor running such a thread, and none while no world thread runs. Spawn takes
+the clock as a value; today every process gets the one root clock, `timepage::root`.
 
 ## 7. Processes and the loader
 

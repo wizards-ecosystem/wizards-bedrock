@@ -233,6 +233,50 @@ impl<const WORDS: usize> SharedRing<WORDS> {
         true
     }
 
+    // A pair of adjacent publication words, read as one aligned `u64`.
+    pub fn load_acquire_u64(&self, offset: usize) -> Option<u64> {
+        let address = self.publication_pair_address(offset)?;
+        // SAFETY: `publication_pair_address` proves these eight bytes mapped and aligned for this
+        // borrow, and `SharedAllocation` keeps its bytes external, never a Rust object.
+        let value = unsafe { shared_memory::load_acquire_u64(address) };
+        Some(u64::from_le(value))
+    }
+
+    // Raises the pair to at least `value` and returns what it holds afterwards; it never lowers it.
+    pub fn raise_u64(&self, offset: usize, value: u64) -> Option<u64> {
+        let address = self.publication_pair_address(offset)?;
+        // SAFETY: as in `load_acquire_u64`; the bytes stay mapped for this borrow.
+        let mut seen = u64::from_le(unsafe { shared_memory::load_acquire_u64(address) });
+        while seen < value {
+            // SAFETY: the same eight bytes, still mapped and aligned for this borrow.
+            let found = unsafe {
+                shared_memory::compare_exchange_u64(address, seen.to_le(), value.to_le())
+            };
+            let found = u64::from_le(found);
+            if found == seen {
+                return Some(value);
+            }
+            seen = found;
+        }
+        Some(seen)
+    }
+
+    fn publication_pair_address(&self, offset: usize) -> Option<usize> {
+        let high = offset.checked_add(size_of::<u32>())?;
+        if !self.layout.contains_publication_word(offset)
+            || !self.layout.contains_publication_word(high)
+        {
+            return None;
+        }
+        let end = offset.checked_add(size_of::<u64>())?;
+        if end as u64 > self.len() {
+            return None;
+        }
+        let base = direct_pointer(self.address(), self.len())?;
+        let address = base.addr().checked_add(offset)?;
+        address.is_multiple_of(align_of::<u64>()).then_some(address)
+    }
+
     fn publication_address(&self, offset: usize) -> Option<usize> {
         let end = offset.checked_add(size_of::<u32>())?;
         if end as u64 > self.len() {

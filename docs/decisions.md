@@ -328,6 +328,18 @@ number and is added here, as one entry or as an amending id on the entry it chan
   stays zero, so its mode reads none and a program asks with `Uptime`. With `CR4.TSD` set
   (D-471) ring 3 has no counter to convert, and the page publishes a value again only once each
   world has its own clock page.
+- **D-500** The time page is version 2 and carries a value, not a conversion (amends D-472): world
+  time rounded down to the world's precision, one aligned `u64` that a compare-and-swap maximum
+  only raises, so it needs no sequence lock and never goes back. The precision defaults to 1 ms,
+  coarse enough to blunt timing measurement and fine enough for timeouts; finer time is the raw
+  right's. `Uptime` and `Timer` serve the same rounded values, so neither bypasses the precision.
+- **D-501** World time is host time minus the host time at which the world's clock started, so a
+  world starts at 0 and never learns host uptime. The clock is a value spawn passes in, one root
+  clock until worlds are objects, so a per-world clock replaces the value rather than a global.
+- **D-502** While a thread with a world clock runs, the one-shot alarm is armed at least every
+  max(precision, 1 ms), and the page is refreshed before every return to ring 3 (amends D-57).
+  A program that never enters the kernel still sees time move, and a processor that runs no such
+  thread arms nothing new, so an idle kernel still takes no timer interrupts.
 - **D-240** An NVMe or VT-d wait is bounded by the clock, through `timebase::PollLimit` for NVMe,
   with a spin count only where no clock exists yet or the clock has stopped, because an iteration
   bound depends on processor speed.

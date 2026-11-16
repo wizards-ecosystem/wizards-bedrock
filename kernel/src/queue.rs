@@ -14,6 +14,7 @@ use x86_paging::{Flags, PAGE_SIZE};
 
 use crate::handle::HandleTable;
 use crate::thread::ThreadContext;
+use crate::timepage::WorldClock;
 use crate::wait::WaitQueue;
 
 mod ring;
@@ -41,6 +42,7 @@ struct Pending {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum PendingKind {
+    // Host time, the clock the scheduler wakes on.
     Timer {
         deadline_ns: u64,
     },
@@ -134,10 +136,11 @@ pub(crate) struct Queue {
     pending: SpinLock<PendingTable>,
     // Kernel-owned, so ring 3 cannot forge the edge a waiter samples before it sleeps.
     served: AtomicUsize,
+    clock: &'static WorldClock,
 }
 
 impl Queue {
-    pub(crate) fn new() -> Option<Arc<Self>> {
+    pub(crate) fn new(clock: &'static WorldClock) -> Option<Arc<Self>> {
         let run = mm::allocate_contiguous(native_abi::ring::BYTES / PAGE_SIZE as usize, 1)?;
         // Shared, never mapped as owned, so no unmap frees them while a program uses them.
         let layout = SharedLayout::new(
@@ -169,6 +172,7 @@ impl Queue {
             waiters: WaitQueue::new(),
             pending: SpinLock::new(PendingTable::new()),
             served: AtomicUsize::new(0),
+            clock,
         }))
     }
 
@@ -220,7 +224,7 @@ impl Queue {
             Opcode::Uptime => Completion {
                 token,
                 status: status::OK,
-                value: crate::time::now_ns(),
+                value: self.clock.now_ns(),
             },
             Opcode::Duplicate => Self::duplicate(submission, table),
             Opcode::Timer => {
@@ -273,7 +277,9 @@ impl Queue {
 
     fn defer(&self, submission: Submission) -> Option<u64> {
         // The clock is read before the leaf guard is taken, because a leaf guard encloses no call.
-        let deadline_ns = crate::time::now_ns().saturating_add(submission.argument);
+        let deadline_ns = self
+            .clock
+            .to_host_ns(self.clock.deadline_after(submission.argument));
         self.pending
             .lock_leaf()
             .insert(submission.token, PendingKind::Timer { deadline_ns })
@@ -342,7 +348,7 @@ impl Queue {
         }) {
             let deadline = entry.kind.deadline().unwrap_or(now_ns);
             let (status, value) = if clock_live {
-                (status::OK, deadline)
+                (status::OK, self.clock.to_world_ns(deadline))
             } else {
                 (status::UNAVAILABLE, 0)
             };

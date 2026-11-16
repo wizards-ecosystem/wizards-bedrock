@@ -11,6 +11,7 @@ use wost::sync::SpinLock;
 pub(crate) use wost::sync::ThreadContext;
 
 use crate::time::{self, NANOSECONDS_PER_MS};
+use crate::timepage::WorldClock;
 use crate::warn;
 
 #[cfg(feature = "selftest")]
@@ -151,6 +152,8 @@ struct Scheduled {
     started: u64,
     wake_at: u64,
     parked_with_lag: i64,
+    // The world whose time page this thread reads while it runs in ring 3.
+    clock: Option<&'static WorldClock>,
 }
 
 impl Scheduled {
@@ -161,6 +164,7 @@ impl Scheduled {
         started: 0,
         wake_at: 0,
         parked_with_lag: 0,
+        clock: None,
     };
 
     const fn is_runnable(&self) -> bool {
@@ -324,11 +328,12 @@ impl RunQueue {
             .filter(|thread| thread.state == State::Sleeping)
             .map(|thread| thread.wake_at)
             .min();
+        // Only while a thread with a world clock runs, so an idle kernel still takes no alarm.
+        let clock_refresh = self.slots[running]
+            .clock
+            .map(|clock| now.saturating_add(clock.refresh_interval_ns()));
 
-        match (slice_end, earliest_sleeper) {
-            (Some(slice), Some(sleeper)) => Some(slice.min(sleeper)),
-            (only, None) | (None, only) => only,
-        }
+        earliest(earliest(slice_end, earliest_sleeper), clock_refresh)
     }
 
     fn hand_over(&mut self, current: usize, next: usize, leaving: State, now: u64) {
@@ -415,6 +420,7 @@ pub(crate) fn start_idle() {
             entry: idle_loop,
             argument: 0,
             binding: None,
+            clock: None,
         },
         |slot, bound| {
             if bound.is_some() {
@@ -454,6 +460,7 @@ pub(crate) fn spawn(
             entry,
             argument,
             binding: None,
+            clock: None,
         },
         |_, bound| {
             if bound.is_none() { Ok(()) } else { Err(bound) }
@@ -468,6 +475,7 @@ pub(crate) fn spawn_in_space(
     entry: Entry,
     argument: usize,
     binding: Binding,
+    clock: &'static WorldClock,
     arrange: impl FnOnce(usize, Bound) -> Result<(), Bound>,
 ) -> Result<usize, SpaceSpawnError> {
     spawn_prepared(
@@ -476,6 +484,7 @@ pub(crate) fn spawn_in_space(
             entry,
             argument,
             binding: Some(binding),
+            clock: Some(clock),
         },
         move |slot, bound| {
             let Some(bound) = bound else {
@@ -504,6 +513,7 @@ struct Prepared {
     entry: Entry,
     argument: usize,
     binding: Option<Binding>,
+    clock: Option<&'static WorldClock>,
 }
 
 fn spawn_prepared(
@@ -515,11 +525,12 @@ fn spawn_prepared(
         entry,
         argument,
         binding,
+        clock,
     } = prepared;
     // Before looking for a slot: a spawn most needs a freed one, and the worker may lag.
     while crate::user::has_zombies() && crate::user::collect().is_reclaimed() {}
 
-    let slot = match reserve(name, (entry, argument)) {
+    let slot = match reserve(name, (entry, argument), clock) {
         Ok(slot) => slot,
         Err(reason) => return Err(PreparedFailure::before_binding(reason, binding)),
     };
@@ -546,7 +557,11 @@ fn spawn_prepared(
     Ok(slot)
 }
 
-fn reserve(name: &'static str, entry: (Entry, usize)) -> Result<usize, SpawnError> {
+fn reserve(
+    name: &'static str,
+    entry: (Entry, usize),
+    clock: Option<&'static WorldClock>,
+) -> Result<usize, SpawnError> {
     let zombie_slots = crate::user::zombie_slots_for_spawn();
     let slot = {
         let mut threads = THREADS.lock_leaf();
@@ -565,6 +580,7 @@ fn reserve(name: &'static str, entry: (Entry, usize)) -> Result<usize, SpawnErro
         threads.queue.slots[slot] = Scheduled {
             state: State::Reserved,
             entity: Entity::new(BASE_WEIGHT),
+            clock,
             ..Scheduled::FREE
         };
         slot
@@ -791,6 +807,14 @@ pub(crate) fn retire() -> ! {
     #[cfg(feature = "selftest")]
     RETIREMENTS.fetch_add(1, Ordering::AcqRel);
     exit()
+}
+
+// Before every return to ring 3, so a program's page never lags its own last kernel entry.
+pub(crate) fn refresh_clock() {
+    let clock = THREADS.lock_leaf().queue.slots[task::current()].clock;
+    if let Some(clock) = clock {
+        clock.now_ns();
+    }
 }
 
 fn earliest(one: Option<u64>, other: Option<u64>) -> Option<u64> {

@@ -45,6 +45,7 @@ fn on_user_entry(context: &mut ThreadContext, registers: &mut UserRegisters<'_>,
         }
         UserEntry::Interrupted => thread::preempt(context),
     }
+    thread::refresh_clock();
 }
 
 fn refuse_invalid_user_return(

@@ -31,9 +31,12 @@ fn served_by_the_worker(queue: &Arc<Queue>, table: &Arc<HandleTable>, count: usi
 }
 
 pub(super) fn every_submission_gets_exactly_one_completion() -> bool {
-    let (Some(queue), Some(runaway), Some(partial), Some(table)) =
-        (Queue::new(), Queue::new(), Queue::new(), table(8))
-    else {
+    let (Some(queue), Some(runaway), Some(partial), Some(table)) = (
+        Queue::new(crate::timepage::root()),
+        Queue::new(crate::timepage::root()),
+        Queue::new(crate::timepage::root()),
+        table(8),
+    ) else {
         return false;
     };
 
@@ -90,7 +93,7 @@ pub(super) fn every_submission_gets_exactly_one_completion() -> bool {
 fn never_reaped_completions_are_not_overwritten(table: &Arc<HandleTable>) -> bool {
     const ROUND: usize = 8;
 
-    let Some(queue) = Queue::new() else {
+    let Some(queue) = Queue::new(crate::timepage::root()) else {
         return false;
     };
     let round = |first: usize| -> [Submission; ROUND] {
@@ -116,7 +119,7 @@ pub(super) fn a_word_that_does_not_fit_is_refused_rather_than_truncated() -> boo
     if !crate::time::is_calibrated() {
         return false;
     }
-    let (Some(queue), Some(table)) = (Queue::new(), table(8)) else {
+    let (Some(queue), Some(table)) = (Queue::new(crate::timepage::root()), table(8)) else {
         return false;
     };
     let full = Rights::UNIVERSAL;
@@ -240,7 +243,9 @@ pub(super) fn opening_a_node_does_not_restore_universal_rights() -> bool {
     const DIRECTORY_AT: u64 = 64;
     const READ_AT: u64 = 128;
 
-    let (Some(queue), Some(table), Some(root)) = (Queue::new(), table(8), vfs::root()) else {
+    let (Some(queue), Some(table), Some(root)) =
+        (Queue::new(crate::timepage::root()), table(8), vfs::root())
+    else {
         return false;
     };
     let (Ok(walkable), Ok(universal)) = (
@@ -319,7 +324,9 @@ pub(super) fn opening_a_node_does_not_restore_universal_rights() -> bool {
 }
 
 pub(super) fn a_ring_operation_cannot_reach_past_its_rights_or_its_pages() -> bool {
-    let (Some(queue), Some(table), Some(root)) = (Queue::new(), table(8), vfs::root()) else {
+    let (Some(queue), Some(table), Some(root)) =
+        (Queue::new(crate::timepage::root()), table(8), vfs::root())
+    else {
         return false;
     };
     let Some((unwalkable, walkable, unreadable, readable)) = reach_fixture(&queue, &table, root)
@@ -434,11 +441,11 @@ pub(super) fn an_operation_completes_after_its_deadline_and_only_once() -> bool 
     if !crate::time::is_calibrated() {
         return false;
     }
-    let (Some(queue), Some(table)) = (Queue::new(), table(8)) else {
+    let (Some(queue), Some(table)) = (Queue::new(crate::timepage::root()), table(8)) else {
         return false;
     };
 
-    let submitted_at = crate::time::now_ns();
+    let submitted_at = crate::timepage::root().now_ns();
     post(
         &queue,
         0,

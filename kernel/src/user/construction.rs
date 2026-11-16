@@ -13,6 +13,7 @@ use super::{
     Spawned,
 };
 use crate::handle::{HandleError, HandleTable};
+use crate::timepage::WorldClock;
 use crate::{object, queue, thread};
 
 #[derive(Debug)]
@@ -171,9 +172,11 @@ impl fmt::Display for SpawnError {
 impl core::error::Error for SpawnError {}
 
 pub(crate) fn spawn(name: &'static str, which: u64, argument: u64) -> Result<Spawned, SpawnError> {
+    // The one world every process belongs to until worlds are objects.
+    let clock = crate::timepage::root();
     let mut construction = ProcessConstruction::new(admitted_space()?);
     let (entry, stack) = map_program(&mut construction, which)?;
-    let ring = map_shared(&mut construction)?;
+    let ring = map_shared(&mut construction, clock)?;
     let root = construction.space()?.root();
 
     // Create the bootstrap identity before the thread can observe it.
@@ -215,7 +218,7 @@ pub(crate) fn spawn(name: &'static str, which: u64, argument: u64) -> Result<Spa
             bound
         })
     };
-    let slot = match thread::spawn_in_space(name, cross, 0, binding, arrange) {
+    let slot = match thread::spawn_in_space(name, cross, 0, binding, clock, arrange) {
         Ok(slot) => slot,
         Err(failure) => {
             if let Some(process) = prepared.as_mut() {
@@ -284,10 +287,13 @@ fn map_program(
 // The ring's pages stay the ring's and never enter the cleanup ledger.
 fn map_shared(
     construction: &mut ProcessConstruction,
+    clock: &'static WorldClock,
 ) -> Result<alloc::sync::Arc<queue::Queue>, SpawnError> {
-    crate::timepage::install(construction.space()?).map_err(SpawnError::NoTimePage)?;
+    clock
+        .install(construction.space()?)
+        .map_err(SpawnError::NoTimePage)?;
 
-    let mut ring = queue::Queue::new().ok_or(SpawnError::NoRing)?;
+    let mut ring = queue::Queue::new(clock).ok_or(SpawnError::NoRing)?;
     alloc::sync::Arc::get_mut(&mut ring)
         .ok_or(SpawnError::Incomplete)?
         .install(construction.space()?, RING)
