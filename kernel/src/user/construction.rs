@@ -35,14 +35,6 @@ impl ProcessConstruction {
         self.space.as_mut().ok_or(SpawnError::Incomplete)
     }
 
-    fn remember(&mut self, at: u64, len: u64) -> Result<(), SpawnError> {
-        if self.regions.record(at, len) {
-            Ok(())
-        } else {
-            Err(SpawnError::TooManyMappings)
-        }
-    }
-
     fn retain_authority(&mut self, authority: thread::SpaceAuthority) {
         self.authority = authority;
     }
@@ -128,7 +120,6 @@ pub(crate) enum SpawnError {
     NotBindable(ActivateError),
     NoThread(thread::SpawnError),
     Incomplete,
-    TooManyMappings,
     NoBootstrap(HandleError),
     NoTimePage(crate::timepage::Error),
     NoRing,
@@ -162,7 +153,6 @@ impl fmt::Display for SpawnError {
             }
             Self::NoThread(reason) => write!(formatter, "no thread: {reason}"),
             Self::Incomplete => formatter.write_str("the process construction is incomplete"),
-            Self::TooManyMappings => formatter.write_str("the process has too many owned mappings"),
             Self::NoBootstrap(reason) => write!(formatter, "no bootstrap channel: {reason}"),
             Self::NoTimePage(reason) => write!(formatter, "the time page: {reason}"),
             Self::NoRing => formatter.write_str("no memory for a ring"),
@@ -270,7 +260,10 @@ fn map_program(
     construction.regions = image.regions;
 
     let stack = place_stack(construction.space()?, which).ok_or(SpawnError::NoStack)?;
-    construction.remember(stack, STACK_BYTES)?;
+    assert!(
+        construction.regions.record(stack, STACK_BYTES),
+        "the region ledger keeps one range beyond the loader's for the stack"
+    );
     Ok((image.entry, stack))
 }
 
