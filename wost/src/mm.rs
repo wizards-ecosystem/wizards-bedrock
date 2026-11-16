@@ -18,12 +18,12 @@ pub use address::PhysicalAddress;
 pub(crate) use dma::{DmaMappingOwner, IommuTable, PublishedIommuTable};
 pub use dma::{DmaSegment, TableWalks};
 pub use firmware::{EarlyFirmwareMemory, FirmwareMemory, firmware_memory};
-pub(crate) use frame::allocate_table;
 pub use frame::{Frame, Segment, allocate, allocate_contiguous, allocate_zeroed};
+pub(crate) use frame::{allocate_table, is_sealed, release_sealed_run};
 #[cfg(feature = "selftest")]
 pub use selftest::{free_frames, is_freed_run_zero};
 pub(crate) use shared::SharedKeepalive;
-pub use shared::{Shared, SharedBytes, SharedRing, USegment};
+pub use shared::{SealedSegment, Shared, SharedBytes, SharedRing, USegment};
 
 use crate::arch::current::cache;
 use crate::boot::{BootMemory, DirectMap, MemoryKind, MemoryMap};

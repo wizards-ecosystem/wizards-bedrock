@@ -1,6 +1,7 @@
 use frame_space::{Access, ColourMask, FRAME_SIZE, Owner};
 
 use super::{FRAMES, PhysicalAddress, colours, direct_map_pointer, direct_pointer, table};
+use crate::arch::current::paging::{DirectAccess, Flush, set_direct_access};
 
 pub(super) const fn frame_address(index: usize) -> PhysicalAddress {
     match PhysicalAddress::new(index as u64 * FRAME_SIZE) {
@@ -154,6 +155,55 @@ impl Drop for Segment {
             "segment ownership ledger refused a live handle: {released:?}"
         );
     }
+}
+
+pub(crate) fn is_sealed(segment: &Segment) -> bool {
+    table::read(segment.first).access() == Access::Sealed
+}
+
+// Seals each frame's record, then drops its direct-map leaf to read-only.
+pub(crate) fn seal_run(segment: &Segment, flush: &mut Flush) {
+    let _frames = FRAMES.lock_leaf();
+    for frame in segment.indices() {
+        table::seal(frame);
+        flush.merge(set_direct_access(
+            frame_address(frame),
+            DirectAccess::ReadOnly,
+        ));
+    }
+}
+
+// The record goes free before the leaf turns writable, so no sealed frame is ever writable.
+pub(crate) fn release_sealed_run(segment: Segment, flush: &mut Flush) {
+    let segment = core::mem::ManuallyDrop::new(segment);
+    {
+        let _frames = FRAMES.lock_leaf();
+        for frame in segment.indices() {
+            let previous = table::release(frame);
+            assert!(
+                previous.access() == Access::Sealed,
+                "frame {frame} was released as sealed while it is {previous:?}"
+            );
+            flush.merge(set_direct_access(
+                frame_address(frame),
+                DirectAccess::Writable,
+            ));
+        }
+    }
+    let Some(base) = direct_pointer(segment.address(), segment.len()) else {
+        panic!("a sealed run lost its direct-map address");
+    };
+    // SAFETY: the run is still taken in the bitmap and no handle but this one names it, and its
+    // leaves were made writable above.
+    unsafe { core::ptr::write_bytes(base, 0, segment.len() as usize) };
+    let released = FRAMES
+        .lock_leaf()
+        .space
+        .free_contiguous(segment.first, segment.count);
+    assert!(
+        released.is_ok(),
+        "a sealed run's ledger refused its release: {released:?}"
+    );
 }
 
 fn allocate_owned(owner: Owner) -> Option<Frame> {

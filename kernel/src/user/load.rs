@@ -1,5 +1,5 @@
 use elf64::{Elf, ElfError, SegmentKind};
-use wost::arch::current::paging::{AddressSpace, MapError};
+use wost::arch::current::paging::{AddressSpace, Flush, MapError};
 use wost::boot::HandoffError;
 use wost::mm::{self, USegment};
 use wost::sync::SpinLock;
@@ -115,7 +115,7 @@ pub(crate) struct LoadedImage {
     pub(super) regions: Regions,
 }
 
-// Filled before it is mapped, so an executable page is never writable.
+// Written, then sealed if executable, then mapped, so no frame is ever writable and executable.
 fn place(space: &mut AddressSpace, bytes: &[u8], placement: &Placement) -> Result<(), LoadError> {
     let run = mm::allocate_contiguous(placement.pages, 1).ok_or(LoadError::OutOfMemory)?;
     let mut run = USegment::zeroed(run).ok_or(LoadError::OutOfMemory)?;
@@ -125,9 +125,20 @@ fn place(space: &mut AddressSpace, bytes: &[u8], placement: &Placement) -> Resul
     if !run.write_at(0, contents) {
         return Err(LoadError::Truncated(placement.at));
     }
+    if placement.flags.contains(Flags::NO_EXECUTE) {
+        return space
+            .map_user(placement.at, run, placement.flags)
+            .map_err(|reason| LoadError::NotMapped(reason.reason()));
+    }
+    let mut flush = Flush::none();
+    let sealed = run.seal(&mut flush);
+    assert!(
+        flush.is_complete(),
+        "sealing a program's code left a writable translation"
+    );
     space
-        .map_user(placement.at, run, placement.flags)
-        .map_err(|reason| LoadError::NotMapped(reason.reason()))
+        .map_user_sealed(placement.at, sealed, placement.flags)
+        .map_err(LoadError::NotMapped)
 }
 
 fn overlaps(first: &Placement, second: &Placement) -> bool {

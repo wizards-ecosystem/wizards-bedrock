@@ -224,7 +224,8 @@ pub(super) fn an_active_unmap_exposes_only_its_replacement(context: &mut ThreadC
         return false;
     }
     let second_physical = second.address();
-    let Some(Ok(second_mapping)) = mem::map_user_page_for_test(context, AT, second, Flags::NONE)
+    let Some(Ok(second_mapping)) =
+        mem::map_user_page_for_test(context, AT, second, Flags::NO_EXECUTE)
     else {
         drop(first_taken);
         return false;
@@ -237,7 +238,7 @@ pub(super) fn an_active_unmap_exposes_only_its_replacement(context: &mut ThreadC
                 && flags.contains(Flags::USER)
                 && flags.contains(Flags::OWNED)
                 && !flags.contains(Flags::WRITABLE)
-                && !flags.contains(Flags::NO_EXECUTE)
+                && flags.contains(Flags::NO_EXECUTE)
         });
     let mut observed = [0; SECOND.len()];
     let replacement_was_read =
@@ -382,11 +383,11 @@ pub(super) fn a_user_space_cannot_reach_the_kernel_half() -> bool {
             return false;
         };
         let top_refused = space
-            .map_user(TOP, top, Flags::NONE)
+            .map_user(TOP, top, Flags::NO_EXECUTE)
             .err()
             .is_some_and(|error| error.reason() == MapError::NotYours(TOP))
             && space.lookup(TOP).is_none();
-        let last_admitted = space.map_user(LAST_USER, last, Flags::NONE).is_ok()
+        let last_admitted = space.map_user(LAST_USER, last, Flags::NO_EXECUTE).is_ok()
             && space.lookup(LAST_USER).is_some()
             && space.unmap(LAST_USER, PAGE_SIZE).map(drop).is_ok();
 

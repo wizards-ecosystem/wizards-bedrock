@@ -4,8 +4,9 @@ use core::mem::ManuallyDrop;
 use ring_proto::SharedLayout;
 
 use super::direct::DirectSpan;
-use super::frame::Segment;
+use super::frame::{Segment, release_sealed_run, seal_run};
 use super::{PhysicalAddress, direct_pointer};
+use crate::arch::current::paging::Flush;
 use crate::arch::current::shared_memory;
 
 #[derive(PartialEq, Eq, Debug)]
@@ -50,6 +51,17 @@ impl USegment {
     pub(crate) fn commit_mapping(self) {
         core::mem::forget(self);
     }
+
+    // Consuming the run proves no writable mapping of it remains, since mapping consumes it too.
+    pub fn seal(self, flush: &mut Flush) -> SealedSegment {
+        let mut run = ManuallyDrop::new(self);
+        // SAFETY: `run` is never dropped, so this is the one move out of its segment.
+        let segment = unsafe { ManuallyDrop::take(&mut run.segment) };
+        seal_run(&segment, flush);
+        SealedSegment {
+            segment: ManuallyDrop::new(segment),
+        }
+    }
 }
 
 impl Drop for USegment {
@@ -58,6 +70,43 @@ impl Drop for USegment {
             // SAFETY: this is the one drop of `segment`, and nothing reads the field after it.
             unsafe { ManuallyDrop::drop(&mut self.segment) };
         }
+    }
+}
+
+// Read-only in every mapping, the direct map included; there is no way back to writable bytes.
+#[derive(PartialEq, Eq, Debug)]
+pub struct SealedSegment {
+    segment: ManuallyDrop<Segment>,
+}
+
+impl SealedSegment {
+    pub fn address(&self) -> PhysicalAddress {
+        self.segment.address()
+    }
+
+    pub(crate) fn frames(&self) -> usize {
+        self.segment.frames()
+    }
+
+    pub(crate) fn len(&self) -> u64 {
+        self.segment.len()
+    }
+
+    pub(crate) fn commit_mapping(self) {
+        core::mem::forget(self);
+    }
+}
+
+impl Drop for SealedSegment {
+    fn drop(&mut self) {
+        // SAFETY: this is the one move out of `segment`, and nothing reads the field after it.
+        let segment = unsafe { ManuallyDrop::take(&mut self.segment) };
+        let mut flush = Flush::none();
+        release_sealed_run(segment, &mut flush);
+        assert!(
+            flush.is_complete(),
+            "a sealed run's direct-map change awaits a flush its drop cannot wait for"
+        );
     }
 }
 

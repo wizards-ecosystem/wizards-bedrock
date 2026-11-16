@@ -7,12 +7,13 @@ use x86_paging::{
 };
 
 use super::{
-    AddressSpace, CACHE_TYPE, EntrySlot, MapError, NOT_THE_CALLERS, Reach, TableRoot, UserMapError,
-    clear_mapping_slot, entry_slot, is_user_address, leaf_in, protected_stack_overlap,
-    ram_cache_policy, slot_in,
+    AddressSpace, CACHE_TYPE, EntrySlot, Flush, MapError, NOT_THE_CALLERS, Reach, TableRoot,
+    UserMapError, clear_mapping_slot, entry_slot, is_user_address, leaf_in,
+    protected_stack_overlap, ram_cache_policy, slot_in,
 };
 use crate::mm::{
-    self, PhysicalAddress, Segment, SharedBytes, SharedKeepalive, SharedRing, USegment,
+    self, PhysicalAddress, SealedSegment, Segment, SharedBytes, SharedKeepalive, SharedRing,
+    USegment,
 };
 
 impl AddressSpace {
@@ -359,6 +360,13 @@ impl AddressSpace {
         run: USegment,
         flags: Flags,
     ) -> Result<(), UserMapError> {
+        // A writable frame is never executable anywhere; executable bytes come sealed.
+        if !flags.contains(Flags::NO_EXECUTE) {
+            return Err(UserMapError::Mapping {
+                reason: MapError::WriteExecute(virtual_base),
+                run,
+            });
+        }
         if !user_mapping_fits(virtual_base, run.len()) {
             return Err(UserMapError::Mapping {
                 reason: MapError::NotYours(virtual_base),
@@ -379,6 +387,30 @@ impl AddressSpace {
             }
             Err(reason) => Err(UserMapError::Mapping { reason, run }),
         }
+    }
+
+    // A refusal drops the run, which unseals, zeroes and frees it.
+    pub fn map_user_sealed(
+        &mut self,
+        virtual_base: u64,
+        run: SealedSegment,
+        flags: Flags,
+    ) -> Result<(), MapError> {
+        if flags.contains(Flags::WRITABLE) {
+            return Err(MapError::WriteExecute(virtual_base));
+        }
+        if !user_mapping_fits(virtual_base, run.len()) {
+            return Err(MapError::NotYours(virtual_base));
+        }
+        self.owned_pages = self.map_owned_frames(
+            virtual_base,
+            run.address(),
+            run.len(),
+            run.frames(),
+            flags.union(Flags::USER),
+        )?;
+        run.commit_mapping();
+        Ok(())
     }
 
     pub fn map_shared(
@@ -592,6 +624,17 @@ impl Unmapped {
 
 impl Drop for Unmapped {
     fn drop(&mut self) {
+        if mm::is_sealed(&self.frames) {
+            // SAFETY: this is the one move out of `frames`, and nothing reads the field after it.
+            let frames = unsafe { ManuallyDrop::take(&mut self.frames) };
+            let mut flush = Flush::none();
+            mm::release_sealed_run(frames, &mut flush);
+            assert!(
+                flush.is_complete(),
+                "an unmapped sealed run awaits a flush its drop cannot wait for"
+            );
+            return;
+        }
         // A failed clear leaks the frames so no user bytes are disclosed.
         if self.was_user && !self.frames.zero() {
             return;
