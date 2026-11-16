@@ -143,17 +143,22 @@ pub(crate) fn spawn(
         space: None,
         authority: thread::SpaceAuthority::None,
     };
-    let spawned = build(
-        context,
-        world_ref,
-        &world,
-        &mut construction,
-        address,
-        Named {
-            name,
-            which,
-            argument,
-            operand,
+    // Siblings, not nested: the placement and record work in `lay_out` never runs under `build`.
+    let spawned = lay_out(context, world_ref, &world, &mut construction, address).and_then(
+        |(earmark, layout)| {
+            build(
+                context,
+                world_ref,
+                &world,
+                &mut construction,
+                (earmark, layout),
+                Named {
+                    name,
+                    which,
+                    argument,
+                    operand,
+                },
+            )
         },
     );
     construction.dismantle(context, &world);
@@ -173,7 +178,7 @@ fn build(
     world_ref: NodeRef,
     world: &World,
     construction: &mut ProcessConstruction,
-    address: AddressSpace,
+    (mut earmark, layout): (Earmark, Layout),
     named: Named,
 ) -> Result<Spawned, SpawnError> {
     let Named {
@@ -183,7 +188,6 @@ fn build(
         operand,
     } = named;
     let clock = crate::timepage::root();
-    let (mut earmark, layout) = lay_out(context, world_ref, world, construction, address)?;
     let Layout {
         entry,
         stack,
@@ -278,7 +282,6 @@ struct Layout {
     time: u64,
 }
 
-// Apart from `build`, so the record sets it works on are off the stack before the process is.
 fn lay_out(
     context: &mut thread::ThreadContext,
     world_ref: NodeRef,
