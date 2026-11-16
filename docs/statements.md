@@ -69,3 +69,57 @@ against them. A statement changes only together with the code it governs.
   controls can form one.
 - **Unsafe.** Outside `wost`, `unsafe` appears only in the ring 3 runtime `witness/rt`, and each of
   its exports is sound for any caller.
+
+## Worlds
+
+- **Tree.** A world is live, dying or dead. Its path lists its ancestors and is at most 16 long. Its
+  descendant set holds exactly the worlds whose path contains it. Creating a world enters it into
+  every ancestor's set or into none. Once a world is dying nothing joins its descendants, and every
+  descendant is dying before the world is dead.
+- **Kill.** Killing a world takes a number of steps bounded by what that world holds, whatever any
+  other world does. No step can refuse, and one teardown never waits on another. Each frame returns
+  once, zeroed, to the nearest live ancestor.
+
+## Arenas
+
+- **Containment.** Every kernel object made for a world's request lives in a frame that world's
+  arena owns, and such a frame holds only that world's objects and data. Objects name each other by
+  index and generation, never by address, so an arena's contents are a value. A reference into
+  another world is weak: it never keeps that world or its objects alive.
+- **Refusal.** An arena never uses more frames of a colour than it has reserved. A request past the
+  reservation returns a refusal to its caller and changes no state, in that world or any other.
+- **Accounting.** A world's charge is its frame count times the frame size, and no byte a world
+  causes lies outside its frames. For each colour, the reservations of all arenas plus the kernel's
+  own frames never exceed the managed frames.
+
+## Processes
+
+- **Life.** A process is running, then exited with one status, then released. The status is written
+  once, before any observer wakes, and every accepted wait completes once with it. Its threads,
+  address space and handle table are each released exactly once, by steps that cannot refuse.
+
+## Handles
+
+- **Table.** Each process has one handle table, in its world's arena. A handle resolves only in the
+  table that issued it, and a derived handle's rights never exceed its source's. A handle value is
+  a function of the world's key, the process, the slot and the generation, and a slot retires
+  rather than repeat a generation.
+
+## Memory objects
+
+- **State.** A memory object is writable, sealed read-only or sealed executable, and moves only from
+  writable to sealed. A mapping of its frames is writable only while the object is writable and
+  executable only when it is sealed executable, in every address space, the direct map and every
+  IOMMU table.
+- **Seal.** A seal succeeds only on the object's single handle, with no live write reference, and
+  for execution only with quota that covers its pages. A write reference is released only after
+  every TLB that may hold its translation has been flushed. Success consumes the handle and returns
+  exactly one new one; a refusal changes nothing.
+- **Execute.** The execute right exists only on a handle that a seal for execution produced, or on
+  a narrowed copy of one. The live sealed executable pages charged to a quota never exceed its
+  limit.
+- **Mappings.** Every present user page-table entry is the image of one mapping record. Unmap and
+  protect only remove permission. A frame returns to its arena only when its object has no handle,
+  mapping or pin and every flush that covers its removed translations has completed.
+- **Loading.** A user thread starts only inside an executable mapping of a sealed executable object
+  in its own address space. The kernel parses no executable format.
