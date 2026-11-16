@@ -648,7 +648,12 @@ impl fmt::Display for UserError {
 
 impl core::error::Error for UserError {}
 
-pub fn enter_user(context: &mut ThreadContext, entry: u64, stack_top: u64) -> UserError {
+pub fn enter_user(
+    context: &mut ThreadContext,
+    entry: u64,
+    stack_top: u64,
+    argument: u64,
+) -> UserError {
     let _ = context;
     let disabled = interrupt::disable();
     if !disabled.were_enabled() {
@@ -663,7 +668,7 @@ pub fn enter_user(context: &mut ThreadContext, entry: u64, stack_top: u64) -> Us
 
     // SAFETY: the preflight ran with interrupts excluded through this jump, so none of its live
     // page-table or task-stack facts can change first.
-    unsafe { interrupt::leave_for_user(entry, stack_top) }
+    unsafe { interrupt::leave_for_user(entry, stack_top, argument) }
 }
 
 fn user_entry_preflight(entry: u64, stack_top: u64) -> Result<(), UserError> {

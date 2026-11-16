@@ -155,7 +155,7 @@ pub(super) fn cross(context: &mut thread::ThreadContext, _: usize) {
         warn!("user {which}: maskable interrupts are not admitted");
         thread::retire();
     }
-    let refused = task::enter_user(context, launch.entry, top);
+    let refused = task::enter_user(context, launch.entry, top, launch.argument);
     warn!("user {which}: refused entry to ring 3: {refused}");
     thread::retire();
 }

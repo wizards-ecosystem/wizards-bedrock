@@ -116,6 +116,8 @@ number and is added here, as one entry or as an amending id on the entry it chan
   `syscall`, which would need `swapgs` and a per-CPU block. `EFER.SCE` and `IA32_SYSENTER_CS` are
   cleared and `enter_user` refuses while either is set (D-139); `enter_user` walks every
   precondition and zeroes the general registers on the way out.
+- **D-475** `task::enter_user` puts the program's argument in `rdi` and zeroes every other general
+  register (amends D-96).
 - **D-97** `copy_from_user` and `copy_to_user` are the only code that opens the SMAP window, for one
   copy. Each walks every page and requires effective `USER` permission before the window opens
   (D-279), checks ranges by comparison with the user limit, and recovers a fault inside its assembly

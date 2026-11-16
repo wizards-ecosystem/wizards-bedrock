@@ -388,7 +388,7 @@ worker (section 9).
 
 A program starts at its ELF entry with `RSP` 16-byte aligned on a 24-byte entry block: version
 (`u64` at 0, value `1`), the launcher's argument (`u64` at 8) and the bootstrap handle (`u64` at
-16).
+16). The argument is also in `rdi`; every other general register is zero.
 
 The time page is mapped read-only at `0x0000100000000000` in every program
 (`kernel/src/timepage.rs`, layout in `native_abi::timepage`). Its constants are written once before

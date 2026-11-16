@@ -765,17 +765,17 @@ unsafe extern "C" {
     #[link_name = "wost_interrupt_stubs_end"]
     fn stub_table_end();
 
-    fn wost_leave_for_user(entry: u64, stack_top: u64) -> !;
+    fn wost_leave_for_user(entry: u64, stack_top: u64, argument: u64) -> !;
 }
 
 /// # Safety
 ///
 /// `entry` must be user-executable, `stack_top` must be user-writable, and the live task must have
 /// a completely installed shared or paired entry route.
-pub(super) unsafe fn leave_for_user(entry: u64, stack_top: u64) -> ! {
+pub(super) unsafe fn leave_for_user(entry: u64, stack_top: u64, argument: u64) -> ! {
     // SAFETY: the caller supplies the mapping and route facts the assembly boundary requires, and
-    // the boundary consumes both values before changing roots.
-    unsafe { wost_leave_for_user(entry, stack_top) }
+    // the boundary consumes all three values before changing roots.
+    unsafe { wost_leave_for_user(entry, stack_top, argument) }
 }
 
 const _: () = assert!(idt::TABLE_LEN <= 256, "the IDT holds at most 256 vectors");
@@ -1011,7 +1011,11 @@ const COM1: u16 = 0x3F8;
     "push rdi",
     "push 0",
     "push 0",
-    ".rept {register_words}",
+    ".rept {registers_above_rdi}",
+    "push 0",
+    ".endr",
+    "push rdx",
+    ".rept {registers_below_rdi}",
     "push 0",
     ".endr",
     "jmp wost_interrupt_return",
@@ -1046,6 +1050,10 @@ const COM1: u16 = 0x3F8;
     raw_frame_words = const size_of::<RawTrapFrame>() / size_of::<u64>(),
     user_frame_bytes = const 20 * size_of::<u64>(),
     register_words = const 15,
+    registers_above_rdi = const (core::mem::offset_of!(RawTrapFrame, rax)
+        - core::mem::offset_of!(RawTrapFrame, rdi))
+        / size_of::<u64>(),
+    registers_below_rdi = const core::mem::offset_of!(RawTrapFrame, rdi) / size_of::<u64>(),
     iret_words = const 5,
     frame_rip = const core::mem::offset_of!(RawTrapFrame, instruction_pointer),
     frame_cs = const core::mem::offset_of!(RawTrapFrame, code_selector),
