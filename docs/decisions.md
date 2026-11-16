@@ -264,6 +264,13 @@ number and is added here, as one entry or as an amending id on the entry it chan
   after the lock and releases it. Returning each operation's `Flush` with its frames instead would
   keep rollback but make every map path carry a pending free, and a kernel space behind a sleeping
   lock would let these paths wait but put a block under every kernel mapping.
+- **D-497** Every frame is zeroed before it returns to the free pool, and `mm::init` zeroes all
+  managed memory before seeding, so a free frame always holds zeros and no allocation path zeroes
+  (amends D-44 and D-469). A frame then holds only zeros at each crossing, free included, as the
+  Zero on crossing statement says. `USegment::zeroed` and `DmaSegment::zeroed`, the only ways to
+  make memory ring 3 or a device reaches, still zero the run they take, since the kernel may have
+  written it. Zeroing on allocation instead would leave kernel and table bytes in free frames, and
+  a dirty bit per frame would add state to every record for a cost this pays once per free.
 - **D-520** A kernel object lives in a slot of an object page, and a reference to it held by
   kernel code is a counted `Hold` rather than a lifetime: a slot with borrows cannot be removed or
   reached mutably, a page with borrows cannot close, and `pool::dissolve` refuses while any object

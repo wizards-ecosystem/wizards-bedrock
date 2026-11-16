@@ -12,7 +12,7 @@ use crate::arch::current::shared_memory;
 
 #[derive(PartialEq, Eq, Debug)]
 pub struct USegment {
-    segment: ManuallyDrop<Segment>,
+    segment: Segment,
 }
 
 impl USegment {
@@ -21,9 +21,7 @@ impl USegment {
         if !segment.zero() {
             return None;
         }
-        Some(Self {
-            segment: ManuallyDrop::new(segment),
-        })
+        Some(Self { segment })
     }
 
     #[must_use = "a refused segment write changed no bytes"]
@@ -55,9 +53,7 @@ impl USegment {
 
     // Consuming the run proves no writable mapping of it remains, since mapping consumes it too.
     pub fn seal(self, flush: &mut Flush) -> Sealing<SealedSegment> {
-        let mut run = ManuallyDrop::new(self);
-        // SAFETY: `run` is never dropped, so this is the one move out of its segment.
-        let segment = unsafe { ManuallyDrop::take(&mut run.segment) };
+        let Self { segment } = self;
         let mut own = Flush::none();
         seal_run(&segment, &mut own);
         flush.merge(own.duplicate());
@@ -92,15 +88,6 @@ impl<T> Sealing<T> {
             Ok(self.sealed)
         } else {
             Err(self)
-        }
-    }
-}
-
-impl Drop for USegment {
-    fn drop(&mut self) {
-        if self.segment.zero() {
-            // SAFETY: this is the one drop of `segment`, and nothing reads the field after it.
-            unsafe { ManuallyDrop::drop(&mut self.segment) };
         }
     }
 }

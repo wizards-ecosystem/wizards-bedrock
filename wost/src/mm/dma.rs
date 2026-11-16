@@ -30,6 +30,18 @@ impl DmaMappingOwner {
 }
 
 impl DmaSegment {
+    // A device may read every byte, so the run is cleared of whatever the kernel left in it.
+    #[must_use = "a refused conversion frees the run"]
+    pub fn zeroed(mut segment: Segment) -> Option<Self> {
+        if !segment.zero() {
+            return None;
+        }
+        Some(Self {
+            segment: Some(segment),
+            mapping_owner: None,
+        })
+    }
+
     pub(crate) fn begin_mapping(&mut self, owner: DmaMappingOwner) -> bool {
         if self.segment.is_none() || self.mapping_owner.is_some() {
             return false;
@@ -125,15 +137,6 @@ impl Drop for DmaSegment {
     }
 }
 
-impl From<Segment> for DmaSegment {
-    fn from(segment: Segment) -> Self {
-        Self {
-            segment: Some(segment),
-            mapping_owner: None,
-        }
-    }
-}
-
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TableWalks {
     Coherent,
@@ -149,10 +152,7 @@ pub(crate) struct IommuTable {
 
 impl IommuTable {
     pub(crate) fn new(frames: usize, walks: TableWalks) -> Option<Self> {
-        let mut segment = allocate_contiguous(frames, 1)?;
-        if !segment.fill(0) {
-            return None;
-        }
+        let segment = allocate_contiguous(frames, 1)?;
         let table = Self {
             frames: segment,
             walks,

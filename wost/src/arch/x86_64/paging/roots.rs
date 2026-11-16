@@ -139,10 +139,7 @@ impl AddressSpace {
         }
         let pages =
             usize::try_from(section.mapped_len() / PAGE_SIZE).map_err(|_| MapError::OutOfMemory)?;
-        let mut run = mm::allocate_contiguous(pages, 1).ok_or(MapError::OutOfMemory)?;
-        if !run.zero() {
-            return Err(MapError::Unreachable(run.address()));
-        }
+        let run = mm::allocate_contiguous(pages, 1).ok_or(MapError::OutOfMemory)?;
         let physical = run.address().get();
         core::mem::forget(run);
         let mut offset = 0;

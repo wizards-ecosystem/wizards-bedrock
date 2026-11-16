@@ -231,6 +231,13 @@ owns the bitmap search, two bits per frame. Only memory the bootloader marks usa
 to a 16 GiB ceiling (`wost::mm::CEILING`); RAM above it is reported and ignored. Releasing a
 foreign or free frame is a visible refusal.
 
+A free frame always holds zeros. `mm::init` zeroes every managed frame before it seeds the bitmap,
+and every release zeroes its frames before they go free: a `Frame` or `Segment` drop (kernel,
+table, heap and DMA frames), a sealed run's release and an arena frame's release or dissolve. No
+allocation path zeroes again, and a frame crosses from free to its next owner, and back, holding
+only zeros. Freeing costs one write of every byte freed; the boot pays one pass over managed
+memory.
+
 Every managed frame has one 8-byte record (`libs/frame-space` `Record`, `wost/src/mm/table.rs`),
 carved at `mm::init` from the first contiguous run large enough. It names the owner (free, kernel,
 page table, device, or one arena with the frame's kind: object, data or table) and whether the
@@ -248,7 +255,7 @@ to a new child whose mask lies within the parent's and never takes what the pare
 promised, and a refusal changes nothing. For each colour
 the unused reservations never exceed the free frames, so the kernel's own allocations take only
 unreserved frames and a reserved frame can always be taken. An operation calls `pool::earmark`
-first and then takes `ArenaFrame`s that cannot fail; each is zeroed when taken and when released.
+first and then takes `ArenaFrame`s that cannot fail; each arrives zeroed and is zeroed when released.
 `pool::dissolve` walks the records in bounded steps, zeroes and frees the arena's frames, and
 returns its reservation to the heir. There are 256 nodes; a node's generation is in every
 `ArenaId`, and a node whose generation reaches the maximum is retired. Each node counts its
@@ -285,9 +292,10 @@ the allocator.
 
 Memory that ring 3 or a device can write has its own type, `mm::USegment`, which admits only
 plain-data copies, and `map_user` takes only a `USegment`. `USegment::zeroed` is the only way to
-make one: it zeroes the `Segment` it consumes and refuses a run it cannot clear, so ring 3 sees
-only zeros and the bytes the kernel writes afterwards. A `USegment` is zeroed again before its
-frames return to the pool, and a run whose clear fails is withheld.
+make one: it zeroes the `Segment` it consumes, which the kernel may have written, and refuses a run
+it cannot clear, so ring 3 sees only zeros and the bytes the kernel writes afterwards.
+`DmaSegment::zeroed` is likewise the only way to make memory a device reaches, so a device-read
+mapping exposes only zeros and what the kernel wrote since.
 
 `wost/src/arch/x86_64/paging.rs` owns every table write, over the encoding in `libs/x86-paging`.
 No mapping call takes a bare physical address: `map_owned` consumes allocator frames and refuses

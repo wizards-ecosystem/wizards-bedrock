@@ -194,8 +194,6 @@ Phase 7:
   frames and seal read-only (`kernel/src/memory.rs`), but no program can map one, seal one for
   execution or charge a code quota, and the loader does not use them. They need mapping records,
   user page tables of arena frames and a shared unmap.
-- `DmaSegment::from` wraps a `Segment` without zeroing it, and each caller zeroes first
-  (`wost/src/mm/dma.rs`). Memory a device reaches needs the same zeroing conversion as a `USegment`.
 - The kernel parses ELF and loads one borrowed Limine module (`kernel/src/user/load.rs`,
   `wost/src/boot/limine_glue.rs`). The user-space loader replaces it and needs every module as owned
   frames; the kernel keeps its mapper checks.

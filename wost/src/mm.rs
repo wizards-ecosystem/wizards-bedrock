@@ -20,7 +20,7 @@ pub use address::PhysicalAddress;
 pub(crate) use dma::{DmaMappingOwner, IommuTable, PublishedIommuTable};
 pub use dma::{DmaSegment, TableWalks};
 pub use firmware::{EarlyFirmwareMemory, FirmwareMemory, firmware_memory};
-pub use frame::{Frame, Segment, allocate, allocate_contiguous, allocate_zeroed};
+pub use frame::{Frame, Segment, allocate, allocate_contiguous};
 pub(crate) use frame::{allocate_table, is_sealed, release_sealed_run};
 #[cfg(feature = "selftest")]
 pub use selftest::{free_frames, is_freed_run_zero};
@@ -95,6 +95,7 @@ pub fn init(memory: BootMemory) -> Report {
     DIRECT_MAP_OFFSET.store(memory.direct().offset(), Ordering::Release);
     *MAP.lock_leaf() = Some(*map);
     COLOURS.store(cache::colours(), Ordering::Release);
+    zero_allocatable(map);
 
     let mut frames = FRAMES.lock_leaf();
     let ignored = seed_frames(&mut frames.space, map);
@@ -112,6 +113,27 @@ pub fn init(memory: BootMemory) -> Report {
         ignored,
         colours: colours().count(),
         table_frames,
+    }
+}
+
+// Every release zeroes its frame, so with this a free frame always holds zeros.
+fn zero_allocatable(map: &MemoryMap) {
+    for run in map.allocatable_runs() {
+        let Some(start) = run.base().checked_next_multiple_of(FRAME_SIZE) else {
+            continue;
+        };
+        let end = run.base().saturating_add(run.bytes()).min(CEILING) / FRAME_SIZE * FRAME_SIZE;
+        if start >= end {
+            continue;
+        }
+        let Some(base) =
+            PhysicalAddress::new(start).and_then(|first| direct_pointer(first, end - start))
+        else {
+            panic!("allocatable memory at {start:#x} has no direct-map address");
+        };
+        // SAFETY: the bootloader hands usable memory over unused and writable in its direct map,
+        // nothing has been allocated yet, and these bytes back no Rust value.
+        unsafe { core::ptr::write_bytes(base, 0, (end - start) as usize) };
     }
 }
 

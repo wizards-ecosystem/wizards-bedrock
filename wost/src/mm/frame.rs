@@ -10,7 +10,7 @@ pub(super) const fn frame_address(index: usize) -> PhysicalAddress {
     }
 }
 
-// Kernel and table frames come back here; arena and sealed frames have their own release.
+// Kernel and table frames come back here, zeroed; arena and sealed frames have their own release.
 fn release_record(frame: usize) {
     let previous = table::release(frame);
     assert!(
@@ -28,7 +28,7 @@ pub struct Frame {
 impl Frame {
     /// # Safety
     ///
-    /// `address` must be an [`allocate`] or [`allocate_zeroed`] frame whose handle was forgotten.
+    /// `address` must be an [`allocate`] frame whose handle was forgotten.
     /// No other `Frame` may name it: dropping the result frees it, so a second handle double frees.
     /// A handle over a frame nothing allocated corrupts the allocator's records.
     pub(crate) const unsafe fn from_raw(address: PhysicalAddress) -> Self {
@@ -60,6 +60,11 @@ impl Frame {
 
 impl Drop for Frame {
     fn drop(&mut self) {
+        let zeroed = self.zero();
+        assert!(
+            zeroed,
+            "a frame lost its direct-map address before its release"
+        );
         let mut frames = FRAMES.lock_leaf();
         release_record(self.index);
         let released = frames.space.free(self.index);
@@ -145,6 +150,11 @@ impl Segment {
 
 impl Drop for Segment {
     fn drop(&mut self) {
+        let zeroed = self.zero();
+        assert!(
+            zeroed,
+            "a segment lost its direct-map address before its release"
+        );
         let mut frames = FRAMES.lock_leaf();
         for frame in self.indices() {
             release_record(frame);
@@ -247,12 +257,6 @@ pub fn allocate_contiguous(count: usize, align: usize) -> Option<Segment> {
     Some(Segment { first, count })
 }
 
-pub fn allocate_zeroed() -> Option<Frame> {
-    let mut frame = allocate()?;
-    frame.zero().then_some(frame)
-}
-
 pub(crate) fn allocate_table() -> Option<Frame> {
-    let mut frame = allocate_owned(Owner::Table)?;
-    frame.zero().then_some(frame)
+    allocate_owned(Owner::Table)
 }

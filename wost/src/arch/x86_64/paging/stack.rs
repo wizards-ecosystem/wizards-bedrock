@@ -14,10 +14,7 @@ impl AddressSpace {
     pub fn map_stack(&mut self, slot: &Slot) -> Result<MappedStack, MapError> {
         self.verify_guard(slot)?;
         let pages = (slot.stack_len() / PAGE_SIZE) as usize;
-        let mut run = mm::allocate_contiguous(pages, 1).ok_or(MapError::OutOfMemory)?;
-        if !run.zero() {
-            return Err(MapError::Unreachable(run.address()));
-        }
+        let run = mm::allocate_contiguous(pages, 1).ok_or(MapError::OutOfMemory)?;
         let physical_base = run.address();
         self.map_owned(
             slot.stack_base(),

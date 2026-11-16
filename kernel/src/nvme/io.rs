@@ -24,11 +24,9 @@ impl Controller {
     }
 
     pub(super) fn identify_namespace(&mut self, capacity: Capacity) -> Result<(), BringUpError> {
-        let mut buffer =
-            DmaSegment::from(mm::allocate_contiguous(1, 1).ok_or(BringUpError::NoMemory)?);
-        if !buffer.zero() {
-            return Err(BringUpError::NoMemory);
-        }
+        let mut buffer = mm::allocate_contiguous(1, 1)
+            .and_then(DmaSegment::zeroed)
+            .ok_or(BringUpError::NoMemory)?;
         let address = buffer.address().ok_or(BringUpError::NoMemory)?.get();
 
         let command = Command::identify_namespace(self.take_id(), NAMESPACE, address, PAGE_SIZE)

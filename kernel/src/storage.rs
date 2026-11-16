@@ -292,11 +292,7 @@ fn admit_candidate(
 
 #[inline(never)]
 fn allocate_cleared_startup_buffer() -> Option<wost::mm::DmaSegment> {
-    let mut segment = wost::mm::allocate_contiguous(1, 1)?;
-    if !segment.zero() {
-        return None;
-    }
-    Some(wost::mm::DmaSegment::from(segment))
+    wost::mm::DmaSegment::zeroed(wost::mm::allocate_contiguous(1, 1)?)
 }
 
 fn start_candidate(

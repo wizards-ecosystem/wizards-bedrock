@@ -25,12 +25,8 @@ impl QueuePair {
         let submission_frames = frames_for(capacity.submission_bytes());
         let completion_frames = frames_for(capacity.completion_bytes());
 
-        let mut submission = DmaSegment::from(mm::allocate_contiguous(submission_frames, 1)?);
-        let mut completion = DmaSegment::from(mm::allocate_contiguous(completion_frames, 1)?);
-        // Cleared: an unwritten entry's phase tag says "nothing here yet", and stale memory lies.
-        if !submission.zero() || !completion.zero() {
-            return None;
-        }
+        let submission = DmaSegment::zeroed(mm::allocate_contiguous(submission_frames, 1)?)?;
+        let completion = DmaSegment::zeroed(mm::allocate_contiguous(completion_frames, 1)?)?;
 
         Some(Self {
             id,

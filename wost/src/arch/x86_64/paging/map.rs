@@ -40,7 +40,6 @@ impl AddressSpace {
 
         // Preflight the whole range before clearing anything, so a refusal changes nothing.
         let mut first = None;
-        let mut was_user = false;
         let mut sealed = None;
         for page in 0..pages {
             let address = virtual_base
@@ -51,8 +50,6 @@ impl AddressSpace {
             if !entry.flags().contains(Flags::OWNED) {
                 return Err(MapError::NotOwned(address));
             }
-            // One user-reachable page makes the whole run user bytes.
-            was_user |= entry.flags().contains(Flags::USER);
             let frame = PhysicalAddress::from_entry(entry);
             // A run returns through one release, sealed or writable, so its frames must agree.
             let frame_sealed = mm::is_sealed(frame);
@@ -82,7 +79,6 @@ impl AddressSpace {
             // names it now that its leaf is cleared.
             frames: ManuallyDrop::new(unsafe { Segment::from_raw(base, pages as usize) }),
             sealed: sealed == Some(true),
-            was_user,
             flush,
         })
     }
@@ -565,7 +561,6 @@ pub struct Unmapped {
     pages: u64,
     frames: ManuallyDrop<Segment>,
     sealed: bool,
-    was_user: bool,
     flush: Flush,
 }
 
@@ -588,10 +583,6 @@ impl Drop for Unmapped {
                 flush.is_complete(),
                 "an unmapped sealed run awaits a flush its drop cannot wait for"
             );
-            return;
-        }
-        // A failed clear leaks the frames so no user bytes are disclosed.
-        if self.was_user && !self.frames.zero() {
             return;
         }
         // SAFETY: this is the one drop of `frames`, and nothing reads the field after it.

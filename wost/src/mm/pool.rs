@@ -273,8 +273,6 @@ impl Earmark {
             frame
         };
         self.left -= 1;
-        // SAFETY: the frame was just taken, so this is its only handle, and it is writable.
-        unsafe { zero_frame(frame) };
         Some(ArenaFrame {
             frame,
             arena: self.arena,

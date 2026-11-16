@@ -3,7 +3,7 @@ use core::ptr;
 
 use slab_layout::{CLASSES, Placement, SizeClass, place};
 
-use super::{PhysicalAddress, Segment, allocate_zeroed, direct_pointer};
+use super::{PhysicalAddress, Segment, allocate, direct_pointer};
 use crate::arch::current::interrupt;
 use crate::sync::{Leaf, SpinLock};
 
@@ -136,7 +136,7 @@ unsafe impl GlobalAlloc for KernelAllocator {
                 if !slot.is_null() {
                     return slot;
                 }
-                let Some(frame) = allocate_zeroed() else {
+                let Some(frame) = allocate() else {
                     return ptr::null_mut();
                 };
                 let Some(base) = direct_pointer(frame.address(), super::FRAME_SIZE) else {

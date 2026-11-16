@@ -11,7 +11,7 @@ pub(super) fn allocation_is_zeroed() -> bool {
     }
     drop(dirty);
 
-    let Some(clean) = mm::allocate_zeroed() else {
+    let Some(clean) = mm::allocate() else {
         return false;
     };
     let Some(other) = mm::allocate() else {
