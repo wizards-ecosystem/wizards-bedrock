@@ -232,6 +232,16 @@ pub(crate) fn current() -> &'static PerCpu {
     unsafe { &*block }
 }
 
+// The boot processor is index 0 before its area exists as after.
+pub fn processor() -> usize {
+    let this = entry().this.load(Ordering::Relaxed);
+    if (WINDOW..WINDOW + WINDOW_BYTES).contains(&this) {
+        ((this - WINDOW) / STRIDE) as usize
+    } else {
+        0
+    }
+}
+
 pub(super) fn on_entry_area() -> bool {
     let this = entry().this.load(Ordering::Relaxed);
     (WINDOW..WINDOW + WINDOW_BYTES).contains(&this)

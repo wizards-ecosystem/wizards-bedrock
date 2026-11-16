@@ -315,6 +315,12 @@ number and is added here, as one entry or as an amending id on the entry it chan
   rate. The PIT stays claimed as a watchdog only when it was the calibration source, and two
   conclusive disagreements revoke the public clock while scheduling continues on a private epoch
   (D-225, D-459).
+- **D-572** The processor that calibrated the clock owns it and its PIT watchdog. The conversion is
+  published with Release after the origin and read with Acquire, and revocation is one
+  compare-and-swap of a word that carries the last trusted reading, so no reader on any processor
+  sees a rate without its origin or a half-made revocation. A processor whose `IA32_TSC_ADJUST`
+  differs from the owner's, or whose counter steps backwards against the owner's under a shared
+  lock at bring-up, is not brought online (amends D-36).
 - **D-51** The context switch is a private naked function in `wost` that saves callee-saved
   registers and swaps stacks; the kernel names threads by slot and never holds a context value, so
   every stack pointer the switch loads came from `wost`.

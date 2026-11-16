@@ -2,7 +2,7 @@ use core::fmt;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use timebase::Timebase;
-use wost::arch::current::{apic, cpu, interrupt};
+use wost::arch::current::{apic, cpu, interrupt, percpu};
 use wost::sync::{Leaf, SpinLock};
 use x86_apic::timer::{self, Divide};
 use x86_pit::calibrate::WatchdogVerdict;
@@ -70,11 +70,24 @@ static NANOSECONDS_TO_APIC: AtomicU64 = AtomicU64::new(0);
 
 static TSC_HZ: AtomicU64 = AtomicU64::new(0);
 
-static REVOKED_AT_NS: AtomicU64 = AtomicU64::new(0);
+// Zero while the clock is trusted, else `REVOKED` with the last trusted reading: one CAS sets it.
+static REVOCATION: AtomicU64 = AtomicU64::new(0);
 
-static SCHEDULER_NOW_NS: AtomicU64 = AtomicU64::new(0);
+const REVOKED: u64 = 1 << 63;
 
-static REVOCATION: AtomicUsize = AtomicUsize::new(0);
+// Scheduler progress past the revocation, advanced by the owner's expiries.
+static SCHEDULER_ADVANCE_NS: AtomicU64 = AtomicU64::new(0);
+
+// The processor that calibrated the clock; only it arms and judges the PIT watchdog.
+static OWNER: AtomicUsize = AtomicUsize::new(0);
+
+// The owner's `IA32_TSC_ADJUST` at calibration, or `NO_ADJUST` where the register is absent.
+static OWNER_ADJUST: AtomicU64 = AtomicU64::new(NO_ADJUST);
+
+const NO_ADJUST: u64 = u64::MAX;
+
+// Each step reads the counter under the lock, so two processors' readings are totally ordered.
+static LAST_STEP: SpinLock<Leaf, u64> = SpinLock::new(0);
 
 static WATCHDOG_DISAGREEMENTS: AtomicUsize = AtomicUsize::new(0);
 
@@ -100,19 +113,9 @@ struct WatchdogArm {
     expected_pit_ticks: u16,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum Revocation {
-    None = 0,
-    WatchdogDisagreed = 1,
-}
-
-impl Revocation {
-    pub(crate) fn current() -> Self {
-        match REVOCATION.load(Ordering::Acquire) {
-            1 => Self::WatchdogDisagreed,
-            _ => Self::None,
-        }
-    }
+fn revoked_at() -> Option<u64> {
+    let word = REVOCATION.load(Ordering::Acquire);
+    (word & REVOKED != 0).then_some(word & !REVOKED)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -247,11 +250,16 @@ pub(crate) fn init() -> Result<Calibration, TimeError> {
         return Err(TimeError::LocalTimer(reason));
     }
 
+    OWNER.store(percpu::processor(), Ordering::Relaxed);
+    OWNER_ADJUST.store(
+        cpu::counter_adjust().unwrap_or(NO_ADJUST),
+        Ordering::Relaxed,
+    );
     TSC_HZ.store(calibration.tsc_hz, Ordering::Relaxed);
     NANOSECONDS_TO_APIC.store(countdown.to_bits(), Ordering::Relaxed);
-    // Origin before the conversion that makes it readable; `Relaxed` orders them on one CPU only.
     ORIGIN.store(cpu::timestamp(), Ordering::Relaxed);
-    TSC_TO_NANOSECONDS.store(elapsed.to_bits(), Ordering::Relaxed);
+    // The conversion publishes the origin with it: a reader that sees one sees both.
+    TSC_TO_NANOSECONDS.store(elapsed.to_bits(), Ordering::Release);
     // Only a PIT that measured the clock can watch it; one that refused would revoke it.
     let reference = match calibration.source {
         CalibrationSource::Pit => Some(pit),
@@ -481,37 +489,39 @@ fn measured(pit: &mut Pit) -> Result<Calibration, Refusal> {
 
 // Lock-free, so a trap handler may call it; a revoked clock freezes at its last trusted reading.
 pub(crate) fn now_ns() -> u64 {
-    if Revocation::current() != Revocation::None {
-        return REVOKED_AT_NS.load(Ordering::Acquire);
+    if let Some(at) = revoked_at() {
+        return at;
     }
     let current = raw_now_ns();
-    if Revocation::current() == Revocation::None {
-        current
-    } else {
-        REVOKED_AT_NS.load(Ordering::Acquire)
-    }
+    revoked_at().unwrap_or(current)
 }
 
 fn raw_now_ns() -> u64 {
-    let elapsed = Timebase::from_bits(TSC_TO_NANOSECONDS.load(Ordering::Relaxed));
+    let elapsed = published();
     nanoseconds_at(elapsed, cpu::timestamp())
+}
+
+// Acquire on the conversion orders the origin read after it, on any processor.
+fn published() -> Timebase {
+    Timebase::from_bits(TSC_TO_NANOSECONDS.load(Ordering::Acquire))
 }
 
 fn nanoseconds_at(elapsed: Timebase, timestamp: u64) -> u64 {
     elapsed.convert(timestamp.wrapping_sub(ORIGIN.load(Ordering::Relaxed)))
 }
 
-// Scheduler progress only: after revocation it advances per expiry while `now_ns` freezes.
+// Scheduler progress only: after revocation it advances per owner expiry while `now_ns` freezes.
 pub(crate) fn scheduler_now_ns() -> u64 {
-    if Revocation::current() != Revocation::None {
-        return SCHEDULER_NOW_NS.load(Ordering::Acquire);
+    let frozen = |at: u64| at.saturating_add(SCHEDULER_ADVANCE_NS.load(Ordering::Acquire));
+    if let Some(at) = revoked_at() {
+        return frozen(at);
     }
     let current = raw_now_ns();
-    if Revocation::current() == Revocation::None {
-        current
-    } else {
-        SCHEDULER_NOW_NS.load(Ordering::Acquire)
-    }
+    revoked_at().map_or(current, frozen)
+}
+
+fn owns_clock() -> bool {
+    percpu::processor() == OWNER.load(Ordering::Relaxed)
 }
 
 pub(crate) fn uptime_ms() -> u64 {
@@ -520,8 +530,7 @@ pub(crate) fn uptime_ms() -> u64 {
 
 // Anything that means to wait must ask first: with no clock a wait is a hang.
 pub(crate) fn is_calibrated() -> bool {
-    Timebase::from_bits(TSC_TO_NANOSECONDS.load(Ordering::Relaxed)).is_calibrated()
-        && Revocation::current() == Revocation::None
+    published().is_calibrated() && revoked_at().is_none()
 }
 
 pub(crate) fn arm_at(deadline_ns: u64) {
@@ -541,6 +550,10 @@ pub(crate) fn arm_at(deadline_ns: u64) {
         disarm();
         return;
     };
+    if !owns_clock() {
+        apic::arm_timer(timer::initial_count(countdown.convert(lead)));
+        return;
+    }
     let mut hardware = HARDWARE.lock_leaf();
     hardware.armed = hardware.pit.as_mut().map(|pit| {
         pit.start_measurement();
@@ -554,7 +567,9 @@ pub(crate) fn arm_at(deadline_ns: u64) {
 }
 
 pub(crate) fn disarm() {
-    HARDWARE.lock_leaf().armed = None;
+    if owns_clock() {
+        HARDWARE.lock_leaf().armed = None;
+    }
     stop_apic_timer();
 }
 
@@ -573,6 +588,9 @@ fn stop_apic_timer() {
 pub(crate) fn on_expiry() {
     #[cfg(feature = "selftest")]
     EXPIRIES.fetch_add(1, Ordering::Relaxed);
+    if !owns_clock() {
+        return;
+    }
     let apic_remaining = apic::timer_current_count();
     let tsc_end = cpu::timestamp();
     let (verdict, pit_ticks) = {
@@ -596,7 +614,7 @@ pub(crate) fn on_expiry() {
         };
         (verdict, pit_ticks)
     };
-    if Revocation::current() != Revocation::None {
+    if revoked_at().is_some() {
         advance_scheduler(pit_ticks);
         return;
     }
@@ -609,7 +627,7 @@ fn advance_scheduler(pit_ticks: u16) {
     };
     let elapsed = conversion.convert(u64::from(pit_ticks.max(1)));
     assert!(
-        SCHEDULER_NOW_NS
+        SCHEDULER_ADVANCE_NS
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |now| {
                 Some(now.saturating_add(elapsed))
             })
@@ -626,23 +644,18 @@ fn act_on_watchdog(verdict: WatchdogVerdict) {
         WatchdogVerdict::Disagreed => {
             let failures = WATCHDOG_DISAGREEMENTS.fetch_add(1, Ordering::AcqRel) + 1;
             if failures >= WATCHDOG_FAILURES {
-                revoke(Revocation::WatchdogDisagreed);
+                revoke();
             }
         }
     }
 }
 
-fn revoke(reason: Revocation) -> bool {
-    if reason == Revocation::None || Revocation::current() != Revocation::None {
-        return false;
-    }
-    let last_trusted = raw_now_ns();
-    REVOKED_AT_NS.store(last_trusted, Ordering::Release);
-    SCHEDULER_NOW_NS.store(last_trusted, Ordering::Release);
+fn revoke() -> bool {
+    let last_trusted = raw_now_ns() & !REVOKED;
     if REVOCATION
         .compare_exchange(
-            Revocation::None as usize,
-            reason as usize,
+            0,
+            REVOKED | last_trusted,
             Ordering::AcqRel,
             Ordering::Acquire,
         )
@@ -652,4 +665,21 @@ fn revoke(reason: Revocation) -> bool {
     }
     disarm();
     true
+}
+
+// A processor joins only if its counter shares the owner's offset and the step test saw no warp.
+pub(crate) fn counter_matches_owner() -> bool {
+    cpu::counter_adjust().unwrap_or(NO_ADJUST) == OWNER_ADJUST.load(Ordering::Relaxed)
+}
+
+// Run on the owner and the joining processor at once; false if either saw the counter go back.
+pub(crate) fn counter_steps_forward(rounds: u32) -> bool {
+    let mut forward = true;
+    for _ in 0..rounds {
+        let mut last = LAST_STEP.lock_leaf();
+        let now = cpu::timestamp();
+        forward &= now >= *last;
+        *last = now.max(*last);
+    }
+    forward
 }

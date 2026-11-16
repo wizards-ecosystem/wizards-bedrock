@@ -213,9 +213,8 @@ Phase 7:
 Phase 8:
 - Stack reuse is safe only on one processor: `exit` frees a slot still running on its stack
   (`kernel/src/thread.rs`). Phase 8 needs an on-CPU flag the next thread clears.
-- There is one run queue and one idle thread, and one PIT watchdog judges one APIC window for a
-  global clock published with relaxed stores (`kernel/src/thread.rs`, `kernel/src/time.rs`). Phase 8
-  needs per-CPU queues and timers, one clock owner and release and acquire publication.
+- There is one run queue and one idle thread (`kernel/src/thread.rs`). Phase 8 needs per-CPU queues
+  and timers.
 - There is no TLB shootdown: invalidation and "is this root loaded" ask only this CPU, and the
   user-copy page walk can go stale under a concurrent unmap (`wost/src/arch/x86_64/paging/walk.rs`,
   `wost/src/arch/x86_64/usercopy.rs`).

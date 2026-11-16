@@ -375,7 +375,16 @@ with nothing due takes no timer interrupts. Time is nanoseconds through one mult
 measures both against the 8254 PIT over 20 ms windows and accepts a rate when two windows agree to
 one part in 64; leaf 0x16 is never used as a rate. When the PIT was the source it also checks live
 APIC windows as a watchdog. Two consecutive conclusive disagreements revoke public time: `Uptime`
-stays at the last trusted value and scheduling continues on a private epoch. An NVMe or VT-d wait is
+stays at the last trusted value and scheduling continues on a private epoch.
+
+The processor that calibrated owns the clock: only its expiries arm and judge the PIT watchdog,
+and another processor's alarm programs only its own APIC timer. The origin is stored before the
+conversion, which is published with Release and read with Acquire, so a reader on any processor
+that sees a rate sees the origin taken with it. Revocation is one compare-and-swap of one word that
+holds the last trusted reading, and after it the scheduler epoch is that reading plus the owner's
+expiries since. A processor joins only if its `IA32_TSC_ADJUST` equals the owner's and a step test
+run on both at once, each reading the counter under one lock, never sees it go back
+(`time::counter_matches_owner`, `time::counter_steps_forward`). An NVMe or VT-d wait is
 bounded by the clock, through `timebase::PollLimit` for NVMe, with a spin count only when no clock
 exists.
 

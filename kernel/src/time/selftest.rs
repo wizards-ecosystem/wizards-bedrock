@@ -8,7 +8,7 @@ use super::{TSC_TO_NANOSECONDS, nanoseconds_at};
 pub(super) static EXPIRIES: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn adjacent_readings_for_test() -> (u64, u64) {
-    let elapsed = Timebase::from_bits(TSC_TO_NANOSECONDS.load(Ordering::Relaxed));
+    let elapsed = Timebase::from_bits(TSC_TO_NANOSECONDS.load(Ordering::Acquire));
     let first = cpu::timestamp();
     let second = cpu::timestamp();
     (

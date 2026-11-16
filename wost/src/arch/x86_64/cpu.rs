@@ -82,6 +82,14 @@ pub fn has_invariant_tsc() -> bool {
     max_leaf(0x8000_0000) >= 0x8000_0007 && cpuid(0x8000_0007, 0).edx & INVARIANT != 0
 }
 
+const TSC_ADJUST: u32 = 0x3B;
+
+pub fn counter_adjust() -> Option<u64> {
+    const TSC_ADJUST_LEAF_BIT: u32 = 1 << 1;
+
+    (max_leaf(0) >= 7 && cpuid(7, 0).ebx & TSC_ADJUST_LEAF_BIT != 0).then(|| msr::read(TSC_ADJUST))
+}
+
 pub fn frequency_hints() -> FrequencyHints {
     let maximum = max_leaf(0);
     let ratio = (maximum >= 0x15).then(|| {
