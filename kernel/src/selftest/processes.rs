@@ -60,8 +60,29 @@ pub(super) fn a_faulting_program_dies_alone(context: &mut ThreadContext) -> bool
 
 // `rax` still holds the argument only if the trapped `rdtsc` never retired.
 pub(super) fn a_direct_clock_read_retires_its_program(context: &mut ThreadContext) -> bool {
+    retired_by_protection_fault(
+        context,
+        user::spawn_reading_the_counter,
+        behaviour::READ_COUNTER,
+    )
+}
+
+// At IOPL 0 with no I/O bitmap the `in` faults; a hypervisor that served it would replace `rax`.
+pub(super) fn a_program_cannot_reach_the_hypervisor_backdoor(context: &mut ThreadContext) -> bool {
+    retired_by_protection_fault(
+        context,
+        user::spawn_probing_the_backdoor,
+        witness::BACKDOOR_MAGIC,
+    )
+}
+
+fn retired_by_protection_fault(
+    context: &mut ThreadContext,
+    spawn: fn(&mut ThreadContext) -> Result<user::Spawned, user::SpawnError>,
+    marker: u64,
+) -> bool {
     let before = trap::last_user_fault();
-    let Ok(spawned) = user::spawn_reading_the_counter(context) else {
+    let Ok(spawned) = spawn(context) else {
         return false;
     };
 
@@ -73,7 +94,7 @@ pub(super) fn a_direct_clock_read_retires_its_program(context: &mut ThreadContex
     }
     let fault = trap::last_user_fault();
 
-    let this_child = fault.slot == spawned.slot && fault.rax == behaviour::READ_COUNTER;
+    let this_child = fault.slot == spawned.slot && fault.rax == marker;
     let trapped = fault.vector == u64::from(exception::GENERAL_PROTECTION);
     let retired = last_rites_for(&spawned, 2_000).is_some();
 

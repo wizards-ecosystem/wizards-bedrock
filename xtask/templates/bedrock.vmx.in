@@ -8,6 +8,8 @@ firmware = "efi"
 vvtd.enable = "TRUE"
 # The CPU-resident hypervisor identity authenticates this DMA handoff table.
 acpi.addtable.filename = "{{DMA_HANDOFF_FILE}}"
+# The hypervisor backdoor answers only where IOPL is at least CPL, so ring 3 cannot reach it.
+monitor_control.restrict_backdoor = "TRUE"
 memsize = "512"
 numvcpus = "4"
 sata0.present = "TRUE"

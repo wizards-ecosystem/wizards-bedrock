@@ -638,7 +638,8 @@ Phase 7 user-space loader replaces it.
 behaviour: an `Echo` or a `Duplicate` through the ring, an unserved call, a fault, a jump into the
 kernel half, a direct counter read, an invalid return stack or flags, a read of the kernel-half
 address in the entry block's operand, `RingWait` idle and after a `Timer`, `ThreadBase` with a user
-base and with refused ones, or `syscall`, which faults with `#UD` because `EFER.SCE` is clear.
+base and with refused ones, `syscall`, which faults with `#UD` because `EFER.SCE` is clear, or
+VMware's backdoor `in` on port `0x5658`, which must fault with `#GP` and its magic still in `rax`.
 The selectors, the unserved call number `0x0BAD_0BAD` and the agreement status are
 `native_abi::witness`, named by the witness, the self-tests and the gate. Self-tests in
 `kernel/src/selftest/processes.rs` attribute each ending to its program. It checks
@@ -850,5 +851,9 @@ named after a mutation must violate its named invariant.
   trusted.
 - A device that ignores Bus Master Enable is unconstrained until the entry fence, and a device sees
   the physical addresses of its buffers, because the domain is an identity map.
+- A hypervisor serves no backdoor to ring 3. Ring 3 runs at IOPL 0 with no I/O bitmap, but VMware
+  answers its backdoor port from any privilege unless the machine sets
+  `monitor_control.restrict_backdoor = "TRUE"`, which the generated `.vmx` does. A self-test
+  requires that the probe faults.
 - A VMware boot is read by a person and checked by `qualify-vmware`. Its transcript carries no
   per-boot challenge, so a copied earlier transcript would pass.

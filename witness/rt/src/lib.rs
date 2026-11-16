@@ -13,7 +13,7 @@ use native_abi::ring::{
     COMPLETION_BYTES, COMPLETIONS, COMPLETIONS_AT, Completion, ENTRIES_AT, SUBMISSION_BYTES,
     SUBMISSIONS, Submission, header,
 };
-use native_abi::{Call, GATE_VECTOR, entry};
+use native_abi::{Call, GATE_VECTOR, entry, witness};
 
 const ALIGNMENT_CHECK: u64 = 1 << 18;
 
@@ -24,6 +24,10 @@ const NONCANONICAL: u64 = 0x0000_8000_0000_0000;
 const KERNEL_HALF: u64 = 0xffff_8000_0000_0000;
 
 const PANICKED: u64 = u64::MAX;
+
+const BACKDOOR_PORT: u16 = 0x5658;
+
+const BACKDOOR_GET_TIME: u64 = 0x17;
 
 // Only `Entry::read` makes one, so the ring address in it is the kernel's.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -224,6 +228,22 @@ pub fn read_counter_with(marker: u64) -> ! {
             "rdtsc",
             "ud2",
             in("rax") marker,
+            options(noreturn, nomem, nostack),
+        )
+    }
+}
+
+// A refused `in` faults with the magic still in `rax`; a served one overwrites it before `ud2`.
+pub fn probe_backdoor() -> ! {
+    // SAFETY: the `in` either faults, which ends the program, or writes only registers and returns
+    // into `ud2`, which ends it.
+    unsafe {
+        asm!(
+            "in eax, dx",
+            "ud2",
+            in("rax") witness::BACKDOOR_MAGIC,
+            in("rcx") BACKDOOR_GET_TIME,
+            in("dx") BACKDOOR_PORT,
             options(noreturn, nomem, nostack),
         )
     }

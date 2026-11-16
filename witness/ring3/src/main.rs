@@ -5,7 +5,7 @@
 
 use native_abi::ring::{Completion, Opcode, Submission, flags, status};
 use native_abi::witness::behaviour::{
-    DUPLICATE, ECHO, FAULT, INVALID_RETURN_FLAGS, INVALID_RETURN_STACK, MEMORY, PROBE,
+    BACKDOOR, DUPLICATE, ECHO, FAULT, INVALID_RETURN_FLAGS, INVALID_RETURN_STACK, MEMORY, PROBE,
     READ_COUNTER, READ_KERNEL, RING_WAIT, SYSCALL, THREAD_BASE,
 };
 use native_abi::witness::{self, AGREED};
@@ -79,6 +79,7 @@ fn run(entry: &Entry) -> Result<(), Failure> {
         THREAD_BASE => thread_base(),
         SYSCALL => witness_rt::execute_syscall(SYSCALL),
         MEMORY => memory(entry),
+        BACKDOOR => witness_rt::probe_backdoor(),
         _ => Err(Failure::UnknownBehaviour),
     }
 }

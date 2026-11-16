@@ -45,6 +45,9 @@ pub mod witness {
     // Far above any call the kernel serves, so adding a call cannot make this one real.
     pub const UNSERVED_CALL: u64 = 0x0BAD_0BAD;
 
+    // VMware's backdoor magic, which a refused probe leaves in `rax` for the fault record.
+    pub const BACKDOOR_MAGIC: u64 = 0x564D_5868;
+
     // Entry-block arguments that pick a behaviour.
     pub mod behaviour {
         pub const ECHO: u64 = 0;
@@ -59,6 +62,7 @@ pub mod witness {
         pub const THREAD_BASE: u64 = 11;
         pub const SYSCALL: u64 = 12;
         pub const MEMORY: u64 = 13;
+        pub const BACKDOOR: u64 = 14;
     }
 }
 

@@ -38,6 +38,10 @@ const CHECKS: &[Check] = &[
         processes::a_direct_clock_read_retires_its_program,
     ),
     (
+        "a program cannot reach the hypervisor backdoor",
+        processes::a_program_cannot_reach_the_hypervisor_backdoor,
+    ),
+    (
         "a noncanonical user return stack retires only its program",
         processes::a_noncanonical_user_return_stack_retires_only_its_program,
     ),
