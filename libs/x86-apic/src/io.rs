@@ -40,11 +40,7 @@ impl GsiRange {
         Some(Self { first, last })
     }
 
-    pub const fn first(self) -> u32 {
-        self.first
-    }
-
-    pub const fn contains(self, gsi: u32) -> bool {
+    const fn contains(self, gsi: u32) -> bool {
         self.first <= gsi && gsi <= self.last
     }
 

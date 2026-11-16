@@ -21,28 +21,6 @@ mod entry {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum RoutingError {
-    NotOurs(u32),
-    Registers(MmioError),
-    MaskRefused { low: u32, high: u32 },
-}
-
-impl fmt::Display for RoutingError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NotOurs(gsi) => write!(formatter, "gsi {gsi} is not this controller's"),
-            Self::Registers(error) => write!(formatter, "{error}"),
-            Self::MaskRefused { low, high } => write!(
-                formatter,
-                "redirection entry refused its masked state ({high:#x}:{low:#x})"
-            ),
-        }
-    }
-}
-
-impl core::error::Error for RoutingError {}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum MaskError {
     Registers(MmioError),
     Refused { low: u32, high: u32 },
@@ -51,15 +29,6 @@ enum MaskError {
 impl From<MmioError> for MaskError {
     fn from(error: MmioError) -> Self {
         Self::Registers(error)
-    }
-}
-
-impl From<MaskError> for RoutingError {
-    fn from(error: MaskError) -> Self {
-        match error {
-            MaskError::Registers(error) => Self::Registers(error),
-            MaskError::Refused { low, high } => Self::MaskRefused { low, high },
-        }
     }
 }
 
@@ -157,20 +126,8 @@ impl IoApic {
         Ok(io_apic)
     }
 
-    pub(crate) const fn handles(&self, gsi: u32) -> bool {
-        self.range.contains(gsi)
-    }
-
     pub(crate) const fn range(&self) -> GsiRange {
         self.range
-    }
-
-    pub(crate) fn mask_and_verify(&mut self, gsi: u32) -> Result<(), RoutingError> {
-        if !self.handles(gsi) {
-            return Err(RoutingError::NotOurs(gsi));
-        }
-        let line = gsi - self.range.first();
-        self.mask_line_and_verify(line).map_err(RoutingError::from)
     }
 
     fn mask_line_and_verify(&mut self, line: u32) -> Result<(), MaskError> {

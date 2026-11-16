@@ -175,13 +175,13 @@ extern "C" fn boot_continue(stack: usize) -> ! {
     };
 
     dev::attach_back_buffer();
-    let routing = routing::prepare_keyboard_routing(interrupts).into_masked();
+    let masked = routing::mask_external_controllers(interrupts);
 
     storage::survey_the_bus(dma_non_requester, dma_quiesced);
     storage::survey_the_filesystems();
-    interrupts::start(routing.as_ref());
+    interrupts::start(masked.as_ref());
     input::init();
-    routing::route_keyboard(routing);
+    routing::report_keyboard(masked);
     input::start_poller();
     queue::start_worker();
 
