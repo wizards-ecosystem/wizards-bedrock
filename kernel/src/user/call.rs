@@ -60,7 +60,7 @@ pub(crate) fn call(context: &mut thread::ThreadContext, registers: &mut UserRegi
             super::record_ending(Record::Exit(Exit {
                 status: registers.rdi(),
             }));
-            thread::retire()
+            thread::retire(context)
         }
         Call::RingEnter => registers.set_return(serve_ring(context)),
         Call::RingWait => registers.set_return(wait_ring(context)),
@@ -121,15 +121,18 @@ pub(super) fn cross(context: &mut thread::ThreadContext, _: usize) {
         .and_then(ProcessRef::hold)
         .map(|(_, process)| process.launch())
     else {
-        warn!("user: thread {} has no program to run", task::current());
-        thread::retire();
+        warn!(
+            "user: thread {:#x} has no program to run",
+            thread::current_id()
+        );
+        thread::retire(context);
     };
     let which = launch.which;
 
     // Checked, not assumed: a missed switch would put one program's argument on another's stack.
     if cpu::page_table_base() != launch.root {
         warn!("user {which}: running on tables that are not its own");
-        thread::retire();
+        thread::retire(context);
     }
 
     let top = launch.stack + STACK_BYTES - ENTRY_STACK_BYTES;
@@ -151,7 +154,7 @@ pub(super) fn cross(context: &mut thread::ThreadContext, _: usize) {
         || usercopy::copy_to_user(top + offset::TIME as u64, &launch.time.to_le_bytes()).is_err()
     {
         warn!("user {which}: could not write its entry block");
-        thread::retire();
+        thread::retire(context);
     }
 
     info!(
@@ -160,10 +163,10 @@ pub(super) fn cross(context: &mut thread::ThreadContext, _: usize) {
     );
     if !crate::interrupts::maskable_interrupts_are_ready() {
         warn!("user {which}: maskable interrupts are not admitted");
-        thread::retire();
+        thread::retire(context);
     }
     thread::refresh_clock();
     let refused = task::enter_user(context, launch.entry, top, launch.argument);
     warn!("user {which}: refused entry to ring 3: {refused}");
-    thread::retire();
+    thread::retire(context);
 }

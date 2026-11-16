@@ -37,6 +37,7 @@ timebase.workspace = true
 trap-cause.workspace = true
 ring-proto.workspace = true
 x86-paging.workspace = true
+wake-state.workspace = true
 world-tree.workspace = true
 wost = { path = "../wost" }
 x86-apic.workspace = true

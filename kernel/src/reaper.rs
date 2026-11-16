@@ -1,81 +1,88 @@
 use world_tree::Progress;
-use wost::sync::{Leaf, SpinLock};
+use wost::sync::SpinLock;
 
-use crate::process::{self, ProcessRef};
-use crate::thread::{self, ThreadContext};
+use crate::process;
+use crate::rank;
+use crate::thread::{self, ThreadContext, ThreadRef};
 
-// Every process here holds a thread slot until its last step, so the ring cannot overflow.
-const DEPTH: usize = thread::CAPACITY;
-
+// Exited threads, linked through their own records, so the list costs nothing to grow.
 #[derive(Debug)]
 struct Pending {
-    entries: [Option<ProcessRef>; DEPTH],
-    head: usize,
+    first: Option<ThreadRef>,
+    last: Option<ThreadRef>,
     len: usize,
     // Taken out for a round of steps and not yet done or returned to the tail.
     stepping: usize,
 }
 
-static PENDING: SpinLock<Leaf, Pending> = SpinLock::new(Pending {
-    entries: [None; DEPTH],
-    head: 0,
+static PENDING: SpinLock<rank::Reap, Pending> = SpinLock::new(Pending {
+    first: None,
+    last: None,
     len: 0,
     stepping: 0,
 });
 
 impl Pending {
-    fn push(&mut self, process: ProcessRef) {
-        assert!(
-            self.len < DEPTH,
-            "more processes await teardown than threads exist"
-        );
-        let at = (self.head + self.len) % DEPTH;
-        self.entries[at] = Some(process);
+    fn push(&mut self, exited: ThreadRef) {
+        thread::link_reap(exited, None);
+        match self.last {
+            Some(last) => thread::link_reap(last, Some(exited)),
+            None => self.first = Some(exited),
+        }
+        self.last = Some(exited);
         self.len += 1;
     }
 
-    fn pop(&mut self) -> Option<ProcessRef> {
-        if self.len == 0 {
-            return None;
+    fn pop(&mut self) -> Option<ThreadRef> {
+        let first = self.first?;
+        self.first = thread::reap_next(first);
+        if self.first.is_none() {
+            self.last = None;
         }
-        let taken = self.entries[self.head].take();
-        self.head = (self.head + 1) % DEPTH;
         self.len -= 1;
         self.stepping += 1;
-        taken
+        Some(first)
     }
 }
 
-// From the retiring thread, interrupts off: no allocation and no block, only a leaf.
-pub(crate) fn submit(process: ProcessRef) {
-    PENDING.lock_leaf().push(process);
+// From the exiting thread, interrupts off, before it leaves its processor.
+pub(crate) fn submit(context: &mut ThreadContext, exited: ThreadRef) {
+    PENDING.lock(context).push(exited);
     crate::queue::request_reap();
 }
 
-// One round in submission order: each process runs until a step must wait, then rejoins the tail.
+// One round in submission order: each thread is reaped or rejoins the tail for the next.
 pub(crate) fn run(context: &mut ThreadContext) -> bool {
-    let round = PENDING.lock_leaf().len;
+    let round = PENDING.lock(context).len;
     for _ in 0..round {
-        let Some(process) = PENDING.lock_leaf().pop() else {
+        let Some(exited) = PENDING.lock(context).pop() else {
             break;
         };
+        let done = reap(context, exited);
+        let mut pending = PENDING.lock(context);
+        pending.stepping -= 1;
+        if !done {
+            pending.push(exited);
+        }
+    }
+    PENDING.lock(context).len > 0
+}
+
+// Off its processor first, then its process's teardown, then its own record and stack.
+fn reap(context: &mut ThreadContext, exited: ThreadRef) -> bool {
+    if !thread::is_off_cpu(exited) {
+        return false;
+    }
+    if let Some(owner) = thread::owner(exited) {
         loop {
-            match process::step(process, context) {
-                Progress::Done if process.hold().is_none() => {
-                    PENDING.lock_leaf().stepping -= 1;
-                    break;
-                }
+            match process::step(owner, context) {
+                Progress::Done if owner.hold().is_none() => break,
                 Progress::Done => {}
-                Progress::Pending => {
-                    let mut pending = PENDING.lock_leaf();
-                    pending.stepping -= 1;
-                    pending.push(process);
-                    break;
-                }
+                Progress::Pending => return false,
             }
         }
     }
-    PENDING.lock_leaf().len > 0
+    thread::release(context, exited)
 }
 
 #[cfg(feature = "selftest")]

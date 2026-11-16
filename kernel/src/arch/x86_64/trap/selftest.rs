@@ -42,7 +42,7 @@ pub(crate) fn last_syscall() -> Record {
 // Atomics, not a lock, so a reader never waits on a writer that was preempted.
 pub(super) struct Recorder {
     count: AtomicUsize,
-    slot: AtomicUsize,
+    thread: AtomicU64,
     rax: AtomicU64,
     vector: AtomicU64,
     flags: AtomicU64,
@@ -53,7 +53,7 @@ impl Recorder {
     const fn new() -> Self {
         Self {
             count: AtomicUsize::new(0),
-            slot: AtomicUsize::new(0),
+            thread: AtomicU64::new(0),
             rax: AtomicU64::new(0),
             vector: AtomicU64::new(0),
             flags: AtomicU64::new(0),
@@ -63,8 +63,8 @@ impl Recorder {
 
     // The count is published last, so a reader that sees it sees the rest.
     pub(super) fn record(&self, registers: &UserRegisters<'_>) {
-        self.slot
-            .store(wost::arch::current::task::current(), Ordering::Relaxed);
+        self.thread
+            .store(crate::thread::current_id(), Ordering::Relaxed);
         self.rax.store(registers.rax(), Ordering::Relaxed);
         self.vector
             .store(u64::from(registers.vector()), Ordering::Relaxed);
@@ -77,7 +77,7 @@ impl Recorder {
     fn read(&self) -> Record {
         Record {
             count: self.count.load(Ordering::Acquire),
-            slot: self.slot.load(Ordering::Relaxed),
+            thread: self.thread.load(Ordering::Relaxed),
             rax: self.rax.load(Ordering::Relaxed),
             vector: self.vector.load(Ordering::Relaxed),
             flags: self.flags.load(Ordering::Relaxed),
@@ -89,7 +89,7 @@ impl Recorder {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct Record {
     pub(crate) count: usize,
-    pub(crate) slot: usize,
+    pub(crate) thread: u64,
     pub(crate) rax: u64,
     pub(crate) vector: u64,
     pub(crate) flags: u64,

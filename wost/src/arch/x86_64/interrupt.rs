@@ -18,13 +18,7 @@ use super::table::TablePointer;
 use crate::cell::HardwareCell;
 use crate::sync::{Once, ThreadContext};
 
-const CONTEXTS: usize = 32;
 const MAX_EXCLUSIONS: usize = usize::BITS as usize;
-
-const _: () = assert!(
-    CONTEXTS == super::task::MAX_TASKS,
-    "every task needs its own exclusion context"
-);
 
 #[derive(Debug)]
 pub(super) struct ExclusionLedger {
@@ -43,15 +37,16 @@ impl ExclusionLedger {
     }
 }
 
-static EXCLUSIONS: [ExclusionLedger; CONTEXTS] = [const { ExclusionLedger::new() }; CONTEXTS];
-
-// A processor running no thread keeps its exclusions in its own block.
+// A thread keeps its exclusions in its task record; a processor running none, in its own block.
 fn ledger(owner: usize) -> &'static ExclusionLedger {
     if owner == percpu::NO_THREAD {
-        &percpu::current().ledger
-    } else {
-        &EXCLUSIONS[owner]
+        return &percpu::current().ledger;
     }
+    assert!(
+        owner == active_context(),
+        "an interrupt exclusion is used off the task context that took it"
+    );
+    super::task::owner_ledger(owner)
 }
 
 pub(crate) const FLAGS_INTERRUPT: u64 = 1 << 9;
@@ -608,6 +603,7 @@ pub fn disable() -> InterruptState {
 }
 
 pub fn enable() {
+    assert!(!in_trap(), "a trap handler may not enable interrupts");
     assert_platform_enable_preconditions();
     assert_eq!(
         ledger(active_context()).depth.load(Ordering::Relaxed),
@@ -653,14 +649,13 @@ pub(super) fn switch_context(to: usize) {
         !are_enabled(),
         "a context switch requires interrupts disabled"
     );
-    assert!(to < CONTEXTS, "task context is outside the exclusion table");
     percpu::current()
         .exclusion_owner
         .store(to, Ordering::Relaxed);
 }
 
-pub(super) fn context_is_clear(slot: usize) -> bool {
-    slot < CONTEXTS && EXCLUSIONS[slot].depth.load(Ordering::Relaxed) == 0
+pub(super) fn context_is_clear(ledger: &ExclusionLedger) -> bool {
+    ledger.depth.load(Ordering::Relaxed) == 0
 }
 
 fn flags() -> u64 {

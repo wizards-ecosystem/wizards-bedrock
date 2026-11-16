@@ -5,9 +5,10 @@ use x86_paging::kpti::EnclavePermission;
 
 use super::cpu;
 use super::interrupt;
-use super::paging::{AddressSpaceRoots, KernelStackTop};
+use super::paging::AddressSpaceRoots;
 use super::percpu;
 use super::segment;
+use super::task::KernelStackTop;
 use crate::boot::{self, Section};
 
 pub(super) const IMAGE_MAPPINGS: usize = 4;

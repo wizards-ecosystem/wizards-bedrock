@@ -209,6 +209,26 @@ number and is added here, as one entry or as an amending id on the entry it chan
 - **D-578** The local APIC's lifecycle and EOI claim are per processor. A parked processor
   configures its own APIC with the boot vectors, timer masked, and halts with interrupts on, so it
   answers kernel-half shootdowns; it never loads a user root.
+- **D-580** A thread is an object of its world: its kernel record sits in the world's thread pool and
+  its switch record and kernel stack are nine of that world's arena frames, so the arena
+  reservation is the only thread limit (amends D-532). The stack window's page tables are built at
+  boot for as many slots as managed memory could fill, so mapping a stack takes no kernel frame.
+  The boot thread keeps a static record, because it runs before any arena.
+- **D-581** Every lock is dropped before a switch. An `on_cpu` flag in the switch record, set by
+  the claim that picks a thread and cleared by the next thread on that processor after the
+  switch, guards the record and the stack: no claim, binding, retirement or release succeeds while
+  it is set, and a waker places a claimed thread only once it is clear (amends D-532).
+- **D-582** Each thread has one `libs/wake-state` word. A waiter registers under its wait list's
+  lock and blocks under its run queue's lock only if no claim came first; a claim names the wait
+  sequence it unlinked. Wait lists, run queues, sleeper lists and the reaper's list link threads
+  by world, index and generation through their records.
+- **D-583** Run queues and idle threads are per processor. The scheduler's locks take their rank
+  with no token (`lock_ranked`), because trap code takes them and leaf locks nest under them; the
+  rank word orders them, and a switch or flush wait under any spin lock still panics.
+- **D-584** The reaper reclaims every exited thread, kernel or process, once its word is dead and
+  `on_cpu` is clear: it runs the process's teardown first, then frees the record and unmaps the
+  stack, and returns the stack's frames and window slot only when the unmap's shootdown has
+  completed, waiting outside the kernel's space lock.
 
 ## Memory
 

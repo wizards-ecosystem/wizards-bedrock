@@ -7,14 +7,15 @@ use wost::arch::current::cpu;
 use wost::arch::current::paging::UserMapError;
 use wost::arch::current::paging::{
     self, AddressSpace, BarMapFailure, BarUnmapOutcome, BootRegion, DeviceUnmapFailure, MapError,
-    MappedStack, ReclaimFailure, ReleasableDevice, RetiringDevice, StackArena,
+    MappedStack, ReclaimFailure, ReleasableDevice, RetiredTask, RetiringDevice,
 };
 use wost::arch::current::pci as platform_pci;
-use wost::arch::current::percpu;
+use wost::arch::current::{percpu, task};
 use wost::boot::{
     self, BootMemory, DirectMap, DirectMapCache, HandoffError, ImageAddress, MemoryKind, MemoryMap,
 };
 use wost::mm;
+use wost::mm::pool::ArenaFrame;
 use wost::sync::SpinLock;
 use x86_paging::{Flags, MappingRangeError};
 
@@ -260,6 +261,28 @@ pub(crate) fn start_processor(
     .ok_or(MapError::OutOfMemory)?
 }
 
+pub(crate) fn map_task(
+    context: &mut ThreadContext,
+    record: ArenaFrame,
+    stack: [ArenaFrame; task::STACK_FRAMES],
+    entry: task::Entry,
+    interruptible: bool,
+) -> Result<task::Task, MapError> {
+    with_active_space(context, |space| {
+        space.map_task(record, stack, entry, 0, interruptible)
+    })
+    .unwrap_or(Err(MapError::Inactive(cpu::page_table_base())))
+}
+
+// Only a dead or unstarted task off every processor comes here; the caller waits for the flush.
+pub(crate) fn unmap_task(context: &mut ThreadContext, task: task::Task) -> RetiredTask {
+    let retired = with_active_space(context, |space| match space.unmap_task(task) {
+        Ok(retired) => retired,
+        Err(_) => panic!("a dead thread's stack could not be unmapped"),
+    });
+    retired.unwrap_or_else(|| panic!("a thread's stack outlived the kernel's space"))
+}
+
 pub(crate) fn map_boot_stack(context: &mut ThreadContext) -> Option<MappedStack> {
     map_guarded_stack(context, thread::boot_stack_layout()?)
 }
@@ -326,7 +349,13 @@ pub(crate) fn init_paging(
             panic!("paging: {reason}");
         }
     };
-    let arena = map_thread_stacks(&mut space)?;
+    let task_slots = match space.prepare_task_window(thread::task_window()) {
+        Ok(slots) => Some(slots),
+        Err(reason) => {
+            warn!("threads: no stack window: {reason}; no threads");
+            None
+        }
+    };
 
     // Before the switch: the CR3 load is the flush the PAT rewrite needs.
     let write_combining = cpu::enable_write_combining();
@@ -334,7 +363,6 @@ pub(crate) fn init_paging(
     match paging::activate(&mut space) {
         Ok(()) => info!("paging: running on our own tables"),
         Err(reason) => {
-            space.unmap_stacks(arena);
             let cleanup = space.reclaim(None);
             assert!(
                 cleanup.is_ok(),
@@ -350,36 +378,12 @@ pub(crate) fn init_paging(
         Err(reason) => warn!("cpu: processor 0 has no entry area: {reason}; ring 3 stays closed"),
     }
 
-    let thread_slots = thread::start_threads(&mut space, arena);
+    task::init();
 
     *SPACE.lock_leaf() = Some(space);
 
-    report_guarded_paging(thread_slots, write_combining);
+    report_guarded_paging(task_slots, write_combining);
     interrupts
-}
-
-fn map_thread_stacks(space: &mut AddressSpace) -> Option<StackArena> {
-    let Some(layout) = thread::layout() else {
-        let cleanup = space.reclaim(None);
-        assert!(
-            cleanup.is_ok(),
-            "an uninstalled address space must remain reclaimable"
-        );
-        warn!("threads: stack layout is invalid; staying on the bootloader's tables");
-        return None;
-    };
-    match space.map_stacks(&layout) {
-        Ok(arena) => Some(arena),
-        Err(reason) => {
-            let cleanup = space.reclaim(None);
-            assert!(
-                cleanup.is_ok(),
-                "a failed stack transaction must leave no owned mapping"
-            );
-            warn!("threads: stacks not mapped: {reason}; no threads");
-            None
-        }
-    }
 }
 
 fn report_guarded_paging(
@@ -387,7 +391,7 @@ fn report_guarded_paging(
     write_combining: Option<cpu::WriteCombining>,
 ) {
     if let Some(slots) = thread_slots {
-        info!("threads: {slots} guarded stacks ready");
+        info!("threads: {slots} guarded stack slots in the window");
     }
 
     if write_combining.is_some_and(cpu::WriteCombining::commit) {

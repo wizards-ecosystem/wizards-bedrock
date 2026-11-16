@@ -11,6 +11,7 @@ use wost::sync::{Leaf, SpinLock};
 use crate::arena::Local;
 use crate::handle::TableRef;
 use crate::queue::QueueRef;
+use crate::thread::ThreadRef;
 use crate::user::Launch;
 use crate::world::{World, registry};
 
@@ -65,7 +66,7 @@ struct Life {
     step: ProcessStep,
     // Set by the thread just before it retires; the teardown turns it into the status.
     ending: Option<Record>,
-    slot: Option<usize>,
+    thread: Option<ThreadRef>,
     // Taken while the table and ring still live; observable only once the record is gone.
     #[cfg(feature = "selftest")]
     rites: Option<Rites>,
@@ -90,7 +91,7 @@ impl Process {
                 state: ProcessState::Running,
                 step: ProcessStep::Exit,
                 ending: None,
-                slot: None,
+                thread: None,
                 #[cfg(feature = "selftest")]
                 rites: None,
             }),
@@ -107,8 +108,8 @@ impl Process {
     }
 
     // The thread is published and its space bound: from here the teardown owns both.
-    pub(crate) fn commit(&self, slot: usize, space: Space) {
-        self.life.lock_leaf().slot = Some(slot);
+    pub(crate) fn commit(&self, thread: ThreadRef, space: Space) {
+        self.life.lock_leaf().thread = Some(thread);
         let mut held = self.space.lock_leaf();
         assert!(held.is_none(), "a process was given a second address space");
         *held = Some(space);
@@ -154,6 +155,10 @@ impl ProcessRef {
             world: world_ref,
             process: world.processes.insert(earmark, process),
         }
+    }
+
+    pub(crate) const fn world(self) -> NodeRef {
+        self.world
     }
 
     pub(crate) fn hold(self) -> Option<(Hold<World>, Hold<Process>)> {

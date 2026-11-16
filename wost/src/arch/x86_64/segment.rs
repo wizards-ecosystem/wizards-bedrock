@@ -6,9 +6,9 @@ use x86_tables::gdt::{Descriptor, SystemDescriptor};
 use x86_tables::tss::TaskState;
 
 use super::kpti::TransitionStackTop;
-use super::paging::KernelStackTop;
 use super::percpu;
 use super::table::TablePointer;
+use super::task::KernelStackTop;
 use crate::cell::HardwareCell;
 use crate::sync::Once;
 

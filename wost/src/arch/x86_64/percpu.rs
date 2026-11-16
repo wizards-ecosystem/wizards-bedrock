@@ -143,11 +143,16 @@ pub(crate) struct PerCpu {
     pub(super) trap_depth: AtomicUsize,
     pub(super) live_frame: AtomicPtr<RawTrapFrame>,
     pub(super) current_task: AtomicUsize,
+    // The task this processor just left, let go by the next one once its switch completes.
+    pub(super) previous_task: AtomicUsize,
+    // Where a threadless context's registers go when it enters its first task.
+    pub(super) abandoned: AtomicU64,
+    pub(super) threadless_ranks: AtomicU64,
     pub(super) exclusion_owner: AtomicUsize,
 }
 
 impl PerCpu {
-    const fn new(task: usize, apic_id: u32, index: usize) -> Self {
+    const fn new(apic_id: u32, index: usize) -> Self {
         Self {
             ledger: ExclusionLedger::new(),
             apic_state: AtomicU8::new(apic::COLD),
@@ -162,8 +167,11 @@ impl PerCpu {
             last_user_root: AtomicU64::new(UNKNOWN_ROOT),
             trap_depth: AtomicUsize::new(0),
             live_frame: AtomicPtr::new(core::ptr::null_mut()),
-            current_task: AtomicUsize::new(task),
-            exclusion_owner: AtomicUsize::new(task),
+            current_task: AtomicUsize::new(NO_THREAD),
+            previous_task: AtomicUsize::new(NO_THREAD),
+            abandoned: AtomicU64::new(0),
+            threadless_ranks: AtomicU64::new(0),
+            exclusion_owner: AtomicUsize::new(NO_THREAD),
         }
     }
 
@@ -172,8 +180,7 @@ impl PerCpu {
         self.last_user_root.swap(root.get(), Ordering::Relaxed) != root.get()
     }
 
-    // A released root's frame can return as another space's root, which must still barrier.
-    pub(crate) fn forget_user_root(&self, root: PhysicalAddress) {
+    fn forget_user_root(&self, root: PhysicalAddress) {
         let _ = self.last_user_root.compare_exchange(
             root.get(),
             UNKNOWN_ROOT,
@@ -206,7 +213,7 @@ impl PerCpu {
 }
 
 // The boot processor runs before memory exists, so its block and first entry page are static.
-static BOOT_BLOCK: PerCpu = PerCpu::new(task::BOOT, 0, 0);
+static BOOT_BLOCK: PerCpu = PerCpu::new(0, 0);
 
 // Every online processor's block, newest first; a block joins once and never leaves.
 static ONLINE: AtomicPtr<PerCpu> = AtomicPtr::new(core::ptr::null_mut());
@@ -236,6 +243,12 @@ pub(crate) fn enter_bootstrap() {
     BOOT_ENTRY
         .tables
         .store(segment::boot_tables(), Ordering::Relaxed);
+    BOOT_BLOCK
+        .current_task
+        .store(task::boot_record(), Ordering::Release);
+    BOOT_BLOCK
+        .exclusion_owner
+        .store(task::boot_record(), Ordering::Relaxed);
     load_base(BOOT_ENTRY.this.load(Ordering::Relaxed));
 }
 
@@ -421,6 +434,14 @@ fn online() -> impl Iterator<Item = &'static PerCpu> + Clone {
     })
 }
 
+// A released root's frame can return as another space's root, which must still barrier.
+pub(super) fn forget_user_root(root: PhysicalAddress) {
+    current().forget_user_root(root);
+    for block in online() {
+        block.forget_user_root(root);
+    }
+}
+
 pub fn online_count() -> usize {
     online().count()
 }
@@ -497,8 +518,7 @@ pub fn start_processor(
     if index >= u64::BITS as usize {
         return Err(MapError::Conflict(area_base(index)));
     }
-    let block: &'static PerCpu =
-        Box::leak(Box::new(PerCpu::new(NO_THREAD, waiting.apic_id(), index)));
+    let block: &'static PerCpu = Box::leak(Box::new(PerCpu::new(waiting.apic_id(), index)));
     let area = map_area(space, index, block)?;
     let stack = stack.retain()?;
     let launch = Box::leak(Box::new(Launch {

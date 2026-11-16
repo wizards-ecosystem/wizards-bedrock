@@ -21,15 +21,14 @@ pub use error::{ActivateError, MapError, ReclaimError, ReclaimFailure, UserMapEr
 pub use flush::Flush;
 pub(crate) use flush::answer as answer_shootdown;
 pub use map::{BootRegion, Unmapped};
-pub(crate) use stack::{KernelStackTop, TaskStackPin};
-pub use stack::{MappedStack, PinnedStack, StackArena};
+pub(crate) use stack::TaskStack;
+pub use stack::{MappedStack, PinnedStack, RetiredTask};
 pub use user::{FrameRef, UserAccess};
 pub use walk::stale_kernel_write;
 pub use walk::translate;
 
 use alloc::vec::Vec;
 
-use stack_layout::StackLayout;
 use x86_paging::kpti::shared_user_link_matches;
 use x86_paging::{ENTRIES, Flags};
 
@@ -316,12 +315,11 @@ const MAX_PERMANENT_STACKS: usize = 16;
 static PERMANENT_STACKS: SpinLock<Leaf, [Option<StackIdentity>; MAX_PERMANENT_STACKS]> =
     SpinLock::new([None; MAX_PERMANENT_STACKS]);
 
-static TASK_STACK_PIN: SpinLock<Leaf, Option<(AddressSpaceRoots, StackLayout)>> =
-    SpinLock::new(None);
+static TASK_WINDOW: SpinLock<Leaf, Option<stack::Window>> = SpinLock::new(None);
 
 pub(crate) fn force_unlock(panic: &crate::panic::PanicToken) {
     PERMANENT_STACKS.force_unlock(panic);
-    TASK_STACK_PIN.force_unlock(panic);
+    TASK_WINDOW.force_unlock(panic);
 }
 
 // Not `Clone`: two slots naming one space would let one thread's exit take its tables.

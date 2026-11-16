@@ -68,10 +68,10 @@ fn exit(world: &World, process: &Process) -> Progress {
     Progress::Done
 }
 
-// P1: the thread has left its stack for good.
+// P1: the thread is dead and off its processor, so nothing runs on its space or stack.
 fn quiesce(process: &Process) -> Progress {
-    let slot = process.life.lock_leaf().slot;
-    if slot.is_none_or(thread::is_retired_off_cpu) {
+    let thread = process.life.lock_leaf().thread;
+    if thread.is_none_or(thread::is_off_cpu) {
         Progress::Done
     } else {
         Progress::Pending
@@ -183,18 +183,17 @@ fn reclaim(
     Ok(())
 }
 
-// P5: the thread's slot returns, and the ending becomes a boot record, once.
+// P5: the process is released and its ending becomes a boot record, once; the reaper then frees
+// the thread.
 fn release(process: &Process) -> Progress {
-    let (slot, ending) = {
+    let ending = {
         let mut life = process.life.lock_leaf();
         if let Ok(released) = life.state.release() {
             life.state = released;
         }
-        (life.slot.take(), life.ending)
+        life.thread = None;
+        life.ending
     };
-    if let Some(slot) = slot {
-        thread::release_retired(slot);
-    }
     if let Some(ending) = ending {
         info!("{ending}");
     }

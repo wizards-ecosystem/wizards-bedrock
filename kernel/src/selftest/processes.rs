@@ -41,14 +41,14 @@ pub(super) fn a_faulting_program_dies_alone(context: &mut ThreadContext) -> bool
 
     if !runs_until(2000, || {
         let fault = trap::last_user_fault();
-        fault.count > before.count && fault.slot == spawned.slot
+        fault.count > before.count && fault.thread == spawned.thread
     }) {
         return false;
     }
     let fault = trap::last_user_fault();
 
     // `rax` still holds the FAULT argument (1), which survives the dispatch to the `ud2`.
-    let this_child = fault.slot == spawned.slot && fault.rax == behaviour::FAULT;
+    let this_child = fault.thread == spawned.thread && fault.rax == behaviour::FAULT;
     let it_was_the_ud2 = fault.vector == u64::from(exception::INVALID_OPCODE);
     let in_user_memory = fault.stack_pointer < usercopy::USER_END;
     let retired = last_rites_for(&spawned, 2_000).is_some();
@@ -87,13 +87,13 @@ fn retired_by_protection_fault(
 
     if !runs_until(2000, || {
         let fault = trap::last_user_fault();
-        fault.count > before.count && fault.slot == spawned.slot
+        fault.count > before.count && fault.thread == spawned.thread
     }) {
         return false;
     }
     let fault = trap::last_user_fault();
 
-    let this_child = fault.slot == spawned.slot && fault.rax == marker;
+    let this_child = fault.thread == spawned.thread && fault.rax == marker;
     let trapped = fault.vector == u64::from(exception::GENERAL_PROTECTION);
     let retired = last_rites_for(&spawned, 2_000).is_some();
 
@@ -122,7 +122,8 @@ pub(super) fn a_noncanonical_user_return_stack_retires_only_its_program(
     };
     let successor_retired = last_rites_for(&successor, 2_000).is_some();
     let successor_call = trap::last_syscall();
-    let successor_ran = successor_call.count > calls.count && successor_call.slot == successor.slot;
+    let successor_ran =
+        successor_call.count > calls.count && successor_call.thread == successor.thread;
 
     stack_refused
         && flags_refused
@@ -142,7 +143,7 @@ fn invalid_return_is_refused(
     };
     if !runs_until(2_000, || {
         let refused = trap::last_invalid_user_return();
-        refused.count > before.count && refused.slot == spawned.slot
+        refused.count > before.count && refused.thread == spawned.thread
     }) {
         return false;
     }
@@ -159,7 +160,7 @@ pub(super) fn a_program_cannot_aim_at_the_copy_window(context: &mut ThreadContex
     };
     if !runs_until(2000, || {
         let fault = trap::last_user_fault();
-        fault.count > before.count && fault.slot == spawned.slot
+        fault.count > before.count && fault.thread == spawned.thread
     }) {
         return false;
     }
@@ -167,7 +168,7 @@ pub(super) fn a_program_cannot_aim_at_the_copy_window(context: &mut ThreadContex
     let fault = trap::last_user_fault();
     let (start, end) = usercopy::fault_window();
 
-    let this_child = fault.slot == spawned.slot && fault.rax == start;
+    let this_child = fault.thread == spawned.thread && fault.rax == start;
     let page_fault = fault.vector == u64::from(exception::PAGE_FAULT);
     let retired = last_rites_for(&spawned, 2_000).is_some();
     let not_recovered = trap::user_copy_recoveries() == recoveries_before;
@@ -221,7 +222,7 @@ pub(super) fn a_syscall_instruction_never_enters_the_kernel(context: &mut Thread
 
     ended
         && fault.count > faults_before
-        && fault.slot == spawned.slot
+        && fault.thread == spawned.thread
         && fault.rax == behaviour::SYSCALL
         && trap::last_syscall().count == calls_before
 }
@@ -340,9 +341,9 @@ pub(super) fn a_dead_program_gives_its_memory_back(context: &mut ThreadContext) 
         return false;
     }
     let before = AllocatorSnapshot::capture();
-    let free_slots = thread::free_slots();
+    let live = thread::live();
     STOP_SPINNING.store(0, Ordering::Release);
-    if thread::spawn("reap-pressure", light_spinner, 0).is_err() {
+    if thread::spawn(context, "reap-pressure", light_spinner, 0).is_err() {
         return false;
     }
 
@@ -359,7 +360,7 @@ pub(super) fn a_dead_program_gives_its_memory_back(context: &mut ThreadContext) 
         ran += 1;
     }
     STOP_SPINNING.store(1, Ordering::Release);
-    let settled = yields_until(context, || thread::free_slots() == free_slots);
+    let settled = yields_until(context, || thread::live() == live);
 
     ran == 40 && settled && AllocatorSnapshot::capture().has_same_ownership(&before)
 }
@@ -395,7 +396,7 @@ pub(super) fn a_program_drives_its_own_ring(context: &mut ThreadContext) -> bool
     };
     let call = trap::last_syscall();
     let crossed = call.count > calls_before
-        && call.slot == echoing.slot
+        && call.thread == echoing.thread
         && call.stack_pointer < usercopy::USER_END;
     // The witness sets `AC` before its calls; the handler must still have run with SMAP on.
     let smap_held = call.flags & ACCESS_CHECK != 0 && trap::smap_survived_the_last_syscall();

@@ -72,9 +72,10 @@ const CHECKS: &[Check] = &[
     ("two spaces map one address to different memory", |_| {
         address_spaces::two_spaces_map_one_address_to_different_memory()
     }),
-    ("every enabled state component survives a switch", |_| {
-        threads::every_enabled_state_component_survives_a_switch()
-    }),
+    (
+        "every enabled state component survives a switch",
+        threads::every_enabled_state_component_survives_a_switch,
+    ),
     (
         "a word that does not fit is refused rather than truncated",
         rings::a_word_that_does_not_fit_is_refused_rather_than_truncated,
@@ -110,9 +111,10 @@ const CHECKS: &[Check] = &[
         "the loader refuses what it may not map",
         processes::the_loader_refuses_what_it_may_not_map,
     ),
-    ("thread local storage follows the thread", |_| {
-        threads::thread_local_storage_follows_the_thread()
-    }),
+    (
+        "thread local storage follows the thread",
+        threads::thread_local_storage_follows_the_thread,
+    ),
     ("a bound space is not reclaimed", |_| {
         address_spaces::a_bound_space_is_not_reclaimed()
     }),
@@ -152,8 +154,8 @@ const CHECKS: &[Check] = &[
         threads::registers_survive_a_switch,
     ),
     (
-        "an exited slot is reused",
-        threads::an_exited_slot_is_reused,
+        "an exited thread's extended state never reaches its successor",
+        threads::an_exited_threads_state_never_reaches_its_successor,
     ),
     (
         "a spinning thread cannot starve another",

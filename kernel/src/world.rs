@@ -16,7 +16,7 @@ use crate::memory::{CodeQuota, MemoryObject};
 use crate::object::Channel;
 use crate::process::{Observation, Process};
 use crate::queue::Queue;
-use crate::thread::ThreadContext;
+use crate::thread::{Thread, ThreadContext};
 use crate::{info, random, warn};
 
 // The kernel keeps 1/32 of each colour for its heap, page tables and threads.
@@ -45,6 +45,7 @@ pub(crate) struct World {
     pub(crate) queues: QueuePool,
     pub(crate) channels: ChannelPool,
     pub(crate) processes: ProcessPool,
+    pub(crate) threads: ThreadPool,
     pub(crate) observations: ObservationPool,
     pub(crate) memories: MemoryPool,
 }
@@ -53,6 +54,7 @@ pub(crate) type TablePool = Pool<Table, 16>;
 pub(crate) type QueuePool = Pool<Queue, 2>;
 pub(crate) type ChannelPool = Pool<Channel, 64>;
 pub(crate) type ProcessPool = Pool<Process, 4>;
+pub(crate) type ThreadPool = Pool<Thread, 4>;
 pub(crate) type ObservationPool = Pool<Observation, 16>;
 pub(crate) type MemoryPool = Pool<MemoryObject, 16>;
 
@@ -69,6 +71,7 @@ impl World {
             queues: Pool::new(),
             channels: Pool::new(),
             processes: Pool::new(),
+            threads: Pool::new(),
             observations: Pool::new(),
             memories: Pool::new(),
         }
