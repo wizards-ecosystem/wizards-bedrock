@@ -1,4 +1,10 @@
-use super::*;
+use core::ptr::NonNull;
+
+use x86_paging::{CanonicalAddress, ENTRIES, Entry, Flags, Level, PAGE_SIZE};
+
+use super::super::{cpu, interrupt};
+use super::{AddressSpaceRoots, MapError, is_active};
+use crate::mm::{self, PhysicalAddress};
 
 #[derive(PartialEq, Eq, Debug)]
 pub(super) struct EntrySlot {
@@ -7,14 +13,14 @@ pub(super) struct EntrySlot {
 
 impl EntrySlot {
     pub(super) fn read(&self) -> Entry {
-        // SAFETY: the private callers supply a live table frame; construction
-        // proves this aligned pointer names one complete entry inside it.
+        // SAFETY: only tables this crate built, or the bootloader's while its root is loaded, are
+        // walked, and construction proves this aligned pointer names one entry of that frame.
         unsafe { self.pointer.as_ptr().read_volatile() }
     }
 
     pub(super) fn write(&self, entry: Entry) {
-        // SAFETY: private callers supply a live table frame and own the protocol excluding other
-        // writers; construction proves this aligned pointer names one complete entry inside it.
+        // SAFETY: as `read`, and every writer holds the owning `AddressSpace` mutably or the frame
+        // before any root links it, so no other write races this one.
         unsafe { self.pointer.as_ptr().write_volatile(entry) };
     }
 }
@@ -38,7 +44,7 @@ pub(super) fn slot_in(
         if level == target {
             return Ok(slot);
         }
-        let entry = EntrySlot::read(&slot);
+        let entry = slot.read();
         if !entry.is_present() {
             return Err(MapError::NotMapped(address));
         }
@@ -52,17 +58,19 @@ pub(super) fn slot_in(
 
 pub(super) fn leaf_in(root: PhysicalAddress, address: u64) -> Result<EntrySlot, MapError> {
     let slot = slot_in(root, address, Level::Pt)?;
-    EntrySlot::read(&slot)
+    slot.read()
         .is_present()
         .then_some(slot)
         .ok_or(MapError::NotMapped(address))
 }
 
 pub(super) fn clear_mapping_slot(slot: EntrySlot, address: u64, level: Level) {
-    let address = canonical_mapping_address(address);
+    let Some(address) = CanonicalAddress::new(address) else {
+        panic!("a validated mapping produced a noncanonical invalidation address");
+    };
     let disabled = interrupt::disable();
     let current_slot = slot_in(cpu::page_table_base(), address.get(), level).ok();
-    EntrySlot::write(&slot, Entry::ABSENT);
+    slot.write(Entry::ABSENT);
     if current_slot == Some(slot) {
         cpu::invalidate_page(address);
     }
@@ -77,14 +85,6 @@ pub(super) fn current_mapping_root(recorded: AddressSpaceRoots) -> Option<Physic
     recorded.contains(current).then_some(current)
 }
 
-pub(super) fn canonical_mapping_address(address: u64) -> CanonicalAddress {
-    let Some(address) = CanonicalAddress::new(address) else {
-        panic!("a validated mapping produced a noncanonical invalidation address");
-    };
-    address
-}
-
-/// First kernel-image page redirected or assigned the wrong protection class.
 pub(super) fn kernel_image_gap(
     candidate: PhysicalAddress,
     current: PhysicalAddress,
@@ -139,13 +139,21 @@ pub(super) fn kernel_image_gap(
     None
 }
 
-fn image_sections() -> Option<[(crate::boot::Section, bool, bool); 9]> {
+const IMAGE_SECTIONS: usize = 3 + super::kpti::MAPPINGS;
+
+const SIGN_EXTENSION: u64 = 0xffff_0000_0000_0000;
+
+fn image_sections() -> Option<[(crate::boot::Section, bool, bool); IMAGE_SECTIONS]> {
     let sections = crate::boot::sections();
     let [text, rodata, tables, route, transition_stack, ist_stack] =
         super::kpti::entry_enclave()?.mappings();
     let described = [text, rodata, tables, route, transition_stack, ist_stack].map(|mapping| {
-        let (writable, executable) = enclave_access_policy(mapping.full_access());
-        (mapping.section(), writable, executable)
+        let flags = mapping.full_access().flags();
+        (
+            mapping.section(),
+            flags.contains(Flags::WRITABLE),
+            !flags.contains(Flags::NO_EXECUTE),
+        )
     });
     Some([
         (sections.text, false, true),
@@ -160,7 +168,7 @@ fn image_sections() -> Option<[(crate::boot::Section, bool, bool); 9]> {
     ])
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct ImagePhysicalExtent {
     start: u64,
     end: u64,
@@ -168,13 +176,15 @@ struct ImagePhysicalExtent {
     executable: bool,
 }
 
-fn image_physical_extents(current_root: PhysicalAddress) -> Option<[ImagePhysicalExtent; 9]> {
+fn image_physical_extents(
+    current_root: PhysicalAddress,
+) -> Option<[ImagePhysicalExtent; IMAGE_SECTIONS]> {
     let mut extents = [ImagePhysicalExtent {
         start: 0,
         end: 0,
         writable: false,
         executable: false,
-    }; 9];
+    }; IMAGE_SECTIONS];
     for (slot, (section, writable, executable)) in extents.iter_mut().zip(image_sections()?) {
         let start = translate_in(current_root, section.start)?.0.get();
         let end = start.checked_add(section.mapped_len())?;
@@ -196,8 +206,6 @@ fn image_physical_extents(current_root: PhysicalAddress) -> Option<[ImagePhysica
     Some(extents)
 }
 
-/// The first direct-map address `root` gets wrong, refused while the switch can still fail,
-/// because every frame access after it is raw arithmetic against this mapping.
 pub(super) fn direct_map_gap(root: PhysicalAddress, current_root: PhysicalAddress) -> Option<u64> {
     let Some(direct) = mm::direct_map() else {
         return Some(0);
@@ -267,7 +275,6 @@ pub(super) fn direct_map_gap(root: PhysicalAddress, current_root: PhysicalAddres
     None
 }
 
-// The first framebuffer or firmware-table byte the handoff exposed that `root` does not direct-map.
 pub(super) fn handed_out_gap(root: PhysicalAddress) -> Option<u64> {
     let Some(direct) = mm::direct_map() else {
         return Some(0);
@@ -314,7 +321,6 @@ fn direct_extent_gap(root: PhysicalAddress, offset: u64, physical: u64, len: u64
     None
 }
 
-/// What the table in `CR3`, never a remembered root, maps `virtual_address` to.
 pub fn translate(virtual_address: u64) -> Option<(PhysicalAddress, Flags)> {
     translate_in(cpu::page_table_base(), virtual_address)
 }
@@ -326,7 +332,6 @@ pub(super) fn translate_in(
     walk(root, virtual_address).map(|(physical, flags, _)| (physical, flags))
 }
 
-/// As [`translate_in`], also naming the leaf's span so a sweep can step by whole entries.
 pub(super) fn walk(
     root: PhysicalAddress,
     virtual_address: u64,
@@ -335,13 +340,12 @@ pub(super) fn walk(
         return None;
     }
 
-    // The fold is host-tested in `x86-paging`; no safe parent is narrower than its child.
     let mut walked = Flags::EVERYTHING_ALLOWED;
 
     let mut table = root;
     for level in Level::WALK {
         let slot = entry_slot(table, level.index(virtual_address)).ok()?;
-        let entry = EntrySlot::read(&slot);
+        let entry = slot.read();
         if !entry.is_present() {
             return None;
         }
@@ -372,20 +376,19 @@ pub(super) fn visit_present_leaves(
     mut visit: impl FnMut(u64, PhysicalAddress, Flags, u64) -> Result<(), MapError>,
 ) -> Result<(), MapError> {
     for pml4 in first_pml4..end_pml4 {
-        let pml4_entry = EntrySlot::read(&entry_slot(root, pml4)?);
+        let pml4_entry = entry_slot(root, pml4)?.read();
         if !pml4_entry.is_present() {
             continue;
         }
         let mut pml4_address = (pml4 as u64) << 39;
         if pml4 >= ENTRIES / 2 {
-            pml4_address |= 0xffff_0000_0000_0000;
+            pml4_address |= SIGN_EXTENSION;
         }
         if pml4_entry.is_huge() {
             return Err(MapError::InvalidEntryEnclave(pml4_address));
         }
         for pdpt in 0..ENTRIES {
-            let pdpt_entry =
-                EntrySlot::read(&entry_slot(PhysicalAddress::from_entry(pml4_entry), pdpt)?);
+            let pdpt_entry = entry_slot(PhysicalAddress::from_entry(pml4_entry), pdpt)?.read();
             if !pdpt_entry.is_present() {
                 continue;
             }
@@ -398,8 +401,7 @@ pub(super) fn visit_present_leaves(
                 continue;
             }
             for pd in 0..ENTRIES {
-                let pd_entry =
-                    EntrySlot::read(&entry_slot(PhysicalAddress::from_entry(pdpt_entry), pd)?);
+                let pd_entry = entry_slot(PhysicalAddress::from_entry(pdpt_entry), pd)?.read();
                 if !pd_entry.is_present() {
                     continue;
                 }
@@ -412,8 +414,7 @@ pub(super) fn visit_present_leaves(
                     continue;
                 }
                 for pt in 0..ENTRIES {
-                    let entry =
-                        EntrySlot::read(&entry_slot(PhysicalAddress::from_entry(pd_entry), pt)?);
+                    let entry = entry_slot(PhysicalAddress::from_entry(pd_entry), pt)?.read();
                     if !entry.is_present() {
                         continue;
                     }

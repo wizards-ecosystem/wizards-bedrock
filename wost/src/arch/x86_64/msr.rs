@@ -1,14 +1,6 @@
-//! Model-specific registers: reads are ordinary calls, writes carry a register-specific contract.
-//!
-//! A write can switch paging modes, relocate the interrupt controller, or turn off features the
-//! compiler assumed, so each architecture caller must discharge its register's contract.
-
 use core::arch::asm;
 
-/// Read the register numbered `msr`.
-///
-/// A register this processor does not implement raises a general protection fault, which the
-/// kernel reports, so callers check `cpuid` first.
+// An unimplemented MSR raises #GP, so callers check `cpuid` first.
 pub(super) fn read(msr: u32) -> u64 {
     let (low, high): (u32, u32);
     // SAFETY: `rdmsr` in ring 0 reads the register named in `ecx` and writes nothing; an
@@ -25,8 +17,6 @@ pub(super) fn read(msr: u32) -> u64 {
     u64::from(high) << 32 | u64::from(low)
 }
 
-/// Write `value` to the register numbered `msr`.
-///
 /// # Safety
 ///
 /// The caller must know what `msr` governs and that `value` leaves the machine running: these

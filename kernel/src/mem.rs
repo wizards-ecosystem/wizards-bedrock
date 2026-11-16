@@ -6,7 +6,7 @@ use wost::arch::current::cpu;
 use wost::arch::current::paging::UserMapError;
 use wost::arch::current::paging::{
     self, AddressSpace, BarMapFailure, BarUnmapOutcome, BootRegion, DeviceUnmapFailure, MapError,
-    MappedStack, ReclaimFailure, ReleasableDevice, StackArena, StackMapError,
+    MappedStack, ReclaimFailure, ReleasableDevice, StackArena,
 };
 use wost::arch::current::pci as platform_pci;
 use wost::arch::current::segment;
@@ -233,7 +233,7 @@ pub(crate) fn unmap_device_exact(
 }
 
 // Mapped after activation so its guard is truly absent; pinned, because the TSS points at it.
-fn guard_the_fault_stack() -> Result<u64, StackMapError> {
+fn guard_the_fault_stack() -> Result<u64, MapError> {
     let layout = thread::fault_stack_layout().ok_or(MapError::OutOfMemory)?;
     let slot = layout.slot(0).ok_or(MapError::OutOfMemory)?;
 
@@ -260,14 +260,10 @@ pub(crate) fn map_guarded_stack(
     let slot = layout.slot(0)?;
     match with_active_space(context, |space| space.map_stack(&slot))? {
         Ok(stack) => Some(stack),
-        Err(StackMapError::Mapping(reason)) => {
+        Err(reason) => {
             warn!("stacks: {:#x} not mapped: {reason}", slot.stack_base());
             None
         }
-        Err(reason @ StackMapError::Rollback { .. }) => {
-            panic!("stacks: {reason}");
-        }
-        Err(reason) => panic!("stacks: {reason}"),
     }
 }
 
@@ -328,11 +324,7 @@ pub(crate) fn init_paging(
     match paging::activate(&mut space) {
         Ok(()) => info!("paging: running on our own tables"),
         Err(reason) => {
-            let returned = space.unmap_stacks(arena);
-            assert!(
-                returned.is_ok(),
-                "an inactive stack arena must remain removable"
-            );
+            space.unmap_stacks(arena);
             let cleanup = space.reclaim(None);
             assert!(
                 cleanup.is_ok(),
@@ -363,7 +355,7 @@ fn map_thread_stacks(space: &mut AddressSpace) -> Option<StackArena> {
     };
     match space.map_stacks(&layout) {
         Ok(arena) => Some(arena),
-        Err(StackMapError::Mapping(reason)) => {
+        Err(reason) => {
             let cleanup = space.reclaim(None);
             assert!(
                 cleanup.is_ok(),
@@ -372,10 +364,6 @@ fn map_thread_stacks(space: &mut AddressSpace) -> Option<StackArena> {
             warn!("threads: stacks not mapped: {reason}; no threads");
             None
         }
-        Err(reason @ StackMapError::Rollback { .. }) => {
-            panic!("threads: {reason}");
-        }
-        Err(reason) => panic!("threads: {reason}"),
     }
 }
 
@@ -385,13 +373,7 @@ fn report_guarded_paging(
 ) {
     match guard_the_fault_stack() {
         Ok(top) => info!("faults: double-fault stack guarded, top {top:#x}"),
-        Err(StackMapError::Mapping(reason)) => {
-            warn!("faults: double-fault stack left unguarded: {reason}");
-        }
-        Err(reason @ StackMapError::Rollback { .. }) => {
-            panic!("faults: {reason}");
-        }
-        Err(reason) => panic!("faults: {reason}"),
+        Err(reason) => warn!("faults: double-fault stack left unguarded: {reason}"),
     }
 
     if let Some(slots) = thread_slots {

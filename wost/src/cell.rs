@@ -1,8 +1,6 @@
-//! Storage the hardware reaches behind Rust's back: tables the CPU reads and stacks it writes.
-
 use core::cell::UnsafeCell;
 
-/// A `static` reached by raw pointer; whoever writes through it must prove nothing else looks.
+// Whoever writes through the pointer must prove nothing else reads the storage.
 #[derive(Debug)]
 #[repr(transparent)]
 pub(crate) struct HardwareCell<T>(UnsafeCell<T>);
@@ -16,7 +14,6 @@ impl<T> HardwareCell<T> {
         Self(UnsafeCell::new(value))
     }
 
-    /// The address of the storage, stable for the life of the kernel.
     pub(crate) const fn as_mut_ptr(&self) -> *mut T {
         self.0.get()
     }

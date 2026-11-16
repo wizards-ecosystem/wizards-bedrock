@@ -1,5 +1,3 @@
-//! The only file in the kernel that names the bootloader protocol.
-
 use limine::BaseRevision;
 use limine::framebuffer::MemoryModel;
 use limine::memory_map::EntryType;
@@ -16,18 +14,13 @@ use crate::boot::{
 };
 use crate::mmio::MmioRegion;
 
-/// Boot protocol revision 4, which admits device holes and maps ACPI tables.
-///
-/// A function because a `const` of `BaseRevision` would hold `UnsafeCell`s.
+// A function because a `const` of `BaseRevision` would hold `UnsafeCell`s.
 pub const fn base_revision() -> BaseRevision {
     BaseRevision::with_revision(4)
 }
 
 const SUPPORTED_BPP: u16 = 32;
 
-/// Assemble [`BootInfo`] from the bootloader's answers and hand over control.
-///
-/// Called only by [`entry!`](crate::entry).
 pub fn enter(requests: Requests, kernel_main: fn(BootInfo) -> !) -> ! {
     let Requests {
         base_revision,
@@ -61,7 +54,6 @@ fn take_image(request: &'static ExecutableAddressRequest) -> Result<ImageAddress
     ))
 }
 
-/// The first module, the one-program initrd, in a reclaimable region kept mapped; never write it.
 fn take_module(request: &'static ModuleRequest) -> Result<&'static [u8], HandoffError> {
     let response = request.get_response().ok_or(HandoffError::NoResponse)?;
     let module = response.modules().first().ok_or(HandoffError::Empty)?;
@@ -78,8 +70,8 @@ fn take_module(request: &'static ModuleRequest) -> Result<&'static [u8], Handoff
     if (address as usize).checked_add(len).is_none() {
         return Err(HandoffError::Empty);
     }
-    // SAFETY: the bootloader keeps this loaded module mapped and ours to read for the whole boot;
-    // nothing else holds a reference to it, and it is never written.
+    // SAFETY: the module lies in `KernelAndModules` memory, which is never allocatable and which the
+    // bootloader's direct map and ours (verified at activation) both cover; nothing writes it.
     Ok(unsafe { core::slice::from_raw_parts(address.cast_const(), len) })
 }
 
@@ -91,7 +83,6 @@ fn take_rsdp(request: &'static RsdpRequest) -> Result<u64, HandoffError> {
     }
 }
 
-/// Every request the entry glue places, gathered so the handoff is one argument.
 #[expect(
     missing_debug_implementations,
     reason = "the bootloader's request types have no Debug, and a hand-written one would only print static addresses, which stay out of logs"
@@ -118,10 +109,7 @@ fn take_memory_map(request: &'static MemoryMapRequest) -> Result<MemoryMap, Hand
     .map_err(HandoffError::MemoryMap)
 }
 
-/// Translate one entry type by the crate's own constants, so a moved value fails to compile.
-///
-/// An unknown type keeps its raw value for the log and never folds into `Reserved`.
-/// Base revision 4 adds `RESERVED_MAPPED`, which the pinned 0.5.0 crate has no constant for.
+// Revision 4's `RESERVED_MAPPED` has no constant in the pinned crate; unknown types keep theirs.
 fn kind_of(entry_type: EntryType) -> MemoryKind {
     match entry_type {
         EntryType::USABLE => MemoryKind::Usable,
@@ -132,8 +120,8 @@ fn kind_of(entry_type: EntryType) -> MemoryKind {
         EntryType::ACPI_NVS => MemoryKind::AcpiNvs,
         EntryType::BAD_MEMORY => MemoryKind::BadMemory,
         EntryType::RESERVED => MemoryKind::Reserved,
-        // SAFETY: `EntryType` is `#[repr(transparent)]` over `u64`: identical layout, every bit
-        // pattern valid for both. The crate provides no accessor for the value.
+        // SAFETY: `transmute` refuses to compile unless the sizes match, and every bit pattern of
+        // that size is a valid `u64`; the crate offers no accessor for the raw value.
         other => MemoryKind::Other(unsafe { core::mem::transmute::<EntryType, u64>(other) }),
     }
 }
@@ -145,26 +133,37 @@ fn take_direct_map(request: &'static HhdmRequest) -> Result<DirectMap, HandoffEr
 
 fn take_framebuffer(request: &'static FramebufferRequest) -> Result<Framebuffer, FramebufferError> {
     let response = request.get_response().ok_or(FramebufferError::NoResponse)?;
-    let fb = core::iter::Iterator::next(&mut response.framebuffers())
+    let framebuffer = response
+        .framebuffers()
+        .next()
         .ok_or(FramebufferError::NoFramebuffer)?;
 
-    if fb.memory_model() != MemoryModel::RGB {
+    if framebuffer.memory_model() != MemoryModel::RGB {
         return Err(FramebufferError::UnsupportedMemoryModel);
     }
-    if fb.bpp() != SUPPORTED_BPP {
-        return Err(FramebufferError::UnsupportedBpp(fb.bpp()));
+    if framebuffer.bpp() != SUPPORTED_BPP {
+        return Err(FramebufferError::UnsupportedBpp(framebuffer.bpp()));
     }
 
-    let pitch = fb.pitch() as usize;
-    let width = fb.width() as usize;
-    let height = fb.height() as usize;
-    let bytes_per_pixel = usize::from(fb.bpp()) / 8;
-    let layout = FramebufferLayout::new(fb.addr().addr(), width, height, pitch, bytes_per_pixel)
-        .map_err(FramebufferError::InvalidGeometry)?;
+    let pitch = framebuffer.pitch() as usize;
+    let width = framebuffer.width() as usize;
+    let height = framebuffer.height() as usize;
+    let bytes_per_pixel = usize::from(framebuffer.bpp()) / 8;
+    let layout = FramebufferLayout::new(
+        framebuffer.addr().addr(),
+        width,
+        height,
+        pitch,
+        bytes_per_pixel,
+    )
+    .map_err(FramebufferError::InvalidGeometry)?;
     let format = PixelFormat::new(
-        Channel::new(fb.red_mask_shift(), fb.red_mask_size()),
-        Channel::new(fb.green_mask_shift(), fb.green_mask_size()),
-        Channel::new(fb.blue_mask_shift(), fb.blue_mask_size()),
+        Channel::new(framebuffer.red_mask_shift(), framebuffer.red_mask_size()),
+        Channel::new(
+            framebuffer.green_mask_shift(),
+            framebuffer.green_mask_size(),
+        ),
+        Channel::new(framebuffer.blue_mask_shift(), framebuffer.blue_mask_size()),
     )
     .map_err(FramebufferError::InvalidPixelFormat)?;
     let info = FramebufferInfo {
@@ -175,10 +174,10 @@ fn take_framebuffer(request: &'static FramebufferRequest) -> Result<Framebuffer,
         format,
     };
 
-    record_framebuffer(fb.addr().addr() as u64, layout.span() as u64);
+    record_framebuffer(framebuffer.addr().addr() as u64, layout.span() as u64);
     // SAFETY: the live mapping has no other owner after handoff; `layout` checked span and align;
     // activation verifies this recorded extent first; user roots share the frozen higher half.
-    let region = unsafe { MmioRegion::new(fb.addr(), layout.span()) };
+    let region = unsafe { MmioRegion::new(framebuffer.addr(), layout.span()) };
 
     Ok(Framebuffer::new(region, info, layout))
 }

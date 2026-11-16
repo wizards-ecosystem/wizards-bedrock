@@ -1,11 +1,3 @@
-//! Typed x86 I/O port access whose every claim a registry records, so exclusivity is checked.
-//!
-//! A claim covers every port an access reaches: `out dx, eax` to port `n` drives `n..n + 4`.
-//! A fixed-driver claim is permanent ([`PortBlock`] and [`Port`] have no `Drop`), so a register
-//! set is claimed as one transaction: a caller must not take one member and then strand it when a
-//! later member is unavailable. `claim_pair` answers that for i8042 under one lock;
-//! `claim_block_pair` does the same for the PIC.
-
 use core::arch::asm;
 use core::marker::PhantomData;
 
@@ -14,30 +6,22 @@ use port_space::PortSpace;
 use crate::panic::PanicToken;
 use crate::sync::SpinLock;
 
-/// Which ports are spoken for.
+// Fixed claims are permanent, so a register set is claimed in one transaction.
 static CLAIMED: SpinLock<PortSpace> = SpinLock::new(PortSpace::new());
 
-/// Record `len` ports from `number` as claimed, all or nothing.
 fn reserve(number: u16, len: usize) -> bool {
     CLAIMED.lock_leaf().reserve(number as usize, len)
 }
 
-/// Claim port `number` and the ports a `T`-wide access reaches beyond it.
-///
-/// `None` if any of them is already claimed, or if the access would run past the end of I/O space.
+// A claim covers every port an access reaches: `out dx, eax` to port `n` drives `n..n + 4`.
 pub fn claim<T: PortValue>(number: u16) -> Option<Port<T>> {
     reserve(number, size_of::<T>()).then(|| {
         // SAFETY: the registry has just recorded every port a `T`-wide access at `number` drives,
-        // and no claim is ever released, so no other `Port` or `PortBlock` can cover any of them.
+        // and no claim is ever released, so no other `Port` or `PortBlock` covers one.
         unsafe { Port::new(number) }
     })
 }
 
-/// Claim two ports at once, or neither.
-///
-/// Two chained [`claim`]s check and record at two moments with no undo, so the pair is asked once.
-/// `None` if either port is already claimed, if the two overlap, or if either runs past the end
-/// of I/O space.
 pub(crate) fn claim_pair<T: PortValue, U: PortValue>(
     first: u16,
     second: u16,
@@ -50,7 +34,7 @@ pub(crate) fn claim_pair<T: PortValue, U: PortValue>(
         return None;
     }
     // SAFETY: the registry has just recorded every port both accesses drive, all or none, and no
-    // claim is ever released, so no other `Port` or `PortBlock` can cover any of them.
+    // claim is ever released, so no other `Port` or `PortBlock` covers any of them.
     let first = unsafe { Port::new(first) };
     // SAFETY: as above; the same reservation covered this port, and `reserve_all` refused the
     // pair had the two overlapped.
@@ -58,21 +42,14 @@ pub(crate) fn claim_pair<T: PortValue, U: PortValue>(
     Some((first, second))
 }
 
-/// Claim the `N` consecutive ports starting at `base`.
-///
-/// `None` if any of them is already claimed, or if the block would run past the end of I/O space.
-pub fn claim_block<const N: usize>(base: u16) -> Option<PortBlock<N>> {
+pub(crate) fn claim_block<const N: usize>(base: u16) -> Option<PortBlock<N>> {
     reserve(base, N).then(|| {
         // SAFETY: the registry has just recorded every port in the block, and no claim is ever
-        // released, so nothing else can cover them.
+        // released, so no other `Port` or `PortBlock` covers them.
         unsafe { PortBlock::new(base) }
     })
 }
 
-/// Claim two register windows at once, or neither, for [`claim_pair`]'s reason.
-///
-/// `None` if either block is already claimed, if the two overlap, or if either runs past the end
-/// of I/O space.
 pub(crate) fn claim_block_pair<const N: usize, const M: usize>(
     first: u16,
     second: u16,
@@ -81,48 +58,39 @@ pub(crate) fn claim_block_pair<const N: usize, const M: usize>(
     if !CLAIMED.lock_leaf().reserve_all(&spans) {
         return None;
     }
-    // SAFETY: the registry has just recorded every port in both blocks, all or none, and no claim
-    // is ever released, so nothing else can cover any of them.
+    // SAFETY: the registry has just recorded every port in both blocks, all or none, and no
+    // claim is ever released, so no other `Port` or `PortBlock` covers any of them.
     let first = unsafe { PortBlock::new(first) };
     // SAFETY: as above; `reserve_all` refused the pair had the two overlapped.
     let second = unsafe { PortBlock::new(second) };
     Some((first, second))
 }
 
-/// The QEMU debug-exit device, asked for by name so no component claims a raw port it does not own.
+#[cfg(feature = "selftest")]
 pub fn debug_exit() -> Option<Port<u32>> {
     claim(0xF4)
 }
 
-/// Both legacy 8237 DMA controllers, DMA1 at `0x00..0x10` and DMA2 at `0xC0..0xE0`, as one claim.
 pub(crate) fn isa_dma_controllers() -> Option<(PortBlock<16>, PortBlock<32>)> {
     claim_block_pair(0x00, 0xC0)
 }
 
-/// The 8042 keyboard controller's data and command ports (0x60 and 0x64), as one claim.
 pub fn i8042() -> Option<(Port<u8>, Port<u8>)> {
     claim_pair(0x60, 0x64)
 }
 
-/// The 8254 interval timer's four registers (0x40 through 0x43).
 pub fn pit() -> Option<PortBlock<4>> {
     claim_block(0x40)
 }
 
-/// The first serial controller's eight registers (0x3F8 through 0x3FF).
 pub fn com1() -> Option<PortBlock<8>> {
     claim_block(0x3F8)
 }
 
-/// The legacy PCI configuration ports (0xCF8 and 0xCFC), the one door to configuration space.
-///
-/// A degraded boot with no bus claims it to prove nothing else did.
-pub fn pci_configuration() -> Option<(Port<u32>, Port<u32>)> {
+pub(crate) fn pci_configuration() -> Option<(Port<u32>, Port<u32>)> {
     claim_pair(0x0CF8, 0x0CFC)
 }
 
-/// Reclaim the registry's lock for [`panic::reclaim`](crate::panic::reclaim), since the code the
-/// panic interrupted may have been part-way through a claim and the panic path must claim a port.
 pub(crate) fn force_unlock(panic: &PanicToken) {
     CLAIMED.force_unlock(panic);
 }
@@ -131,21 +99,14 @@ mod sealed {
     pub trait Sealed {}
 }
 
-/// A width of value that can be transferred over an I/O port.
-///
-/// Sealed to `u8`, `u16` and `u32`, the only port instruction widths, so `size_of::<T>()` is the
-/// number of ports an access drives and [`claim`] knows how much to reserve.
+// Sealed to the port instruction widths, so `size_of::<T>()` is the ports an access drives.
 pub trait PortValue: sealed::Sealed + Copy {
-    /// Read one value from `port`.
-    ///
     /// # Safety
     ///
     /// The caller must own `port`, and want the read's side effects: many advance a FIFO or clear
     /// a status latch.
     unsafe fn port_read(port: u16) -> Self;
 
-    /// Write one value to `port`.
-    ///
     /// # Safety
     ///
     /// The caller must own `port`; a port write can have arbitrary effects on the machine.
@@ -218,7 +179,6 @@ impl PortValue for u32 {
     }
 }
 
-/// Exclusive access to a single I/O port.
 #[derive(Debug)]
 pub struct Port<T: PortValue> {
     number: u16,
@@ -226,8 +186,6 @@ pub struct Port<T: PortValue> {
 }
 
 impl<T: PortValue> Port<T> {
-    /// Private so [`claim`] is the only door and the registry knows every handle.
-    ///
     /// # Safety
     ///
     /// No other live `Port` or [`PortBlock`] may cover any of the `size_of::<T>()` ports a `T`-wide
@@ -252,26 +210,16 @@ impl<T: PortValue> Port<T> {
     }
 }
 
-/// Exclusive access to a device's `N` consecutive register ports.
-///
-/// Each access is checked by the whole span it reaches, so a `u16` or `u32` access starting inside
-/// the block cannot finish in another device.
 #[derive(Debug)]
 pub struct PortBlock<const N: usize> {
     base: u16,
 }
 
 impl<const N: usize> PortBlock<N> {
-    /// Private so [`claim_block`] is the only door and the registry knows every handle.
-    ///
     /// # Safety
     ///
     /// No other live [`Port`] or `PortBlock` may overlap `base..base + N`, and the caller must be
     /// entitled to drive the device that answers there.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the block is empty or would run past port `0xFFFF`.
     const unsafe fn new(base: u16) -> Self {
         assert!(N > 0, "a port block covers at least one port");
         assert!(
@@ -281,37 +229,25 @@ impl<const N: usize> PortBlock<N> {
         Self { base }
     }
 
-    /// Read register `offset`.
-    ///
-    /// # Panics
-    ///
-    /// Panics unless the whole `T`-wide access lies within the block.
     pub fn read<T: PortValue>(&mut self, offset: usize) -> T {
         // SAFETY: `port_for` confirmed the whole access lies inside the block this handle
         // exclusively owns, and `&mut self` rules out a concurrent access.
         unsafe { <T as PortValue>::port_read(self.port_for::<T>(offset)) }
     }
 
-    /// Write register `offset`.
-    ///
-    /// # Panics
-    ///
-    /// Panics unless the whole `T`-wide access lies within the block.
     pub fn write<T: PortValue>(&mut self, offset: usize, value: T) {
         // SAFETY: `port_for` confirmed the whole access lies inside the block this handle
         // exclusively owns, and `&mut self` rules out a concurrent access.
         unsafe { <T as PortValue>::port_write(self.port_for::<T>(offset), value) };
     }
 
-    /// The port a `T`-wide access at `offset` starts on, once every port it drives is in the block.
     fn port_for<T: PortValue>(&self, offset: usize) -> u16 {
         let width = size_of::<T>();
         assert!(
             offset.checked_add(width).is_some_and(|end| end <= N),
             "a {width}-byte access at register {offset} leaves a {N}-port block"
         );
-        // Cannot overflow: `new` bounded `base + N` to I/O space and the assertion keeps
-        // `offset + width <= N`.
+        // `new` bounded `base + N` and the assertion keeps `offset + width <= N`: no overflow.
         self.base + offset as u16
     }
 }

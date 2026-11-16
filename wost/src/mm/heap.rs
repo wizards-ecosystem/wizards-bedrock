@@ -1,5 +1,3 @@
-//! The kernel heap: free lists in single-frame slabs from the direct map, whole frames if large.
-
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr;
 
@@ -9,19 +7,15 @@ use super::{PhysicalAddress, Segment, allocate_zeroed, direct_pointer};
 use crate::arch::current::interrupt;
 use crate::sync::SpinLock;
 
-/// An empty free list; zero is never a slot address, since the direct map is in the higher half.
+// Zero is never a slot address, since the direct map is in the higher half.
 const EMPTY: usize = 0;
 
-/// Free lists and the accounting that protects heap state transitions.
+#[derive(Debug)]
 struct Heap {
-    /// Head of each class's free list, or [`EMPTY`].
     free: [usize; CLASSES],
-    /// Frames handed to slabs, never returned.
     #[cfg(feature = "selftest")]
     slab_frames: usize,
-    /// Frames currently held by large allocations.
     large_frames: usize,
-    /// Live allocations, slots and runs together.
     live: usize,
 }
 
@@ -36,9 +30,7 @@ impl Heap {
         }
     }
 
-    /// Take a slot of `class`, or null if this class's free list is empty.
-    ///
-    /// The caller refills with this lock dropped, which is what keeps `HEAP` a leaf.
+    // The caller refills with this lock dropped, which is what keeps `HEAP` a leaf.
     fn take_slot(&mut self, class: SizeClass) -> *mut u8 {
         if self.free[class.index()] == EMPTY {
             return ptr::null_mut();
@@ -55,8 +47,6 @@ impl Heap {
         slot as *mut u8
     }
 
-    /// Give a slot of `class` back.
-    ///
     /// # Safety
     ///
     /// `slot` must be an address this heap handed out for `class` and not since returned.
@@ -74,8 +64,6 @@ impl Heap {
         true
     }
 
-    /// Carve a frame the caller already owns into slots of `class`.
-    ///
     /// # Safety
     ///
     /// `base` must address a whole free direct-mapped frame nothing else holds, now the heap's.
@@ -109,19 +97,14 @@ impl Heap {
 
 static HEAP: SpinLock<Heap> = SpinLock::new(Heap::new());
 
-/// What the heap has taken and is holding.
 #[cfg(feature = "selftest")]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Stats {
-    /// Frames given to slabs. Never returned.
     pub slab_frames: usize,
-    /// Frames held by allocations too large for a slot.
     pub large_frames: usize,
-    /// Live allocations.
     pub live: usize,
 }
 
-/// What the heap has taken and is holding, right now.
 #[cfg(feature = "selftest")]
 pub fn stats() -> Stats {
     let heap = HEAP.lock_leaf();
@@ -132,18 +115,17 @@ pub fn stats() -> Stats {
     }
 }
 
-/// Reclaim the heap's lock on the panic path, where formatting would otherwise spin on it.
 pub(crate) fn force_unlock(panic: &crate::panic::PanicToken) {
     HEAP.force_unlock(panic);
 }
 
+#[derive(Debug)]
 struct KernelAllocator;
 
 // SAFETY: `alloc` gives null or an unheld slot or run aligned at least as asked: slots sit at
 // class-size multiples in a frame-aligned slab, runs on a frame; `dealloc` returns that, same lock.
 unsafe impl GlobalAlloc for KernelAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        // A handler allocation can interrupt a refill, so it fails loudly, never as exhaustion.
         assert!(!interrupt::in_trap(), "allocation in trap context");
         match place(layout.size(), layout.align()) {
             Ok(Placement::Slot(class)) => {
@@ -151,7 +133,6 @@ unsafe impl GlobalAlloc for KernelAllocator {
                 if !slot.is_null() {
                     return slot;
                 }
-                // Refill unlocked, then re-check: a preemption may already have refilled it.
                 let Some(frame) = allocate_zeroed() else {
                     return ptr::null_mut();
                 };
@@ -168,7 +149,6 @@ unsafe impl GlobalAlloc for KernelAllocator {
                 }
                 let slot = heap.take_slot(class);
                 drop(heap);
-                // The free list owns the frame from here on.
                 core::mem::forget(frame);
                 slot
             }
@@ -191,7 +171,6 @@ unsafe impl GlobalAlloc for KernelAllocator {
                 heap.large_frames = large_frames;
                 heap.live = live;
                 drop(heap);
-                // The caller's allocation owns the run now; `dealloc` rebuilds it from the layout.
                 core::mem::forget(run);
                 address
             }
@@ -200,7 +179,6 @@ unsafe impl GlobalAlloc for KernelAllocator {
     }
 
     unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
-        // A handler that drops a `Box` touches the heap as much as one that makes it.
         assert!(!interrupt::in_trap(), "deallocation in trap context");
         match place(layout.size(), layout.align()) {
             Ok(Placement::Slot(class)) => {
@@ -238,7 +216,6 @@ unsafe impl GlobalAlloc for KernelAllocator {
     }
 }
 
-/// The physical address behind a direct-map pointer.
 fn physical_of(pointer: *mut u8) -> Option<PhysicalAddress> {
     let offset = super::direct_map()?.offset();
     PhysicalAddress::new((pointer as u64).checked_sub(offset)?)

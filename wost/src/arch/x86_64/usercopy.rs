@@ -1,8 +1,3 @@
-//! Privilege-boundary copies under SMAP, and the only module that opens the access window.
-//!
-//! Every page is range-checked and walked before copying; only an exact supervisor fault in the
-//! assembly copy interval may resume at the private fixup.
-
 use core::arch::asm;
 use core::fmt;
 
@@ -10,22 +5,16 @@ use x86_paging::{Flags, PAGE_SIZE};
 
 use super::{cpu, interrupt, paging};
 
-/// The first address that is not user memory.
-///
-/// Re-exported from [`paging`], so the range a copy may touch and the range a mapping may cover
-/// cannot drift apart as two literals could.
 pub use super::paging::USER_END;
 
-// Explicit assembly gives the faulting instructions a stable recovery range compiled copies lack.
+// Explicit assembly gives the faulting instructions a stable recovery range.
 ::core::arch::global_asm!(
     ".globl wost_copy_across",
     "wost_copy_across:",
-    // rdi = destination, rsi = source, rdx = length.
     "  mov rcx, rdx",
     "  test rcx, rcx",
     "  jz 3f",
-    // Everything between these two labels can fault, and such a fault is the program's bad pointer,
-    // never the kernel's bug.
+    // Only these two instructions may fault, and such a fault is the program's bad pointer.
     ".globl wost_copy_fault_start",
     "wost_copy_fault_start:",
     "  mov al, [rsi]",
@@ -37,10 +26,9 @@ pub use super::paging::USER_END;
     "  dec rcx",
     "  jnz wost_copy_fault_start",
     "3:",
-    // Nothing left uncopied.
     "  xor rax, rax",
     "  ret",
-    // A recovered fault resumes here, with `rcx` still holding what was left: the trap restored it.
+    // A recovered fault resumes here with `rcx` holding what was left: the trap restored it.
     ".globl wost_copy_fixup",
     "wost_copy_fixup:",
     "  mov rax, rcx",
@@ -48,21 +36,15 @@ pub use super::paging::USER_END;
 );
 
 unsafe extern "C" {
-    /// Copy `len` bytes, returning how many were not copied.
-    ///
-    /// Non-zero only after a recovered fault, when the range stopped being mapped between the walk
-    /// and the copy.
+    // Returns the bytes left uncopied, non-zero only after a recovered fault.
     fn wost_copy_across(destination: *mut u8, source: *const u8, len: usize) -> usize;
 
-    /// The first instruction of the copy that can fault.
     static wost_copy_fault_start: u8;
-    /// One past the last.
     static wost_copy_fault_end: u8;
-    /// Where a recovered fault resumes.
     static wost_copy_fixup: u8;
 }
 
-/// The only instruction pointer a recovered user-copy fault may resume at.
+#[derive(Debug)]
 pub(super) struct RecoveryTarget(u64);
 
 impl RecoveryTarget {
@@ -75,11 +57,6 @@ impl RecoveryTarget {
     }
 }
 
-/// Resume a faulting user copy at its fixup, if that is what faulted.
-///
-/// A mapping may disappear between the walk and copy. Nothing outside the
-/// private two-instruction interval is recoverable. `false` leaves the frame
-/// unchanged.
 #[must_use = "a refused user-copy recovery changed no trap frame"]
 pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bool {
     let at = frame.instruction_pointer();
@@ -104,7 +81,6 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
     interrupt::resume_usercopy(frame, RecoveryTarget::fixup())
 }
 
-/// The instruction range a user copy can fault inside.
 #[cfg(feature = "selftest")]
 pub fn fault_window() -> (u64, u64) {
     (
@@ -113,53 +89,45 @@ pub fn fault_window() -> (u64, u64) {
     )
 }
 
-/// Why a copy across the boundary was refused.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum UserCopyError {
-    /// The range is not wholly inside user memory.
     NotUserMemory(u64),
-    /// The range wraps, so it does not describe a span at all.
     Wraps(u64),
-    /// The range stopped being mapped between the walk and the copy, with this many bytes left.
     Vanished(usize),
-    /// A page of it is not mapped, or not reachable from ring 3.
     Unmapped(u64),
-    /// A page the copy would write is not writable from ring 3.
     ReadOnly(u64),
 }
 
 impl fmt::Display for UserCopyError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
-            Self::NotUserMemory(at) => write!(f, "{at:#x} is not user memory"),
-            Self::Wraps(at) => write!(f, "a range at {at:#x} wraps"),
+            Self::NotUserMemory(at) => write!(formatter, "{at:#x} is not user memory"),
+            Self::Wraps(at) => write!(formatter, "a range at {at:#x} wraps"),
             Self::Vanished(left) => {
-                write!(f, "the range stopped being mapped with {left} bytes left")
+                write!(
+                    formatter,
+                    "the range stopped being mapped with {left} bytes left"
+                )
             }
-            Self::Unmapped(at) => write!(f, "{at:#x} is not mapped for ring 3"),
-            Self::ReadOnly(at) => write!(f, "{at:#x} is not writable from ring 3"),
+            Self::Unmapped(at) => write!(formatter, "{at:#x} is not mapped for ring 3"),
+            Self::ReadOnly(at) => write!(formatter, "{at:#x} is not writable from ring 3"),
         }
     }
 }
 
 impl core::error::Error for UserCopyError {}
 
-/// What a page must permit for the copy being made.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Direction {
-    /// The kernel reads user memory.
+    #[cfg(feature = "selftest")]
     FromUser,
-    /// The kernel writes user memory.
     ToUser,
 }
 
-/// The window in which ring-0 code may touch ring-3 memory.
-///
-/// Scoped and private, so it lives for one `wost_copy_across` call and is held across nothing:
-/// while open the CPU dereferences any user pointer, so a shorter window lets fewer bugs escalate.
+#[derive(Debug)]
 struct Window {
-    /// False without SMAP, where `stac` would be `#UD` and the access needs no permission anyway.
+    // False without SMAP, where `stac` would raise #UD.
     opened: bool,
 }
 
@@ -185,7 +153,6 @@ impl Drop for Window {
     }
 }
 
-/// Check that `len` bytes at `address` are user memory the copy may touch.
 fn admits(address: u64, len: usize, direction: Direction) -> Result<(), UserCopyError> {
     if len == 0 {
         return Ok(());
@@ -214,12 +181,7 @@ fn admits(address: u64, len: usize, direction: Direction) -> Result<(), UserCopy
     Ok(())
 }
 
-/// Copy `into.len()` bytes from user memory at `from`.
-///
-/// # Errors
-///
-/// See [`UserCopyError`]. Validation failures move nothing;
-/// [`UserCopyError::Vanished`] may leave a partial copy.
+#[cfg(feature = "selftest")]
 pub fn copy_from_user(from: u64, into: &mut [u8]) -> Result<(), UserCopyError> {
     admits(from, into.len(), Direction::FromUser)?;
     if into.is_empty() {
@@ -237,12 +199,6 @@ pub fn copy_from_user(from: u64, into: &mut [u8]) -> Result<(), UserCopyError> {
     Ok(())
 }
 
-/// Copy `from` into user memory at `onto`.
-///
-/// # Errors
-///
-/// See [`UserCopyError`]. Validation failures move nothing;
-/// [`UserCopyError::Vanished`] may leave a partial copy.
 pub fn copy_to_user(onto: u64, from: &[u8]) -> Result<(), UserCopyError> {
     admits(onto, from.len(), Direction::ToUser)?;
     if from.is_empty() {

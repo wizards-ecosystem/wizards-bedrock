@@ -1,9 +1,4 @@
-//! Bedrock's privileged kernel framework, the only kernel crate permitted to write `unsafe`.
-
-#![allow(
-    unsafe_code,
-    reason = "the one unsafe crate; expect fails once its last unsafe goes"
-)]
+#![expect(unsafe_code, reason = "the one crate that may write unsafe")]
 #![no_std]
 
 extern crate alloc;

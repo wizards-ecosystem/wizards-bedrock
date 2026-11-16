@@ -239,27 +239,6 @@ impl MemoryMap {
             })
     }
 
-    pub fn first_memory_run(&self, length: u64) -> Option<u64> {
-        if length == 0 {
-            return None;
-        }
-        let mut first = None;
-        for region in self.regions() {
-            for boundary in [region.base, region.end()] {
-                let Some(base) = boundary.max(PAGE_SIZE).checked_next_multiple_of(PAGE_SIZE) else {
-                    continue;
-                };
-                let Some(end) = base.checked_add(length) else {
-                    continue;
-                };
-                if first.is_none_or(|known| base < known) && self.covers_memory(base, end) {
-                    first = Some(base);
-                }
-            }
-        }
-        first
-    }
-
     // A long admitted span can jump a nested claim, so intersecting regions are arbitrated first.
     fn covered_by(
         &self,

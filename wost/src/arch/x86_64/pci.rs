@@ -247,10 +247,6 @@ pub struct ReleasableBar {
 }
 
 impl BarMapping {
-    #[expect(
-        clippy::result_large_err,
-        reason = "refusal must return the complete linear BAR authority without allocating"
-    )]
     pub fn claim_disabled(self) -> Result<DisabledBar, Self> {
         let Self { authority, mapping } = self;
         match mapping.claim_releasable() {

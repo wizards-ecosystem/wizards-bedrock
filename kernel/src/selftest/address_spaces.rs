@@ -154,17 +154,17 @@ pub(super) fn a_user_page_comes_back_cleared() -> bool {
             return false;
         };
         drop(taken);
-        mm::freed_external_run_is_zero_for_test(address, 1)
+        mm::is_freed_run_zero(address, 1)
     });
 
     let direct = marked_page(0xa1).is_some_and(|(run, address)| {
         drop(mm::USegment::from(run));
-        mm::freed_external_run_is_zero_for_test(address, 1)
+        mm::is_freed_run_zero(address, 1)
     });
 
     let shared = marked_page(0xb2).is_some_and(|(run, address)| {
         drop(mm::USegment::from(run).share());
-        mm::freed_external_run_is_zero_for_test(address, 1)
+        mm::is_freed_run_zero(address, 1)
     });
 
     let refused = in_reclaimed_space(AddressSpace::for_user, |space| {
@@ -180,8 +180,7 @@ pub(super) fn a_user_page_comes_back_cleared() -> bool {
         };
         let reason = error.reason();
         drop(error);
-        reason == MapError::NotYours(OUTSIDE_USER_HALF)
-            && mm::freed_external_run_is_zero_for_test(address, 1)
+        reason == MapError::NotYours(OUTSIDE_USER_HALF) && mm::is_freed_run_zero(address, 1)
     });
 
     unmapped && direct && shared && refused

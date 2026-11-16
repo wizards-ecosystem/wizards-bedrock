@@ -39,7 +39,6 @@ SECTIONS
     . = ALIGN(CONSTANT(MAXPAGESIZE));
     .kpti.rodata : ALIGN(4096) {
         __kpti_rodata_start = .;
-        KEEP(*(.kpti.rodata.geometry))
         KEEP(*(.kpti.rodata.verw_selector))
         . = ALIGN(4096);
         __kpti_rodata_end = .;

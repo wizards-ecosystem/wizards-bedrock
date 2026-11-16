@@ -1,4 +1,5 @@
 use alloc::sync::Arc;
+use core::mem::ManuallyDrop;
 
 use ring_proto::SharedLayout;
 
@@ -7,61 +8,40 @@ use super::frame::Segment;
 use super::{PhysicalAddress, direct_pointer};
 use crate::arch::current::shared_memory;
 
-/// A run of frames whose bytes are ring 3's, outside kernel control and never trusted data.
-///
-/// Dropping it clears every byte before the frames return to the allocator, or leaks them.
 #[derive(PartialEq, Eq, Debug)]
 pub struct USegment {
-    segment: Option<Segment>,
+    segment: ManuallyDrop<Segment>,
 }
 
 impl USegment {
-    fn segment(&self) -> &Segment {
-        let Some(segment) = self.segment.as_ref() else {
-            panic!("an external segment no longer owns its frames");
-        };
-        segment
-    }
-
-    /// Where the run begins in physical memory.
     pub fn address(&self) -> PhysicalAddress {
-        self.segment().address()
+        self.segment.address()
     }
 
-    /// Frames in the run.
     pub(crate) fn frames(&self) -> usize {
-        self.segment().frames()
+        self.segment.frames()
     }
 
-    /// Bytes in the run.
     pub(crate) fn len(&self) -> u64 {
-        self.segment().len()
+        self.segment.len()
     }
 
-    /// Pin this run for sharing, giving up for good the right to map it as owned.
-    ///
-    /// `map_shared` writes no `OWNED` bit and `map_user` consumes a `USegment`: one path per run.
+    // `map_shared` writes no `OWNED` and `map_user` takes a `USegment`: one mapping path per run.
     #[must_use]
     pub fn share(self) -> Shared {
         Shared(Arc::new(SharedAllocation(self)))
     }
 
-    /// Commit this run to page-table ownership after the mapping exists.
-    pub(crate) fn commit_mapping(mut self) {
-        let Some(segment) = self.segment.take() else {
-            panic!("an external segment no longer owns its frames");
-        };
-        core::mem::forget(segment);
+    pub(crate) fn commit_mapping(self) {
+        core::mem::forget(self);
     }
 }
 
 impl Drop for USegment {
     fn drop(&mut self) {
-        let Some(mut segment) = self.segment.take() else {
-            return;
-        };
-        if !segment.zero() {
-            core::mem::forget(segment);
+        if self.segment.zero() {
+            // SAFETY: this is the one drop of `segment`, and nothing reads the field after it.
+            unsafe { ManuallyDrop::drop(&mut self.segment) };
         }
     }
 }
@@ -69,23 +49,19 @@ impl Drop for USegment {
 #[derive(Debug)]
 pub(super) struct SharedAllocation(pub(super) USegment);
 
-/// A non-accessing ownership reference retained by a shared mapping.
 #[derive(Debug)]
 pub(crate) struct SharedKeepalive {
     _allocation: Arc<SharedAllocation>,
 }
 
-/// A pinned shared allocation awaiting an irreversible access partition.
 #[derive(Debug)]
 pub struct Shared(Arc<SharedAllocation>);
 
 impl Shared {
-    /// Consume the allocation into volatile byte-only access.
     pub fn into_bytes(self) -> SharedBytes {
         SharedBytes(self.0)
     }
 
-    /// Consume the allocation into one checked ring partition, or return it if the sizes differ.
     pub fn into_ring<const WORDS: usize>(
         self,
         layout: SharedLayout<WORDS>,
@@ -100,17 +76,14 @@ impl Shared {
     }
 }
 
-/// A pinned allocation with volatile byte access and no publication-word door.
 #[derive(Debug)]
 pub struct SharedBytes(Arc<SharedAllocation>);
 
 impl SharedBytes {
-    /// Where the run begins in physical memory.
     pub fn address(&self) -> PhysicalAddress {
         self.0.0.address()
     }
 
-    /// Bytes in the run.
     #[expect(
         clippy::len_without_is_empty,
         reason = "shared allocations cannot contain zero frames"
@@ -119,19 +92,16 @@ impl SharedBytes {
         self.0.0.len()
     }
 
-    /// Volatile-write `bytes` at `offset` within the run.
     #[must_use = "a refused shared-memory write changed no bytes"]
     pub fn write_at(&mut self, offset: usize, bytes: &[u8]) -> bool {
         write_shared(&self.0, offset, bytes)
     }
 
-    /// Volatile-read `into.len()` bytes from `offset` within the run.
     #[must_use = "a refused shared-memory read copied no bytes"]
     pub fn read_at(&self, offset: usize, into: &mut [u8]) -> bool {
         read_shared(&self.0, offset, into)
     }
 
-    /// Retain the allocation without exposing its bytes.
     pub(crate) fn keepalive(&self) -> SharedKeepalive {
         SharedKeepalive {
             _allocation: Arc::clone(&self.0),
@@ -139,7 +109,6 @@ impl SharedBytes {
     }
 }
 
-/// A pinned allocation partitioned into payload bytes and publication words.
 #[derive(Debug)]
 pub struct SharedRing<const WORDS: usize> {
     allocation: Arc<SharedAllocation>,
@@ -147,12 +116,10 @@ pub struct SharedRing<const WORDS: usize> {
 }
 
 impl<const WORDS: usize> SharedRing<WORDS> {
-    /// Where the run begins in physical memory.
     pub fn address(&self) -> PhysicalAddress {
         self.allocation.0.address()
     }
 
-    /// Bytes in the run.
     #[expect(
         clippy::len_without_is_empty,
         reason = "shared allocations cannot contain zero frames"
@@ -161,7 +128,6 @@ impl<const WORDS: usize> SharedRing<WORDS> {
         self.allocation.0.len()
     }
 
-    /// Volatile-write bytes wholly within this layout's payload partition.
     #[must_use = "a refused ring-payload write changed no bytes"]
     pub fn write_payload_at(&mut self, offset: usize, bytes: &[u8]) -> bool {
         if !self.layout.contains_payload(offset, bytes.len()) {
@@ -170,7 +136,6 @@ impl<const WORDS: usize> SharedRing<WORDS> {
         write_shared(&self.allocation, offset, bytes)
     }
 
-    /// Volatile-read bytes wholly within this layout's payload partition.
     #[must_use = "a refused ring-payload read copied no bytes"]
     pub fn read_payload_at(&self, offset: usize, into: &mut [u8]) -> bool {
         if !self.layout.contains_payload(offset, into.len()) {
@@ -179,10 +144,6 @@ impl<const WORDS: usize> SharedRing<WORDS> {
         read_shared(&self.allocation, offset, into)
     }
 
-    /// Acquire-load one aligned little-endian index, or `None` off a publication word or the map.
-    ///
-    /// An acquired producer tail makes its earlier volatile payload writes visible.
-    /// An acquired consumer head makes its earlier payload reads precede reuse.
     pub fn load_acquire_u32(&self, offset: usize) -> Option<u32> {
         if !self.layout.contains_publication_word(offset) {
             return None;
@@ -194,10 +155,6 @@ impl<const WORDS: usize> SharedRing<WORDS> {
         Some(u32::from_le(value))
     }
 
-    /// Release-store one aligned little-endian index, or `false` off a publication word or the map.
-    ///
-    /// A producer publishes completed volatile payload writes through a tail.
-    /// A consumer publishes completed payload reads before the producer may reuse them.
     #[must_use = "a refused shared-memory publication stored no index"]
     pub fn store_release_u32(&self, offset: usize, value: u32) -> bool {
         if !self.layout.contains_publication_word(offset) {
@@ -212,7 +169,6 @@ impl<const WORDS: usize> SharedRing<WORDS> {
         true
     }
 
-    /// The aligned publication address at `offset`, if wholly inside the run.
     fn publication_address(&self, offset: usize) -> Option<usize> {
         let end = offset.checked_add(size_of::<u32>())?;
         if end as u64 > self.len() {
@@ -226,7 +182,6 @@ impl<const WORDS: usize> SharedRing<WORDS> {
         Some(address)
     }
 
-    /// Retain the allocation without exposing its bytes.
     pub(crate) fn keepalive(&self) -> SharedKeepalive {
         SharedKeepalive {
             _allocation: Arc::clone(&self.allocation),
@@ -251,7 +206,7 @@ fn read_shared(allocation: &SharedAllocation, offset: usize, into: &mut [u8]) ->
 impl From<Segment> for USegment {
     fn from(segment: Segment) -> Self {
         Self {
-            segment: Some(segment),
+            segment: ManuallyDrop::new(segment),
         }
     }
 }

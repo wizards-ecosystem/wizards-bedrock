@@ -1,10 +1,8 @@
-//! The linker-owned entry enclave and its fail-closed CPU-local route.
-//!
-//! The stripped root may map only the ranges [`EntryEnclave`] describes. A published route is
-//! authority only while its complete root pair and guarded entry stacks match this CPU's state.
-
 use core::mem::offset_of;
 use core::sync::atomic::{AtomicU64, Ordering};
+
+use x86_paging::PAGE_SIZE;
+use x86_paging::kpti::EnclavePermission;
 
 use super::cpu;
 use super::interrupt;
@@ -13,71 +11,55 @@ use super::segment;
 use crate::boot::{self, Section};
 use crate::cell::HardwareCell;
 
-const PAGE_BYTES: u64 = 4096;
 pub(super) const STACK_BYTES: usize = 16 * 1024;
+pub(super) const MAPPINGS: usize = 6;
+const GUARDS: usize = 2;
+const KERNEL_HALF_START: u64 = 0xffff_8000_0000_0000;
+const STACK_ALIGN: u64 = 16;
 const ROUTE_EMPTY: u64 = 0;
 const ROUTE_PUBLISHED: u64 = 1;
 const ROUTE_UPDATING: u64 = 2;
 
-const ENTRY_ROOT_SWITCH_IMPLEMENTED: bool = true;
-
-/// Permissions one enclave range has in one member of a root pair.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(super) enum Access {
-    /// Read-only and executable.
-    Executable,
-    /// Read-only and non-executable.
-    ReadOnly,
-    /// Writable and non-executable.
-    Writable,
-}
-
-/// One page-exact range and its full/stripped-root permissions.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) struct EnclaveMapping {
     section: Section,
-    full: Access,
-    stripped: Access,
+    full: EnclavePermission,
+    stripped: EnclavePermission,
 }
 
 impl EnclaveMapping {
-    /// The linker range this mapping covers.
     pub(super) const fn section(self) -> Section {
         self.section
     }
 
-    /// The permission the full root must install.
-    pub(super) const fn full_access(self) -> Access {
+    pub(super) const fn full_access(self) -> EnclavePermission {
         self.full
     }
 
-    /// The permission the stripped root must install.
-    pub(super) const fn stripped_access(self) -> Access {
+    pub(super) const fn stripped_access(self) -> EnclavePermission {
         self.stripped
     }
 }
 
-/// Validated, unforgeable linker geometry for the entry enclave.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) struct EntryEnclave {
-    mappings: [EnclaveMapping; 6],
-    guards: [Section; 2],
+    mappings: [EnclaveMapping; MAPPINGS],
+    guards: [Section; GUARDS],
 }
 
 impl EntryEnclave {
-    /// Every range both roots map, in virtual-address order.
-    pub(super) const fn mappings(self) -> [EnclaveMapping; 6] {
+    pub(super) const fn mappings(self) -> [EnclaveMapping; MAPPINGS] {
         self.mappings
     }
 
-    /// The lower stack guards both roots must leave absent.
-    pub(super) const fn guards(self) -> [Section; 2] {
+    pub(super) const fn guards(self) -> [Section; GUARDS] {
         self.guards
     }
 }
 
-/// Validate the linker-provided enclave geometry and mint its opaque evidence.
 pub(super) fn entry_enclave() -> Option<EntryEnclave> {
+    use EnclavePermission::{Executable, ReadOnly, Writable};
+
     let raw = boot::sections().entry_enclave;
     let exact = [
         raw.text,
@@ -95,16 +77,15 @@ pub(super) fn entry_enclave() -> Option<EntryEnclave> {
     let ordered = raw.text.end <= raw.rodata.start
         && raw.rodata.end <= raw.tables.start
         && raw.tables.end == raw.data.start
-        && raw.data.start == raw.route.start
         && raw.route.end == raw.transition_guard.start
         && raw.transition_guard.end == raw.transition_stack.start
         && raw.transition_stack.end == raw.ist_guard.start
         && raw.ist_guard.end == raw.ist_stack.start
         && raw.ist_stack.end == raw.data.end;
-    let fixed = raw.route.mapped_len() == PAGE_BYTES
-        && raw.transition_guard.mapped_len() == PAGE_BYTES
+    let fixed = raw.route.mapped_len() == PAGE_SIZE
+        && raw.transition_guard.mapped_len() == PAGE_SIZE
         && raw.transition_stack.mapped_len() == STACK_BYTES as u64
-        && raw.ist_guard.mapped_len() == PAGE_BYTES
+        && raw.ist_guard.mapped_len() == PAGE_SIZE
         && raw.ist_stack.mapped_len() == STACK_BYTES as u64;
     if !exact || !ordered || !fixed {
         return None;
@@ -112,18 +93,22 @@ pub(super) fn entry_enclave() -> Option<EntryEnclave> {
 
     Some(EntryEnclave {
         mappings: [
-            mapping(raw.text, Access::Executable, Access::Executable),
-            mapping(raw.rodata, Access::ReadOnly, Access::ReadOnly),
-            mapping(raw.tables, Access::Writable, Access::ReadOnly),
-            mapping(raw.route, Access::Writable, Access::ReadOnly),
-            mapping(raw.transition_stack, Access::Writable, Access::Writable),
-            mapping(raw.ist_stack, Access::Writable, Access::Writable),
+            mapping(raw.text, Executable, Executable),
+            mapping(raw.rodata, ReadOnly, ReadOnly),
+            mapping(raw.tables, Writable, ReadOnly),
+            mapping(raw.route, Writable, ReadOnly),
+            mapping(raw.transition_stack, Writable, Writable),
+            mapping(raw.ist_stack, Writable, Writable),
         ],
         guards: [raw.transition_guard, raw.ist_guard],
     })
 }
 
-const fn mapping(section: Section, full: Access, stripped: Access) -> EnclaveMapping {
+const fn mapping(
+    section: Section,
+    full: EnclavePermission,
+    stripped: EnclavePermission,
+) -> EnclaveMapping {
     EnclaveMapping {
         section,
         full,
@@ -133,32 +118,24 @@ const fn mapping(section: Section, full: Access, stripped: Access) -> EnclaveMap
 
 const fn page_exact(section: Section) -> bool {
     section.start < section.end
-        && section.start.is_multiple_of(PAGE_BYTES)
-        && section.end.is_multiple_of(PAGE_BYTES)
+        && section.start.is_multiple_of(PAGE_SIZE)
+        && section.end.is_multiple_of(PAGE_SIZE)
 }
 
 const fn route_roots_are_valid(full: u64, stripped: u64) -> bool {
-    full != stripped && full.is_multiple_of(PAGE_BYTES) && stripped.is_multiple_of(PAGE_BYTES)
+    full != stripped && full.is_multiple_of(PAGE_SIZE) && stripped.is_multiple_of(PAGE_SIZE)
 }
 
-const _: () = assert!(route_roots_are_valid(0, PAGE_BYTES));
-
-/// Why a paired route could not be published.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum RouteError {
-    /// The address-space identity has no distinct stripped root.
     SharedRoot,
-    /// A root is not a page-exact physical address.
     InvalidRoot,
-    /// The ordinary task stack is not a canonical aligned kernel address.
     InvalidTaskStack,
-    /// PCID would let a root transition preserve tagged translations.
     PcidEnabled,
-    /// The linker geometry is not the exact enclave contract.
     InvalidEnclave,
 }
 
-/// Fixed-offset state the assembly transition will consume.
+#[derive(Debug)]
 #[repr(C)]
 struct RoutingPage {
     state: AtomicU64,
@@ -167,9 +144,6 @@ struct RoutingPage {
     task_stack_top: AtomicU64,
     transition_stack_top: AtomicU64,
     interrupt_stack_top: AtomicU64,
-    enclave_text_start: AtomicU64,
-    enclave_text_end: AtomicU64,
-    abi_version: AtomicU64,
 }
 
 impl RoutingPage {
@@ -181,9 +155,6 @@ impl RoutingPage {
             task_stack_top: AtomicU64::new(0),
             transition_stack_top: AtomicU64::new(0),
             interrupt_stack_top: AtomicU64::new(0),
-            enclave_text_start: AtomicU64::new(0),
-            enclave_text_end: AtomicU64::new(0),
-            abi_version: AtomicU64::new(1),
         }
     }
 }
@@ -195,13 +166,9 @@ const _: () = {
     assert!(offset_of!(RoutingPage, task_stack_top) == 24);
     assert!(offset_of!(RoutingPage, transition_stack_top) == 32);
     assert!(offset_of!(RoutingPage, interrupt_stack_top) == 40);
-    assert!(offset_of!(RoutingPage, enclave_text_start) == 48);
-    assert!(offset_of!(RoutingPage, enclave_text_end) == 56);
-    assert!(offset_of!(RoutingPage, abi_version) == 64);
-    assert!(size_of::<RoutingPage>() == 72);
+    assert!(size_of::<RoutingPage>() == 48);
 };
 
-/// Byte offsets of the routing page's fields, as the entry assembly addresses them.
 pub(super) mod route {
     use core::mem::offset_of;
 
@@ -222,11 +189,7 @@ pub(super) mod route {
 #[unsafe(link_section = ".kpti.state.route")]
 static WOST_KPTI_ROUTE: RoutingPage = RoutingPage::new();
 
-/// Public constants which bind the linker object to the assembly ABI.
-#[used]
-#[unsafe(link_section = ".kpti.rodata.geometry")]
-static ENTRY_ABI: [u64; 4] = [1, PAGE_BYTES, STACK_BYTES as u64, 6];
-
+#[derive(Debug)]
 #[repr(C, align(4096))]
 struct TransitionStack([u8; STACK_BYTES]);
 
@@ -234,7 +197,7 @@ struct TransitionStack([u8; STACK_BYTES]);
 static TRANSITION_STACK: HardwareCell<TransitionStack> =
     HardwareCell::new(TransitionStack([0; STACK_BYTES]));
 
-/// Publish one inseparable pair and its ordinary kernel-stack destination.
+// A refusal leaves `ROUTE_UPDATING`, which assembly treats as no entry authority.
 pub(super) fn publish_route(
     roots: &AddressSpaceRoots,
     stack: KernelStackTop<'_>,
@@ -248,21 +211,21 @@ pub(super) fn publish_route(
         "a paired entry route publishes only inside a route transaction"
     );
     let Some(stripped) = roots.stripped_root() else {
-        return refuse_route(RouteError::SharedRoot);
+        return Err(RouteError::SharedRoot);
     };
     let full = roots.full_root();
     if !route_roots_are_valid(full.get(), stripped.get()) {
-        return refuse_route(RouteError::InvalidRoot);
+        return Err(RouteError::InvalidRoot);
     }
     if !cpu::page_table_context_ids_are_disabled() {
-        return refuse_route(RouteError::PcidEnabled);
+        return Err(RouteError::PcidEnabled);
     }
-    let Some(enclave) = entry_enclave() else {
-        return refuse_route(RouteError::InvalidEnclave);
-    };
+    if entry_enclave().is_none() {
+        return Err(RouteError::InvalidEnclave);
+    }
     let task_stack_top = stack.address();
-    if task_stack_top < 0xffff_8000_0000_0000 || !task_stack_top.is_multiple_of(16) {
-        return refuse_route(RouteError::InvalidTaskStack);
+    if task_stack_top < KERNEL_HALF_START || !task_stack_top.is_multiple_of(STACK_ALIGN) {
+        return Err(RouteError::InvalidTaskStack);
     }
 
     WOST_KPTI_ROUTE
@@ -281,23 +244,9 @@ pub(super) fn publish_route(
         segment::enclave_ist_stack_top().address(),
         Ordering::Relaxed,
     );
-    WOST_KPTI_ROUTE
-        .enclave_text_start
-        .store(enclave.mappings()[0].section().start, Ordering::Relaxed);
-    WOST_KPTI_ROUTE
-        .enclave_text_end
-        .store(enclave.mappings()[0].section().end, Ordering::Relaxed);
     Ok(())
 }
 
-fn refuse_route(reason: RouteError) -> Result<(), RouteError> {
-    // `ROUTE_UPDATING` stays: it is no entry authority, and assembly makes every interrupt
-    // terminal until the caller clears it or stops, so no refused successor revives the published
-    // task.
-    Err(reason)
-}
-
-/// Invalidate the old route before changing any task entry state.
 pub(super) fn begin_route_update() {
     assert!(
         !interrupt::are_enabled(),
@@ -308,7 +257,6 @@ pub(super) fn begin_route_update() {
         .store(ROUTE_UPDATING, Ordering::Release);
 }
 
-/// Remove any staged paired route before a shared-root task may run.
 pub(super) fn clear_route() {
     assert!(
         !interrupt::are_enabled(),
@@ -330,11 +278,8 @@ pub(super) fn clear_route() {
     WOST_KPTI_ROUTE.state.store(ROUTE_EMPTY, Ordering::Release);
 }
 
-/// Point privilege entry at the guarded enclave transition stack.
 pub(super) fn install_transition_rsp0() -> bool {
-    if !ENTRY_ROOT_SWITCH_IMPLEMENTED
-        || WOST_KPTI_ROUTE.state.load(Ordering::Acquire) != ROUTE_UPDATING
-    {
+    if WOST_KPTI_ROUTE.state.load(Ordering::Acquire) != ROUTE_UPDATING {
         return false;
     }
     assert!(
@@ -345,7 +290,6 @@ pub(super) fn install_transition_rsp0() -> bool {
     true
 }
 
-/// Publish a fully installed pair after its full root is active.
 pub(super) fn finish_route_update(roots: AddressSpaceRoots) -> bool {
     assert!(
         !interrupt::are_enabled(),
@@ -366,16 +310,7 @@ pub(super) fn finish_route_update(roots: AddressSpaceRoots) -> bool {
     true
 }
 
-/// Whether the enclave contains the complete root-switch transaction.
-pub(super) const fn entry_path_is_implemented() -> bool {
-    ENTRY_ROOT_SWITCH_IMPLEMENTED
-}
-
-/// Whether every low-level prerequisite for paired entry is installed.
 pub(super) fn entry_is_ready() -> bool {
-    if !ENTRY_ROOT_SWITCH_IMPLEMENTED {
-        return false;
-    }
     WOST_KPTI_ROUTE.state.load(Ordering::Acquire) == ROUTE_PUBLISHED
         && cpu::page_table_context_ids_are_disabled()
         && entry_enclave().is_some()
@@ -383,7 +318,6 @@ pub(super) fn entry_is_ready() -> bool {
         && segment::double_fault_stack_address() == segment::enclave_ist_stack_top().address()
 }
 
-/// Whether the live route and stacks name this exact bound task.
 pub(super) fn entry_is_ready_for(roots: AddressSpaceRoots, stack: KernelStackTop<'_>) -> bool {
     entry_is_ready()
         && roots.stripped_root().is_some()
@@ -392,7 +326,6 @@ pub(super) fn entry_is_ready_for(roots: AddressSpaceRoots, stack: KernelStackTop
         && WOST_KPTI_ROUTE.task_stack_top.load(Ordering::Acquire) == stack.address()
 }
 
-/// A stack address only this module can mint from its linker-owned storage.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) struct TransitionStackTop(u64);
 

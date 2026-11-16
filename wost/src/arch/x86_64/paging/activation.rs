@@ -1,72 +1,57 @@
-use super::*;
+use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
-/// Activation state published to observers of the installed address space.
-static ACTIVE_STATE: AtomicU8 = AtomicU8::new(ActivationState::Cold.bits());
+use x86_paging::{ENTRIES, Flags, PAGE_SIZE};
 
-/// The root published before activation becomes ready.
+use super::super::{cpu, interrupt};
+use super::{
+    ActivateError, AddressSpace, direct_map_gap, entry_slot, handed_out_gap, kernel_image_gap,
+    translate_in,
+};
+use crate::mm::PhysicalAddress;
+
+const COLD: u8 = 0;
+const INITIALIZING: u8 = 1;
+const READY: u8 = 2;
+
+static ACTIVE_STATE: AtomicU8 = AtomicU8::new(COLD);
+
 static ACTIVE_ROOT: AtomicU64 = AtomicU64::new(0);
 
+#[derive(Debug)]
 struct Activation {
-    interrupts: Option<interrupt::InterruptState>,
+    interrupts: interrupt::InterruptState,
     committed: bool,
 }
 
 impl Activation {
     fn begin() -> Result<Self, ActivateError> {
-        let Some(initializing) = ActivationState::Cold.begin() else {
-            panic!("cold paging activation cannot begin");
-        };
-        let interrupts = Some(interrupt::disable());
-        match ACTIVE_STATE.compare_exchange(
-            ActivationState::Cold.bits(),
-            initializing.bits(),
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        ) {
-            Ok(_) => Ok(Self {
-                interrupts,
-                committed: false,
-            }),
-            Err(found) => {
-                if let Some(interrupts) = interrupts {
-                    interrupts.restore();
-                }
-                let Some(found) = ActivationState::from_bits(found) else {
-                    panic!("paging activation state is corrupt");
-                };
-                assert!(
-                    found != ActivationState::Cold,
-                    "a strong activation exchange refused cold state"
-                );
-                Err(ActivateError::AlreadyActive)
-            }
+        let interrupts = interrupt::disable();
+        if ACTIVE_STATE
+            .compare_exchange(COLD, INITIALIZING, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            interrupts.restore();
+            return Err(ActivateError::AlreadyActive);
         }
+        Ok(Self {
+            interrupts,
+            committed: false,
+        })
     }
 
     fn commit(mut self, root: PhysicalAddress) {
         ACTIVE_ROOT.store(root.get(), Ordering::Release);
-        let Some(ready) = ActivationState::Initializing.complete() else {
-            panic!("paging initialization cannot complete");
-        };
         self.committed = true;
-        ACTIVE_STATE.store(ready.bits(), Ordering::Release);
-        if let Some(interrupts) = self.interrupts.take() {
-            interrupts.restore();
-        }
+        ACTIVE_STATE.store(READY, Ordering::Release);
     }
 }
 
 impl Drop for Activation {
     fn drop(&mut self) {
         if !self.committed {
-            let Some(cold) = ActivationState::Initializing.abort() else {
-                panic!("paging initialization cannot abort");
-            };
-            ACTIVE_STATE.store(cold.bits(), Ordering::Release);
+            ACTIVE_STATE.store(COLD, Ordering::Release);
         }
-        if let Some(interrupts) = self.interrupts.take() {
-            interrupts.restore();
-        }
+        self.interrupts.restore_in_place();
     }
 }
 
@@ -88,7 +73,7 @@ pub fn activate(space: &mut AddressSpace) -> Result<(), ActivateError> {
     // User roots copy these entries, so a `USER` one would share ring-3 pages across processes.
     for index in ENTRIES / 2..ENTRIES {
         let slot = entry_slot(space.root(), index).map_err(ActivateError::SharedTopology)?;
-        let entry = EntrySlot::read(&slot);
+        let entry = slot.read();
         if entry.is_present() && entry.flags().contains(Flags::USER) {
             return Err(ActivateError::UserKernelEntry(index));
         }
@@ -152,18 +137,12 @@ pub fn activate(space: &mut AddressSpace) -> Result<(), ActivateError> {
     Ok(())
 }
 
-/// Whether the kernel is running on tables it built itself.
-pub fn is_active() -> bool {
-    let Some(state) = ActivationState::from_bits(ACTIVE_STATE.load(Ordering::Acquire)) else {
-        panic!("paging activation state is corrupt");
-    };
-    state == ActivationState::Ready
+pub(crate) fn is_active() -> bool {
+    ACTIVE_STATE.load(Ordering::Acquire) == READY
 }
 
-/// The root this kernel installed, to compare with [`cpu::page_table_base`] after the switch.
-///
-/// Only [`is_active`] tells pre-activation apart, because physical zero is a valid root.
-pub fn active_root() -> PhysicalAddress {
+// Only `is_active` tells pre-activation apart, because physical zero is a valid root.
+pub(crate) fn active_root() -> PhysicalAddress {
     let Some(root) = PhysicalAddress::new(ACTIVE_ROOT.load(Ordering::Acquire)) else {
         panic!("the published root lies beyond the physical address limit");
     };

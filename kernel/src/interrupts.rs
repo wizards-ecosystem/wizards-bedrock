@@ -86,9 +86,7 @@ fn apply_speculation_controls() {
     info!("cpu: {speculation}");
     match cpu::shared_kernel_mapping_reason(&speculation) {
         Some(reason) => {
-            let isolation = if cfg!(feature = "selftest")
-                && wost::arch::current::kpti_entry_path_is_implemented()
-            {
+            let isolation = if cfg!(feature = "selftest") {
                 // Self-test runs the paired path even where QEMU's TCG tuple admits shared roots.
                 UserIsolation::Paired
             } else {
@@ -104,15 +102,8 @@ fn apply_speculation_controls() {
             }
         }
         None => {
-            if wost::arch::current::kpti_entry_path_is_implemented() {
-                USER_ISOLATION.store(UserIsolation::Paired.bits(), Ordering::Release);
-                info!("cpu: user isolation paired roots: selected; shared mappings refused");
-            } else {
-                USER_ISOLATION.store(UserIsolation::Closed.bits(), Ordering::Release);
-                warn!(
-                    "cpu: user isolation: no complete shared or paired entry path; ring 3 closed"
-                );
-            }
+            USER_ISOLATION.store(UserIsolation::Paired.bits(), Ordering::Release);
+            info!("cpu: user isolation paired roots: selected; shared mappings refused");
         }
     }
 

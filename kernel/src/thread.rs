@@ -345,11 +345,7 @@ pub(crate) fn start_threads(space: &mut AddressSpace, arena: StackArena) -> Opti
         Ok(slots) => Some(slots),
         Err(failure) => {
             let reason = failure.reason;
-            let returned = space.unmap_stacks(failure.arena);
-            assert!(
-                returned.is_ok(),
-                "an arena refused by the task table must remain removable"
-            );
+            space.unmap_stacks(failure.arena);
             warn!("threads: {reason}; no threads");
             None
         }

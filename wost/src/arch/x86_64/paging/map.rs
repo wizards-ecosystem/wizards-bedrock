@@ -1,7 +1,81 @@
-use super::*;
+use core::mem::ManuallyDrop;
+
+use x86_paging::kpti::shared_user_link_matches;
+use x86_paging::{
+    ENTRIES, Entry, Flags, LARGE_PAGE_SIZE, Level, MappingRange, PAGE_SIZE, TablePrivilege,
+    user_mapping_fits,
+};
+
+use super::{
+    AddressSpace, CACHE_TYPE, EntrySlot, MapError, NOT_THE_CALLERS, Reach, TableRoot, UserMapError,
+    clear_mapping_slot, entry_slot, is_user_address, leaf_in, protected_stack_overlap,
+    ram_cache_policy, slot_in,
+};
+use crate::mm::{
+    self, PhysicalAddress, Segment, SharedBytes, SharedKeepalive, SharedRing, USegment,
+};
 
 impl AddressSpace {
-    /// Map `len` bytes at `virtual_base` onto `physical_base`, adding `PRESENT` and no other flag.
+    pub fn unmap(&mut self, virtual_base: u64, len: u64) -> Result<Unmapped, MapError> {
+        if !virtual_base.is_multiple_of(PAGE_SIZE) || len == 0 || !len.is_multiple_of(PAGE_SIZE) {
+            return Err(MapError::Misaligned(virtual_base));
+        }
+        // Both ends: a walk masks bits 48 and up, so a noncanonical alias could not be invalidated.
+        let end = virtual_base
+            .checked_add(len)
+            .ok_or(MapError::NonCanonical(virtual_base))?;
+        if !x86_paging::is_canonical(virtual_base) || !x86_paging::is_canonical(end - 1) {
+            return Err(MapError::NonCanonical(virtual_base));
+        }
+        self.may_reach(virtual_base, len)?;
+        if let Some(pinned) = protected_stack_overlap(self.roots(), virtual_base, len) {
+            return Err(MapError::Pinned(pinned));
+        }
+        let pages = len / PAGE_SIZE;
+        let remaining_owned = self
+            .owned_pages
+            .checked_sub(pages as usize)
+            .ok_or(MapError::NotOwned(virtual_base))?;
+
+        // Preflight the whole range before clearing anything, so a refusal changes nothing.
+        let mut first = None;
+        let mut was_user = false;
+        for page in 0..pages {
+            let address = virtual_base
+                .checked_add(page * PAGE_SIZE)
+                .ok_or(MapError::NonCanonical(virtual_base))?;
+            let slot = leaf_in(self.root(), address)?;
+            let entry = slot.read();
+            if !entry.flags().contains(Flags::OWNED) {
+                return Err(MapError::NotOwned(address));
+            }
+            // One user-reachable page makes the whole run user bytes.
+            was_user |= entry.flags().contains(Flags::USER);
+            match first {
+                None => first = Some(PhysicalAddress::from_entry(entry)),
+                Some(base) if entry.address() == base.get() + page * PAGE_SIZE => {}
+                Some(_) => return Err(MapError::Discontiguous(address)),
+            }
+        }
+        let base = first.ok_or(MapError::NotMapped(virtual_base))?;
+
+        for page in 0..pages {
+            let address = virtual_base + page * PAGE_SIZE;
+            let slot = leaf_in(self.root(), address)?;
+            clear_mapping_slot(slot, address, Level::Pt);
+        }
+        self.owned_pages = remaining_owned;
+
+        Ok(Unmapped {
+            pages,
+            // SAFETY: preflight proved the `pages` frames at `base` one ascending run of owned leaves,
+            // each frame moved here by a `map_owned` and named by no other handle, and those leaves
+            // were just cleared; `Segment` frees frame by frame, so a sub-run or merged run is exact.
+            frames: ManuallyDrop::new(unsafe { Segment::from_raw(base, pages as usize) }),
+            was_user,
+        })
+    }
+
     pub(super) fn map_range(
         &mut self,
         virtual_base: u64,
@@ -13,8 +87,7 @@ impl AddressSpace {
         let range = MappingRange::new(virtual_base, physical_base, len)?;
         let flags = flags.union(Flags::PRESENT);
 
-        // A pair's lower tables are shared with its stripped root, so every present lower leaf must
-        // be `USER`: a supervisor leaf leaks kernel bytes to transient ring-three reads.
+        // A pair shares lower tables with its stripped root, so a supervisor leaf leaks to ring 3.
         if self.roots().is_paired() && is_user_address(virtual_base) && !flags.contains(Flags::USER)
         {
             return Err(MapError::NotYours(virtual_base));
@@ -34,8 +107,8 @@ impl AddressSpace {
         let mut offset = 0;
         while offset < range.len() {
             let (virtual_address, physical, level) = Self::step(&range, offset, grain);
-            if let Err(reason) = self.set(virtual_address, physical, flags, level) {
-                // Rollback leaves no live entry over the frames a refused owned mapping returns.
+            if let Err(reason) = self.set(TableRoot::Full, virtual_address, physical, flags, level)
+            {
                 self.undo(&range, offset, grain);
                 self.rollback_tables(table_mark);
                 return Err(reason);
@@ -68,7 +141,7 @@ impl AddressSpace {
         let mut table = self.root();
         for level in Level::WALK {
             let slot = entry_slot(table, level.index(virtual_address))?;
-            let current = EntrySlot::read(&slot);
+            let current = slot.read();
             if level == target {
                 return if current.is_present() {
                     Err(MapError::Conflict(virtual_address))
@@ -89,9 +162,8 @@ impl AddressSpace {
         Err(MapError::Conflict(virtual_address))
     }
 
-    /// Whether this space may change `len` bytes at `at`; a user space never edits kernel tables.
     pub(super) fn may_reach(&self, at: u64, len: u64) -> Result<(), MapError> {
-        // A reclaimed space's tables went back, so mapping would walk frames now owned elsewhere.
+        // A reclaimed space's tables went back, so mapping would walk frames owned elsewhere.
         if self.is_reclaimed() {
             return Err(MapError::NotYours(at));
         }
@@ -105,8 +177,7 @@ impl AddressSpace {
         Ok(())
     }
 
-    /// Where `range` at `offset` maps and how large; [`undo`](Self::undo) retraces it exactly,
-    /// since a rollback that disagreed about where a large page began would clear the wrong entry.
+    // `undo` retraces this exactly; a rollback that disagreed would clear the wrong entry.
     fn step(range: &MappingRange, offset: u64, grain: Grain) -> (u64, u64, Level) {
         let virtual_address = range.virtual_base() + offset;
         let physical = range.physical_base() + offset;
@@ -121,8 +192,6 @@ impl AddressSpace {
         )
     }
 
-    /// Clear the first `written` bytes of `range`, whose entries [`preflight`](Self::preflight)
-    /// proved absent before, so every one belongs to this transaction.
     pub(super) fn undo(&mut self, range: &MappingRange, written: u64, grain: Grain) {
         let mut offset = 0;
         while offset < written {
@@ -149,7 +218,7 @@ impl AddressSpace {
                 let slot = entry_slot(owned.frame, index).unwrap_or_else(|reason| {
                     panic!("mapping rollback could not inspect an owned table: {reason}")
                 });
-                let entry = EntrySlot::read(&slot);
+                let entry = slot.read();
                 assert!(
                     entry == Entry::ABSENT,
                     "mapping rollback tried to return a nonempty table"
@@ -164,7 +233,7 @@ impl AddressSpace {
                     .and_then(|root| slot_in(root, owned.virtual_address, owned.level)),
             }
             .unwrap_or_else(|reason| panic!("mapping rollback lost an owned table link: {reason}"));
-            let current = EntrySlot::read(&parent);
+            let current = parent.read();
             assert!(
                 owned.link.table_identity_matches(current),
                 "mapping rollback found a different owned table link"
@@ -179,7 +248,7 @@ impl AddressSpace {
             };
             if let Some(paired) = paired.as_ref() {
                 assert!(
-                    shared_user_link_matches(current, EntrySlot::read(paired)),
+                    shared_user_link_matches(current, paired.read()),
                     "mapping rollback found a divergent paired table link"
                 );
             }
@@ -191,20 +260,9 @@ impl AddressSpace {
             // the only page-table link to it is now absent.
             drop(unsafe { mm::Frame::from_raw(owned.frame) });
             self.tables.pop();
-            if let Some(authority) = self.pair_authority {
-                self.pair_authority = Some(authority.release_table().unwrap_or_else(|| {
-                    panic!("paired rollback lost its intermediate-table authority")
-                }));
-            }
         }
-        assert!(
-            self.pair_authority
-                .is_none_or(|authority| authority.table_frames() == self.tables.len()),
-            "paired rollback retained incomplete frame authority"
-        );
     }
 
-    /// The existing slot for `virtual_address` at `target`, or `NotMapped` where the tables end.
     fn slot_at(&self, virtual_address: u64, target: Level) -> Result<EntrySlot, MapError> {
         let mut table = self.root();
         for level in Level::WALK {
@@ -212,7 +270,7 @@ impl AddressSpace {
             if level == target {
                 return Ok(slot);
             }
-            let entry = EntrySlot::read(&slot);
+            let entry = slot.read();
             if !entry.is_present() || entry.is_huge() {
                 return Err(MapError::NotMapped(virtual_address));
             }
@@ -236,13 +294,12 @@ impl AddressSpace {
             return Ok(());
         };
         let full = entry_slot(self.root(), Level::Pml4.index(virtual_address))?;
-        if !shared_user_link_matches(EntrySlot::read(&full), EntrySlot::read(&stripped)) {
+        if !shared_user_link_matches(full.read(), stripped.read()) {
             return Err(MapError::Conflict(virtual_address));
         }
         Ok(())
     }
 
-    /// Map boot-described memory at `virtual_base`; no safe door takes an unchecked physical range.
     pub fn map_boot(
         &mut self,
         virtual_base: u64,
@@ -256,7 +313,7 @@ impl AddressSpace {
             return Err(MapError::CacheAlias(virtual_base));
         }
         self.may_reach(virtual_base, region.len)?;
-        // Outside the kernel image the memory is reusable, so an executable alias would outlive it.
+        // Memory outside the kernel image is reused, so an executable alias would outlive it.
         if !flags.contains(Flags::NO_EXECUTE) && !mm::is_kernel_image(region.base.get(), region.len)
         {
             return Err(MapError::WriteExecute(virtual_base));
@@ -270,21 +327,22 @@ impl AddressSpace {
         )
     }
 
-    /// Map a caller-owned run here; a refusal rolls back every leaf before `run` is freed.
     pub fn map_owned(
         &mut self,
         virtual_base: u64,
         run: Segment,
         flags: Flags,
     ) -> Result<(), MapError> {
-        // A kernel run holds kernel bytes, so ring 3 never maps it; `map_user` takes outside bytes.
+        // A kernel run holds kernel bytes, so ring 3 never maps it; `map_user` takes user bytes.
         if flags.contains(Flags::USER) {
             return Err(MapError::NotYours(virtual_base));
         }
-        self.map_run(virtual_base, run, flags)
+        self.owned_pages =
+            self.map_owned_frames(virtual_base, run.address(), run.len(), run.frames(), flags)?;
+        core::mem::forget(run);
+        Ok(())
     }
 
-    /// Map an outside-byte run ring 3 may reach, adding `USER` and ownership whatever the flags.
     pub fn map_user(
         &mut self,
         virtual_base: u64,
@@ -297,7 +355,13 @@ impl AddressSpace {
                 run,
             });
         }
-        match self.map_run_geometry(virtual_base, &run, flags.union(Flags::USER)) {
+        match self.map_owned_frames(
+            virtual_base,
+            run.address(),
+            run.len(),
+            run.frames(),
+            flags.union(Flags::USER),
+        ) {
             Ok(owned_pages) => {
                 run.commit_mapping();
                 self.owned_pages = owned_pages;
@@ -307,17 +371,12 @@ impl AddressSpace {
         }
     }
 
-    /// Map a run ring 3 may reach without taking it, refusing a cache alias of its direct map.
-    ///
-    /// It omits `OWNED` and keeps a non-accessing owner, so no frame recycles while either side
-    /// reaches it; the one-way [`USegment::share`] prevents owned and shared aliases.
     pub fn map_shared(
         &mut self,
         virtual_base: u64,
         run: &SharedBytes,
         flags: Flags,
     ) -> Result<(), MapError> {
-        ram_cache_policy(virtual_base, flags)?;
         self.map_shared_allocation(
             virtual_base,
             run.address(),
@@ -327,14 +386,12 @@ impl AddressSpace {
         )
     }
 
-    /// Map a shared ring as [`map_shared`](Self::map_shared) does, keeping its publication words.
     pub fn map_shared_ring<const WORDS: usize>(
         &mut self,
         virtual_base: u64,
         run: &SharedRing<WORDS>,
         flags: Flags,
     ) -> Result<(), MapError> {
-        ram_cache_policy(virtual_base, flags)?;
         self.map_shared_allocation(
             virtual_base,
             run.address(),
@@ -352,6 +409,7 @@ impl AddressSpace {
         keepalive: SharedKeepalive,
         flags: Flags,
     ) -> Result<(), MapError> {
+        ram_cache_policy(virtual_base, flags)?;
         if !user_mapping_fits(virtual_base, len) {
             return Err(MapError::NotYours(virtual_base));
         }
@@ -377,25 +435,7 @@ impl AddressSpace {
         Ok(())
     }
 
-    fn map_run(&mut self, virtual_base: u64, run: Segment, flags: Flags) -> Result<(), MapError> {
-        let owned_pages =
-            self.map_owned_geometry(virtual_base, run.address(), run.len(), run.frames(), flags)?;
-        // The run belongs to the mapping now; `unmap` is what gives it back.
-        core::mem::forget(run);
-        self.owned_pages = owned_pages;
-        Ok(())
-    }
-
-    fn map_run_geometry(
-        &mut self,
-        virtual_base: u64,
-        run: &USegment,
-        flags: Flags,
-    ) -> Result<usize, MapError> {
-        self.map_owned_geometry(virtual_base, run.address(), run.len(), run.frames(), flags)
-    }
-
-    fn map_owned_geometry(
+    fn map_owned_frames(
         &mut self,
         virtual_base: u64,
         physical_base: PhysicalAddress,
@@ -409,8 +449,7 @@ impl AddressSpace {
             .owned_pages
             .checked_add(frames)
             .ok_or(MapError::OutOfMemory)?;
-        // Ownership lives in the leaf unmap reads, never in caller flags; an owned large page
-        // could not be split back.
+        // An owned large page could not be split back, so owned mappings use 4 KiB pages.
         self.map_range(
             virtual_base,
             physical_base.get(),
@@ -421,18 +460,7 @@ impl AddressSpace {
         Ok(owned_pages)
     }
 
-    /// Install one entry at `target`, allocating the tables above it.
-    fn set(
-        &mut self,
-        virtual_address: u64,
-        physical: u64,
-        flags: Flags,
-        target: Level,
-    ) -> Result<(), MapError> {
-        self.set_in(TableRoot::Full, virtual_address, physical, flags, target)
-    }
-
-    pub(super) fn set_in(
+    pub(super) fn set(
         &mut self,
         root: TableRoot,
         virtual_address: u64,
@@ -453,21 +481,21 @@ impl AddressSpace {
 
             if level == target {
                 let entry = Entry::page(target, physical, flags).map_err(MapError::Encoding)?;
-                if EntrySlot::read(&slot).is_present() {
+                if slot.read().is_present() {
                     return Err(MapError::Conflict(virtual_address));
                 }
-                EntrySlot::write(&slot, entry);
+                slot.write(entry);
                 return Ok(());
             }
 
-            let current = EntrySlot::read(&slot);
+            let current = slot.read();
             let paired = if root == TableRoot::Full && level == Level::Pml4 {
                 self.stripped_lower_slot(virtual_address)?
             } else {
                 None
             };
             if let Some(paired) = paired.as_ref()
-                && !shared_user_link_matches(current, EntrySlot::read(paired))
+                && !shared_user_link_matches(current, paired.read())
             {
                 return Err(MapError::Conflict(virtual_address));
             }
@@ -487,32 +515,27 @@ impl AddressSpace {
                     TablePrivilege::Supervisor
                 };
                 let (frame, link) =
-                    self.take_owned_table_in(root, virtual_address, level, privilege)?;
-                EntrySlot::write(&slot, link);
+                    self.take_owned_table(root, virtual_address, level, privilege)?;
+                slot.write(link);
                 if let Some(paired) = paired.as_ref() {
-                    EntrySlot::write(paired, link);
+                    paired.write(link);
                 }
                 frame
             };
         }
 
-        // Unreachable: `target` is `Pt` or `Pd`, both in `Level::WALK`, so the loop returns first.
+        // Unreachable: `target` is `Pt` or `Pd`, both in `Level::WALK`.
         Err(MapError::Conflict(virtual_address))
     }
 }
 
-/// How large a mapping's pages may be; owned mappings stay four-kilobyte so `unmap` can split them.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum Grain {
-    /// The largest page each aligned stretch allows.
     Largest,
-    /// Four kilobytes throughout.
     Pages,
 }
 
-/// Evidence the boot memory map covers one range, the only way into [`AddressSpace::map_boot`].
-///
-/// Not `Copy`: a copy would let a caller reuse the evidence for a range nobody checked.
+// Not `Copy`: a copy would let a caller reuse the evidence for a range nobody checked.
 #[derive(Debug)]
 pub struct BootRegion {
     base: PhysicalAddress,
@@ -521,8 +544,7 @@ pub struct BootRegion {
 }
 
 impl BootRegion {
-    /// Describe `len` bytes at `base`, or `None` before the map or unless memory of one direct-map
-    /// cache type covers it; device holes are refused because write-back MMIO aliases are unsafe.
+    // Device holes are refused because write-back MMIO aliases are unsafe.
     pub fn describe(base: u64, len: u64) -> Option<Self> {
         let end = base.checked_add(len)?;
         if len == 0 || !base.is_multiple_of(PAGE_SIZE) {
@@ -536,11 +558,35 @@ impl BootRegion {
         })
     }
 
-    /// The cache-type bits every mapping of this range must carry.
     const fn cache_type(&self) -> Flags {
         match self.cache {
             crate::boot::DirectMapCache::Normal => Flags::NONE,
             crate::boot::DirectMapCache::Framebuffer => Flags::WRITE_THROUGH,
         }
+    }
+}
+
+#[derive(Debug)]
+#[must_use = "the detached frames remain held until this token is consumed or dropped"]
+pub struct Unmapped {
+    pages: u64,
+    frames: ManuallyDrop<Segment>,
+    was_user: bool,
+}
+
+impl Unmapped {
+    pub const fn pages(&self) -> u64 {
+        self.pages
+    }
+}
+
+impl Drop for Unmapped {
+    fn drop(&mut self) {
+        // A failed clear leaks the frames so no user bytes are disclosed.
+        if self.was_user && !self.frames.zero() {
+            return;
+        }
+        // SAFETY: this is the one drop of `frames`, and nothing reads the field after it.
+        unsafe { ManuallyDrop::drop(&mut self.frames) };
     }
 }

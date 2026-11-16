@@ -8,6 +8,7 @@ use super::shared::SharedAllocation;
 use super::{PhysicalAddress, direct_pointer};
 use crate::arch::current::cpu;
 
+#[derive(Debug)]
 pub(super) struct DirectSpan<'authority> {
     base: *mut u8,
     len: usize,
@@ -107,7 +108,6 @@ impl<'authority> DirectSpan<'authority> {
         true
     }
 
-    /// Push the cache line holding `offset` to memory for a non-snooping reader.
     pub(super) fn flush_line_at(&self, offset: usize) -> bool {
         if offset >= self.len {
             return false;
@@ -119,7 +119,6 @@ impl<'authority> DirectSpan<'authority> {
         true
     }
 
-    /// Push every line of the span to memory, ordered before whatever follows.
     pub(super) fn flush_all(&self) -> bool {
         let flushed = (0..self.len)
             .step_by(CACHE_LINE)
@@ -139,5 +138,5 @@ impl<'authority> DirectSpan<'authority> {
     }
 }
 
-/// Bytes in the `clflush` line every x86-64 processor reports; a smaller line is still covered.
+// The `clflush` line every x86-64 processor reports; a smaller line is still covered.
 const CACHE_LINE: usize = 64;

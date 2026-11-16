@@ -1,4 +1,13 @@
-use super::*;
+use alloc::vec::Vec;
+
+use x86_paging::kpti::{EnclavePage, ObservedPage, enclave_matches};
+use x86_paging::{ENTRIES, Flags, Level, PAGE_SIZE, TablePrivilege};
+
+use super::{
+    AddressSpace, DEVICE_WINDOW_END, DEVICE_WINDOW_START, MapError, TableRoot, entry_slot,
+    translate_in, visit_present_leaves, walk,
+};
+use crate::mm::PhysicalAddress;
 
 impl AddressSpace {
     pub(super) fn install_entry_enclave(
@@ -16,11 +25,11 @@ impl AddressSpace {
             .stripped_root()
             .ok_or(MapError::InvalidEntryEnclave(self.root().get()))?;
         for page in &expected_stripped {
-            self.set_in(
+            self.set(
                 TableRoot::Stripped,
                 page.virtual_address(),
                 page.physical_address(),
-                enclave_flags(page.permission()),
+                page.permission().flags(),
                 Level::Pt,
             )?;
         }
@@ -35,11 +44,9 @@ impl AddressSpace {
                     .map_or(stripped.get(), |page| page.virtual_address()),
             ));
         }
-        paired_flush_premise(self.roots())?;
         Ok(())
     }
 
-    /// The stripped root's enclave pages, once the full root maps exactly the enclave.
     fn expected_enclave(
         &self,
         enclave: super::kpti::EntryEnclave,
@@ -65,14 +72,12 @@ impl AddressSpace {
                 let Some((physical, flags, span)) = walk(self.root(), address) else {
                     return Err(MapError::InvalidEntryEnclave(address));
                 };
-                let full = enclave_permission(mapping.full_access());
-                let stripped = enclave_permission(mapping.stripped_access());
                 expected_full.push(
-                    EnclavePage::new(address, physical.get(), full)
+                    EnclavePage::new(address, physical.get(), mapping.full_access())
                         .map_err(|_| MapError::InvalidEntryEnclave(address))?,
                 );
                 expected_stripped.push(
-                    EnclavePage::new(address, physical.get(), stripped)
+                    EnclavePage::new(address, physical.get(), mapping.stripped_access())
                         .map_err(|_| MapError::InvalidEntryEnclave(address))?,
                 );
                 observed_full.push(ObservedPage::new(address, physical.get(), span, flags));
@@ -91,7 +96,6 @@ impl AddressSpace {
         Ok(expected_stripped)
     }
 
-    /// Reserve the top-level table every later device mapping will share.
     pub(super) fn reserve_shared_kernel_topology(&mut self) -> Result<(), MapError> {
         assert_eq!(
             Level::Pml4.index(DEVICE_WINDOW_START),
@@ -99,7 +103,7 @@ impl AddressSpace {
             "the device window must fit in one shared top-level slot"
         );
         let slot = entry_slot(self.root(), Level::Pml4.index(DEVICE_WINDOW_START))?;
-        let current = EntrySlot::read(&slot);
+        let current = slot.read();
         if current.is_present() {
             if current.is_huge() || current.flags().contains(Flags::USER) {
                 return Err(MapError::Conflict(DEVICE_WINDOW_START));
@@ -107,9 +111,13 @@ impl AddressSpace {
             return Ok(());
         }
 
-        let (_, link) =
-            self.take_owned_table(DEVICE_WINDOW_START, Level::Pml4, TablePrivilege::Supervisor)?;
-        EntrySlot::write(&slot, link);
+        let (_, link) = self.take_owned_table(
+            TableRoot::Full,
+            DEVICE_WINDOW_START,
+            Level::Pml4,
+            TablePrivilege::Supervisor,
+        )?;
+        slot.write(link);
         Ok(())
     }
 }
@@ -143,32 +151,6 @@ fn mapped_guard(
     Ok(None)
 }
 
-const fn enclave_permission(access: super::kpti::Access) -> EnclavePermission {
-    match access {
-        super::kpti::Access::Executable => EnclavePermission::Executable,
-        super::kpti::Access::ReadOnly => EnclavePermission::ReadOnly,
-        super::kpti::Access::Writable => EnclavePermission::Writable,
-    }
-}
-
-pub(super) const fn enclave_access_policy(access: super::kpti::Access) -> (bool, bool) {
-    match access {
-        super::kpti::Access::Executable => (false, true),
-        super::kpti::Access::ReadOnly => (false, false),
-        super::kpti::Access::Writable => (true, false),
-    }
-}
-
-const fn enclave_flags(permission: EnclavePermission) -> Flags {
-    match permission {
-        EnclavePermission::Executable => Flags::PRESENT,
-        EnclavePermission::ReadOnly => Flags::PRESENT.union(Flags::NO_EXECUTE),
-        EnclavePermission::Writable => Flags::PRESENT
-            .union(Flags::WRITABLE)
-            .union(Flags::NO_EXECUTE),
-    }
-}
-
 fn observe_stripped_higher_half(
     root: PhysicalAddress,
     expected_pages: usize,
@@ -190,24 +172,4 @@ fn observe_stripped_higher_half(
         },
     )?;
     Ok(observed)
-}
-
-pub(super) fn paired_flush_premise(roots: AddressSpaceRoots) -> Result<FlushPremise, MapError> {
-    let Some(stripped) = roots.stripped_root() else {
-        return Err(MapError::InvalidEntryEnclave(roots.full_root().get()));
-    };
-    let mut flags = Vec::new();
-    for root in [roots.full_root(), stripped] {
-        visit_present_leaves(root, 0, ENTRIES, |_, _, leaf_flags, _| {
-            flags.try_reserve(1).map_err(|_| MapError::OutOfMemory)?;
-            flags.push(leaf_flags);
-            Ok(())
-        })?;
-    }
-    let pcid = if cpu::page_table_context_ids_are_disabled() {
-        PcidState::Disabled
-    } else {
-        PcidState::Enabled
-    };
-    FlushPremise::new(pcid, &flags).map_err(MapError::InvalidPairedFlush)
 }

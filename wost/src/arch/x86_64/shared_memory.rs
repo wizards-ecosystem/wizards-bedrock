@@ -1,9 +1,6 @@
-//! Publication-word access across an externally writable memory boundary.
-
 use core::arch::asm;
 
-/// Acquire-load one aligned 32-bit publication word; x86 TSO gives a dword load acquire order.
-///
+// x86 TSO gives an aligned dword load acquire order.
 /// # Safety
 ///
 /// `address` must name four readable, naturally aligned bytes that remain mapped for the
@@ -23,8 +20,7 @@ pub(crate) unsafe fn load_acquire_u32(address: usize) -> u32 {
     value
 }
 
-/// Release-store one aligned 32-bit publication word; x86 TSO gives a dword store release order.
-///
+// x86 TSO gives an aligned dword store release order.
 /// # Safety
 ///
 /// `address` must name four writable, naturally aligned bytes that remain mapped for the

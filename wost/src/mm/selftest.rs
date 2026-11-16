@@ -4,13 +4,11 @@ use super::direct::DirectSpan;
 use super::frame::{Frame, Segment};
 use super::{FRAMES, PhysicalAddress, direct_map_pointer, direct_pointer};
 
-#[cfg(feature = "selftest")]
 pub fn free_frames() -> usize {
     FRAMES.lock_leaf().free_count()
 }
 
 impl Frame {
-    #[cfg(feature = "selftest")]
     pub fn is_zero(&self) -> Option<bool> {
         const WORDS: usize = FRAME_SIZE as usize / size_of::<u64>();
 
@@ -27,7 +25,6 @@ impl Frame {
 }
 
 impl Segment {
-    #[cfg(feature = "selftest")]
     #[must_use = "a refused segment read copied no bytes"]
     pub fn read_at(&self, offset: usize, into: &mut [u8]) -> bool {
         let Some(end) = offset.checked_add(into.len()) else {
@@ -47,8 +44,7 @@ impl Segment {
     }
 }
 
-#[cfg(feature = "selftest")]
-pub fn freed_external_run_is_zero_for_test(address: PhysicalAddress, count: usize) -> bool {
+pub fn is_freed_run_zero(address: PhysicalAddress, count: usize) -> bool {
     if count == 0 || !address.get().is_multiple_of(FRAME_SIZE) {
         return false;
     }

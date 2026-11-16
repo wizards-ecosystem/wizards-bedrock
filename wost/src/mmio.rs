@@ -1,41 +1,44 @@
-//! Memory-mapped I/O regions whose every access is checked, so a driver bug is an error value and
-//! never a stray write into whatever follows the device.
-
 use core::fmt;
+
 use mmio_range::{AccessError, AccessRange};
 
-/// Why an [`MmioRegion`] access was refused.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum MmioError {
-    /// The access would extend past the end of the region.
     OutOfBounds {
         offset: usize,
         len: usize,
         region_len: usize,
     },
-    /// The offset is not aligned for an access of this width.
-    Misaligned { offset: usize, align: usize },
-    /// Repeated-access arithmetic overflowed before a range could be formed.
-    Overflow { offset: usize, count: usize },
+    Misaligned {
+        offset: usize,
+        align: usize,
+    },
+    Overflow {
+        offset: usize,
+        count: usize,
+    },
 }
 
 impl fmt::Display for MmioError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             Self::OutOfBounds {
                 offset,
                 len,
                 region_len,
             } => write!(
-                f,
+                formatter,
                 "access of {len} bytes at offset {offset} leaves a {region_len}-byte region"
             ),
             Self::Misaligned { offset, align } => {
-                write!(f, "offset {offset} is not {align}-byte aligned")
+                write!(formatter, "offset {offset} is not {align}-byte aligned")
             }
             Self::Overflow { offset, count } => {
-                write!(f, "{count} words at offset {offset} cannot be represented")
+                write!(
+                    formatter,
+                    "{count} words at offset {offset} cannot be represented"
+                )
             }
         }
     }
@@ -43,7 +46,6 @@ impl fmt::Display for MmioError {
 
 impl core::error::Error for MmioError {}
 
-/// A region of device memory, accessed with volatile operations.
 #[derive(Debug)]
 pub struct MmioRegion {
     base: *mut u8,
@@ -55,8 +57,6 @@ pub struct MmioRegion {
 unsafe impl Send for MmioRegion {}
 
 impl MmioRegion {
-    /// Wrap `len` bytes of device memory at `base`.
-    ///
     /// # Safety
     ///
     /// `base` must name the same live, 4-byte-aligned mapping of at least `len` bytes in every
@@ -66,12 +66,10 @@ impl MmioRegion {
         Self { base, len }
     }
 
-    /// Write one 32-bit word at `offset`.
     pub fn write_u32(&mut self, offset: usize, value: u32) -> Result<(), MmioError> {
         self.write_values(offset, core::iter::once(value))
     }
 
-    /// Read one 32-bit word at `offset`.
     pub fn read_u32(&self, offset: usize) -> Result<u32, MmioError> {
         let offset = self.range_of_words(offset, 1)?.offset();
         let word = self.base.wrapping_add(offset).cast::<u32>();
@@ -80,7 +78,6 @@ impl MmioRegion {
         Ok(unsafe { word.read_volatile() })
     }
 
-    /// Write `count` copies of a 32-bit word starting at `offset`.
     pub(crate) fn fill_u32(
         &mut self,
         offset: usize,
@@ -90,7 +87,6 @@ impl MmioRegion {
         self.write_values(offset, core::iter::repeat_n(value, count))
     }
 
-    /// Write a slice of 32-bit words starting at `offset`.
     pub(crate) fn write_u32_slice(
         &mut self,
         offset: usize,
@@ -113,7 +109,6 @@ impl MmioRegion {
         Ok(())
     }
 
-    /// Confirm repeated word accesses are in bounds and aligned.
     fn range_of_words(&self, offset: usize, count: usize) -> Result<AccessRange, MmioError> {
         AccessRange::repeated(offset, count, WORD, self.len).map_err(|error| match error {
             AccessError::Misaligned { offset, align } => MmioError::Misaligned { offset, align },
@@ -126,11 +121,9 @@ impl MmioRegion {
                 len,
                 region_len,
             },
-            // Overflow and a bad width alike: the request never named a range.
             _ => MmioError::Overflow { offset, count },
         })
     }
 }
 
-/// Bytes in the only access width this region supports.
 const WORD: usize = size_of::<u32>();

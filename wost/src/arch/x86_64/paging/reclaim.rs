@@ -1,17 +1,14 @@
-use super::*;
+use x86_paging::{Entry, Level, TablePrivilege};
+
+use super::super::{cpu, task::Released};
+use super::{
+    AddressSpace, AddressSpaceRoots, MapError, OwnedTable, ReclaimError, ReclaimFailure, TableRoot,
+    active_root, is_active, is_user_address,
+};
+use crate::mm::{self, PhysicalAddress};
 
 impl AddressSpace {
-    /// Take and retain one table frame, or change nothing.
     pub(super) fn take_owned_table(
-        &mut self,
-        virtual_address: u64,
-        level: Level,
-        privilege: TablePrivilege,
-    ) -> Result<(PhysicalAddress, Entry), MapError> {
-        self.take_owned_table_in(TableRoot::Full, virtual_address, level, privilege)
-    }
-
-    pub(super) fn take_owned_table_in(
         &mut self,
         root: TableRoot,
         virtual_address: u64,
@@ -29,10 +26,6 @@ impl AddressSpace {
         self.tables
             .try_reserve(1)
             .map_err(|_| MapError::OutOfMemory)?;
-        let pair_authority = self
-            .pair_authority
-            .map(|authority| authority.acquire_table().ok_or(MapError::OutOfMemory))
-            .transpose()?;
         let frame = mm::allocate_zeroed().ok_or(MapError::OutOfMemory)?;
         let address = frame.address();
         let link = Entry::table(address.get(), privilege).map_err(MapError::Encoding)?;
@@ -44,22 +37,12 @@ impl AddressSpace {
             link,
             root,
         });
-        self.pair_authority = pair_authority;
         Ok((address, link))
     }
 
-    /// Give this space's own table frames back to the allocator; mappings must be removed first.
-    ///
-    /// Refuses an active or bound space, so no current or future `CR3` walks freed tables. A
-    /// refusal leaves the space and its one-shot release evidence reusable; a success makes every
-    /// later operation refuse.
     pub fn reclaim(&mut self, released: Option<Released>) -> Result<usize, ReclaimFailure> {
         // A repeat could mint an owner for frame zero.
         if self.is_reclaimed() {
-            assert!(
-                self.pair_authority.is_none(),
-                "a reclaimed space retained paired frame authority"
-            );
             return Err(ReclaimFailure {
                 reason: ReclaimError::Reclaimed,
                 released,
@@ -67,7 +50,6 @@ impl AddressSpace {
         }
         let roots = self.roots();
         let root = roots.full_root();
-        self.assert_pair_authority(roots);
         if let Some(reason) = self.reclaim_refusal(roots, released.as_ref()) {
             return Err(ReclaimFailure { reason, released });
         }
@@ -86,41 +68,10 @@ impl AddressSpace {
         // SAFETY: construction allocated and forgot the full root exactly once, before anything
         // could record it, and the active-root refusal covers it too.
         drop(unsafe { mm::Frame::from_raw(root) });
-        if let Some(authority) = self.pair_authority.take() {
-            assert_eq!(
-                authority.settle(returned),
-                Ok(PairCleanupState::Released),
-                "paired cleanup returned an incomplete frame set"
-            );
-        }
-        // Kept as an empty value so later safe operations refuse.
         self.roots = None;
         self.shared.clear();
 
         Ok(returned)
-    }
-
-    fn assert_pair_authority(&self, roots: AddressSpaceRoots) {
-        if roots.is_paired() {
-            let authority = self
-                .pair_authority
-                .unwrap_or_else(|| panic!("paired space lost its complete frame authority"));
-            assert_eq!(
-                authority.table_frames(),
-                self.tables.len(),
-                "paired space frame authority disagrees with its tables"
-            );
-            assert_eq!(
-                authority.settle(0),
-                Ok(PairCleanupState::Retained(authority)),
-                "paired cleanup refusal would lose complete authority"
-            );
-        } else {
-            assert!(
-                self.pair_authority.is_none(),
-                "a shared-root space retained paired frame authority"
-            );
-        }
     }
 
     fn reclaim_refusal(
@@ -132,8 +83,9 @@ impl AddressSpace {
         if self.owned_pages != 0 {
             return Some(ReclaimError::Mapped(self.owned_pages));
         }
-        if let Some(reason) = self.device_reclaim_error() {
-            return Some(reason);
+        let devices = self.devices.iter().flatten().count();
+        if devices != 0 {
+            return Some(ReclaimError::Devices(devices));
         }
         if !self.bound
             && let Some(evidence) = released
@@ -142,7 +94,6 @@ impl AddressSpace {
                 evidence.roots().full_root(),
             ));
         }
-        // A bound space needs the task table's linear `Released` evidence.
         if self.bound {
             match released {
                 None => return Some(ReclaimError::StillBound(root)),
@@ -161,9 +112,6 @@ impl AddressSpace {
         None
     }
 
-    /// Whether this space's tables went back to the allocator, after which it answers nothing.
-    ///
-    /// It maps nothing either, and stays a value so a refused reclaim can give it back.
     pub const fn is_reclaimed(&self) -> bool {
         self.roots.is_none()
     }
@@ -173,10 +121,5 @@ impl AddressSpace {
         current_root: PhysicalAddress,
     ) -> bool {
         roots.contains(current_root) || (is_active() && roots.contains(active_root()))
-    }
-
-    pub(super) fn device_reclaim_error(&self) -> Option<ReclaimError> {
-        let mappings = self.devices.iter().flatten().count();
-        (mappings != 0).then_some(ReclaimError::Devices(mappings))
     }
 }
