@@ -1,11 +1,13 @@
-use alloc::sync::Arc;
+use core::fmt;
 use core::mem::ManuallyDrop;
+use core::ptr::NonNull;
+use core::sync::atomic::{AtomicUsize, Ordering, fence};
 
 use ring_proto::SharedLayout;
 
 use super::direct::DirectSpan;
 use super::frame::{Segment, release_sealed_run, seal_run};
-use super::pool::ArenaFrame;
+use super::pool::{ArenaFrame, FrameKind};
 use super::{PhysicalAddress, direct_pointer};
 use crate::arch::current::paging::{Flush, FrameRef};
 use crate::arch::current::shared_memory;
@@ -123,38 +125,111 @@ impl Drop for SealedSegment {
     }
 }
 
+// The holder count and the shared frame's token, in an arena object frame that holds itself, so
+// sharing a frame takes nothing from the kernel heap.
+struct Home {
+    holders: AtomicUsize,
+    frame: ArenaFrame,
+    page: ManuallyDrop<ArenaFrame>,
+}
+
 // Ring 3 may write these bytes through its mapping, so the kernel reaches them only by copies.
-#[derive(Debug)]
-pub(super) struct SharedAllocation(ArenaFrame);
+pub(super) struct SharedAllocation(NonNull<Home>);
+
+// SAFETY: the home is reached only through shared references, its fields are atomics and frame
+// tokens, and only the last holder moves it out.
+unsafe impl Send for SharedAllocation {}
+// SAFETY: as for `Send`: every shared access to the home is a read or an atomic.
+unsafe impl Sync for SharedAllocation {}
 
 impl SharedAllocation {
-    pub(super) const fn address(&self) -> PhysicalAddress {
-        self.0.address()
+    fn new(frame: ArenaFrame, page: ArenaFrame) -> Self {
+        assert!(
+            page.kind() == FrameKind::ArenaObject,
+            "a shared frame's home opened over a {:?} frame",
+            page.kind()
+        );
+        let Some(home) = direct_pointer(page.address(), FRAME_BYTES)
+            .and_then(|base| NonNull::new(base.cast::<Home>()))
+        else {
+            panic!("a shared frame's home lost its direct-map address");
+        };
+        // SAFETY: the page is a fresh object frame this token alone names, page aligned and larger
+        // than `Home`, and nothing reads it before this write; the token moves into its own bytes.
+        unsafe {
+            home.write(Home {
+                holders: AtomicUsize::new(1),
+                frame,
+                page: ManuallyDrop::new(page),
+            });
+        };
+        Self(home)
+    }
+
+    fn home(&self) -> &Home {
+        // SAFETY: this holder keeps the count above zero, so the home stays written and in place.
+        unsafe { self.0.as_ref() }
+    }
+
+    fn another(&self) -> Self {
+        let before = self.home().holders.fetch_add(1, Ordering::Relaxed);
+        assert!(before < usize::MAX / 2, "a shared frame ran out of holders");
+        Self(self.0)
+    }
+
+    pub(super) fn address(&self) -> PhysicalAddress {
+        self.home().frame.address()
     }
 
     pub(super) const LEN: u64 = frame_space::FRAME_SIZE;
 }
 
+impl Drop for SharedAllocation {
+    fn drop(&mut self) {
+        if self.home().holders.fetch_sub(1, Ordering::Release) != 1 {
+            return;
+        }
+        fence(Ordering::Acquire);
+        // SAFETY: this was the last holder, so no other reference to the home remains, and this
+        // read moves it out once; the home's own frame is then dropped last.
+        let Home { frame, page, .. } = unsafe { self.0.as_ptr().read() };
+        drop(frame);
+        drop(ManuallyDrop::into_inner(page));
+    }
+}
+
+impl fmt::Debug for SharedAllocation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_tuple("SharedAllocation")
+            .field(&self.home().frame)
+            .finish()
+    }
+}
+
+const FRAME_BYTES: u64 = frame_space::FRAME_SIZE;
+
 impl ArenaFrame {
-    // Zeroed when taken, so ring 3 sees only zeros and what the kernel writes afterwards.
+    // Zeroed when taken, so ring 3 sees only zeros and what the kernel writes afterwards; `home`
+    // is an object frame that keeps the count.
     #[must_use]
-    pub fn share(self) -> Shared {
-        Shared(Arc::new(SharedAllocation(self)))
+    pub fn share(self, home: Self) -> Shared {
+        Shared(SharedAllocation::new(self, home))
     }
 }
 
 // Keeps a shared frame for a space that maps it, so the frame outlives every leaf naming it.
 #[derive(Debug)]
-pub struct SharedFrame(Arc<SharedAllocation>);
+pub struct SharedFrame(SharedAllocation);
 
 impl SharedFrame {
     pub fn frame(&self) -> FrameRef<'_> {
-        FrameRef::Writable(&self.0.0)
+        FrameRef::Writable(&self.0.home().frame)
     }
 }
 
 #[derive(Debug)]
-pub struct Shared(Arc<SharedAllocation>);
+pub struct Shared(SharedAllocation);
 
 impl Shared {
     pub fn into_bytes(self) -> SharedBytes {
@@ -176,7 +251,7 @@ impl Shared {
 }
 
 #[derive(Debug)]
-pub struct SharedBytes(Arc<SharedAllocation>);
+pub struct SharedBytes(SharedAllocation);
 
 impl SharedBytes {
     pub fn address(&self) -> PhysicalAddress {
@@ -202,13 +277,13 @@ impl SharedBytes {
     }
 
     pub fn frame(&self) -> SharedFrame {
-        SharedFrame(Arc::clone(&self.0))
+        SharedFrame(self.0.another())
     }
 }
 
 #[derive(Debug)]
 pub struct SharedRing<const WORDS: usize> {
-    allocation: Arc<SharedAllocation>,
+    allocation: SharedAllocation,
     layout: SharedLayout<WORDS>,
 }
 
@@ -324,7 +399,7 @@ impl<const WORDS: usize> SharedRing<WORDS> {
     }
 
     pub fn frame(&self) -> SharedFrame {
-        SharedFrame(Arc::clone(&self.allocation))
+        SharedFrame(self.allocation.another())
     }
 }
 

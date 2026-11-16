@@ -1,5 +1,3 @@
-use alloc::vec::Vec;
-
 use x86_paging::{ENTRIES, Entry, Flags, Level, PAGE_SIZE, user_mapping_fits};
 
 use super::map::Grain;
@@ -9,7 +7,7 @@ use super::{
     protected_stack_overlap,
 };
 use crate::mm::PhysicalAddress;
-use crate::mm::pool::{ArenaFrame, Earmark, FrameKind, Mappings, SealedFrame};
+use crate::mm::pool::{ArenaFrame, ArenaId, Earmark, FrameKind, Mappings, SealedFrame};
 use crate::sync::ThreadContext;
 
 #[derive(Clone, Copy, Debug)]
@@ -135,7 +133,11 @@ impl AddressSpace {
     // Unlinks every table under the range that no entry uses any more, in one flush with `flush`,
     // so mapping and unmapping at fresh addresses never grows a space's tables.
     pub fn prune(&mut self, at: u64, len: u64, mut flush: Flush) -> Pruned {
-        let mut tables = Vec::new();
+        let mut pruned = Pruned {
+            flush: Flush::none(),
+            arena: self.arena,
+            first: None,
+        };
         if self.reach == Reach::UserHalfOnly
             && !self.is_reclaimed()
             && len != 0
@@ -145,21 +147,19 @@ impl AddressSpace {
                 let span = level.span();
                 let mut base = at & !(span - 1);
                 while base < at + len {
-                    self.unlink_if_empty(base, level, &mut flush, &mut tables);
+                    self.unlink_if_empty(base, level, &mut flush, &mut pruned);
                     base += span;
                 }
             }
         }
-        Pruned { flush, tables }
+        pruned.flush = flush;
+        pruned
     }
 
-    fn unlink_if_empty(
-        &mut self,
-        base: u64,
-        level: Level,
-        flush: &mut Flush,
-        tables: &mut Vec<ArenaFrame>,
-    ) {
+    fn unlink_if_empty(&mut self, base: u64, level: Level, flush: &mut Flush, pruned: &mut Pruned) {
+        let Some(arena) = self.arena else {
+            return;
+        };
         let Ok(slot) = slot_in(self.root(), base, level) else {
             return;
         };
@@ -168,35 +168,41 @@ impl AddressSpace {
             return;
         }
         let table = PhysicalAddress::from_entry(entry);
-        let empty = (0..ENTRIES)
-            .all(|index| entry_slot(table, index).is_ok_and(|child| !child.read().is_present()));
         // A kernel-frame table from a self-test door is not this space's to return.
-        let Some(position) = self
-            .arena_tables
-            .iter()
-            .position(|frame| frame.address() == table)
-        else {
-            return;
-        };
-        if !empty || tables.try_reserve(1).is_err() {
+        if !ArenaFrame::is_linked_table(table, arena) {
             return;
         }
+        let empty = (0..ENTRIES)
+            .all(|index| entry_slot(table, index).is_ok_and(|child| !child.read().is_present()));
+        if !empty {
+            return;
+        }
+        let Ok(head) = entry_slot(table, 0) else {
+            return;
+        };
         if level == Level::Pml4
             && let Ok(Some(paired)) = self.stripped_lower_slot(base)
         {
             paired.write(Entry::ABSENT);
         }
         flush.merge(clear_mapping_slot(slot, base, level, self.roots()));
-        tables.push(self.arena_tables.swap_remove(position));
+        // A processor still caching the link reads a frame address there, which is never present.
+        head.write(Entry::from_bits(
+            pruned.first.map_or(0, PhysicalAddress::get),
+        ));
+        pruned.first = Some(table);
+        self.arena_tables -= 1;
     }
 }
 
-// Tables unlinked from a space, returned to their arena once every processor is past the flush.
+// Tables unlinked from a space, each naming the next in its first entry, returned to their arena
+// once every processor is past the flush.
 #[must_use = "unlinked tables return only after their flush is waited for"]
 #[derive(Debug)]
 pub struct Pruned {
     flush: Flush,
-    tables: Vec<ArenaFrame>,
+    arena: Option<ArenaId>,
+    first: Option<PhysicalAddress>,
 }
 
 impl Pruned {
@@ -207,13 +213,24 @@ impl Pruned {
 
 impl Drop for Pruned {
     fn drop(&mut self) {
+        let Some(arena) = self.arena else {
+            return;
+        };
         // A processor past no flush may still walk them, so they stay charged until dissolve.
         let complete = self.flush.is_complete();
-        for table in self.tables.drain(..) {
+        while let Some(table) = self.first.take() {
+            let Ok(head) = entry_slot(table, 0) else {
+                panic!("an unlinked table lost its direct-map address");
+            };
+            self.first = PhysicalAddress::new(head.read().bits()).filter(|next| next.get() != 0);
+            head.write(Entry::ABSENT);
+            // SAFETY: `prune` unlinked this table of the arena from its one slot and put it on
+            // this list only, so no other token for it exists.
+            let frame = unsafe { ArenaFrame::from_link(table, arena) };
             if complete {
-                drop(table);
+                drop(frame);
             } else {
-                table.surrender();
+                frame.surrender();
             }
         }
     }

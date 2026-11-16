@@ -618,6 +618,12 @@ number and is added here, as one entry or as an amending id on the entry it chan
   live records need, not for every address it ever touched, so a program that maps and unmaps at
   fresh addresses neither drains its world nor reaches a refusal. Kernel placements also stop
   below the last user page, which no mapping may hold.
+- **D-541** No path a ring operation or a spawn reaches takes kernel heap for its tables or shared
+  pages: a user space names its arena tables only by their links and rebuilds each token from the
+  tree, checked against the frame table, when it returns or surrenders them; an `Unmap` chains the
+  tables it unlinked through their first entry, which a stale walk reads as not present; a shared
+  frame keeps its holder count and token in an object frame of its world, one more frame per
+  shared page in the earmark; the entry enclave is checked by walking again instead of by lists.
 - **D-481** The ring 3 witness is a cargo-built static `ET_EXEC` linked at `0x400000`, and the
   loader maps each segment at its `p_vaddr` with no per-program shift, because a position-dependent
   image holds absolute addresses that a shift breaks and the in-kernel loader takes no `ET_DYN`;

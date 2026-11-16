@@ -155,30 +155,32 @@ impl ObservedPage {
     }
 }
 
-// `observed` must hold every present stripped higher-half leaf: an omitted one reads as absent.
-pub fn enclave_matches(expected: &[EnclavePage], observed: &[ObservedPage]) -> bool {
-    if expected.is_empty() || expected.len() != observed.len() {
+// `observed(i)` is the leaf found at `expected(i)`'s address; the caller proves no other leaf is
+// present, since one never asked for reads as absent.
+pub fn enclave_matches(
+    count: usize,
+    expected: impl Fn(usize) -> Option<EnclavePage>,
+    observed: impl Fn(usize) -> Option<ObservedPage>,
+) -> bool {
+    if count == 0 {
         return false;
     }
-
-    for (index, page) in expected.iter().enumerate() {
-        if expected[..index].iter().any(|prior| {
-            prior.virtual_address == page.virtual_address
+    for index in 0..count {
+        let (Some(page), Some(found)) = (expected(index), observed(index)) else {
+            return false;
+        };
+        if !page.matches(found) {
+            return false;
+        }
+        for earlier in 0..index {
+            let Some(prior) = expected(earlier) else {
+                return false;
+            };
+            if prior.virtual_address == page.virtual_address
                 || prior.physical_address == page.physical_address
-        }) {
-            return false;
-        }
-        let mut match_count = 0;
-        for candidate in observed {
-            if candidate.virtual_address == page.virtual_address {
-                match_count += 1;
-                if !page.matches(*candidate) {
-                    return false;
-                }
+            {
+                return false;
             }
-        }
-        if match_count != 1 {
-            return false;
         }
     }
     true

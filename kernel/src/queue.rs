@@ -159,9 +159,10 @@ pub(crate) struct QueueRef {
 }
 
 impl QueueRef {
-    // The ring page and buffer 0, one data frame each, beside the queue object.
+    // The ring page and buffer 0, one data frame and one object frame for its holders each, beside
+    // the queue object.
     pub(crate) fn frames_for() -> Option<u32> {
-        QueuePool::frames_for(1)?.checked_add(2)
+        QueuePool::frames_for(1)?.checked_add(4)
     }
 
     pub(crate) fn create(
@@ -194,7 +195,9 @@ impl QueueRef {
 impl Queue {
     pub(crate) fn new(clock: &'static WorldClock, earmark: &mut Earmark) -> Option<Self> {
         let ring = earmark.take(FrameKind::ArenaData)?;
+        let ring_home = earmark.take(FrameKind::ArenaObject)?;
         let data = earmark.take(FrameKind::ArenaData)?;
+        let data_home = earmark.take(FrameKind::ArenaObject)?;
         // Shared, so a space mapping them keeps them until its leaves are gone.
         let layout = SharedLayout::new(
             native_abi::ring::BYTES,
@@ -206,7 +209,7 @@ impl Queue {
             ],
         )
         .ok()?;
-        let mut shared = ring.share().into_ring(layout).ok()?;
+        let mut shared = ring.share(ring_home).into_ring(layout).ok()?;
 
         // Written before the pages are ever mapped, so no program sees a ring it cannot read.
         write_u32(&mut shared, header::VERSION, native_abi::ring::VERSION);
@@ -220,7 +223,7 @@ impl Queue {
         Some(Self {
             ring: SpinLock::new(SharedQueue {
                 pages: shared,
-                data: data.share().into_bytes(),
+                data: data.share(data_home).into_bytes(),
                 protocol: state,
             }),
             waiters: WaitQueue::new(),

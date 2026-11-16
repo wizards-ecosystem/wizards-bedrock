@@ -411,6 +411,45 @@ impl ArenaFrame {
         &self.mappings
     }
 
+    // A page table names its tables by their links alone; the frame stays charged and counted as
+    // a token until `from_link` rebuilds it.
+    pub(crate) fn into_link(self) -> super::PhysicalAddress {
+        assert!(
+            self.kind == FrameKind::Table,
+            "only a page-table frame lives as a link"
+        );
+        ManuallyDrop::new(self).address()
+    }
+
+    // Whether `address` is a table frame of `arena`, as `into_link` left it.
+    pub(crate) fn is_linked_table(address: super::PhysicalAddress, arena: ArenaId) -> bool {
+        let Ok(frame) = usize::try_from(address.get() / FRAME_BYTES as u64) else {
+            return false;
+        };
+        let _guard = FRAMES.lock_leaf();
+        let record = table::read(frame);
+        matches!(record.owner(), Owner::Arena(index, FrameKind::Table) if index == arena.record())
+            && record.access() == Access::Writable
+    }
+
+    /// # Safety
+    ///
+    /// `address` came from `into_link` on a token of `arena`, and no token for it was rebuilt
+    /// since, so the result is the frame's only handle.
+    pub(crate) unsafe fn from_link(address: super::PhysicalAddress, arena: ArenaId) -> Self {
+        assert!(
+            Self::is_linked_table(address, arena),
+            "a table link at {:#x} names no table frame of its arena",
+            address.get()
+        );
+        Self {
+            frame: (address.get() / FRAME_BYTES as u64) as usize,
+            arena,
+            kind: FrameKind::Table,
+            mappings: Mappings::new(),
+        }
+    }
+
     pub fn surrender(self) {
         let frame = ManuallyDrop::new(self);
         frame.mappings.retire().settle();

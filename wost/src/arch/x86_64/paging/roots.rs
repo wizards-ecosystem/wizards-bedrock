@@ -1,8 +1,7 @@
-use alloc::vec::Vec;
-
 use x86_paging::kpti::{EnclavePage, EnclavePermission, ObservedPage, enclave_matches};
 use x86_paging::{ENTRIES, Flags, Level, PAGE_SIZE, TablePrivilege};
 
+use super::kpti::{EnclaveMapping, EntryEnclave};
 use super::{
     AddressSpace, DEVICE_WINDOW_END, DEVICE_WINDOW_START, MapError, Reach, TableRoot,
     current_mapping_root, entry_slot, translate_in, visit_present_leaves, walk,
@@ -12,22 +11,34 @@ use crate::mm::pool::Earmark;
 use crate::mm::{self, PhysicalAddress};
 
 impl AddressSpace {
+    // Every check walks the tables again rather than keeping a list, so building a user space takes
+    // nothing from the kernel heap.
     pub(super) fn install_entry_enclave(
         &mut self,
-        enclave: super::kpti::EntryEnclave,
+        enclave: EntryEnclave,
         tables: &mut Earmark,
     ) -> Result<(), MapError> {
         let pages = enclave_pages(enclave)?;
-        let expected_stripped = self.expected_enclave(enclave, pages)?;
-        if let Some(address) = mapped_guard(self.root(), enclave)? {
+        let root = self.root();
+        let first = enclave_page(enclave, 0).map_or(root.get(), |(address, _)| address);
+        let refused = MapError::InvalidEntryEnclave(first);
+        if !enclave_matches(
+            pages,
+            |index| expected_page(root, enclave, index, false),
+            |index| observed_page(root, enclave, index),
+        ) {
+            return Err(refused);
+        }
+        if let Some(address) = mapped_guard(root, enclave)? {
             return Err(MapError::InvalidEntryEnclave(address));
         }
 
         let stripped = self
             .roots()
             .stripped_root()
-            .ok_or(MapError::InvalidEntryEnclave(self.root().get()))?;
-        for page in &expected_stripped {
+            .ok_or(MapError::InvalidEntryEnclave(root.get()))?;
+        for index in 0..pages {
+            let page = expected_page(root, enclave, index, true).ok_or(refused)?;
             self.set(
                 TableRoot::Stripped,
                 page.virtual_address(),
@@ -40,64 +51,21 @@ impl AddressSpace {
         if let Some(address) = mapped_guard(stripped, enclave)? {
             return Err(MapError::InvalidEntryEnclave(address));
         }
-        let observed = observe_stripped_higher_half(stripped, pages)?;
-        if !enclave_matches(&expected_stripped, &observed) {
-            return Err(MapError::InvalidEntryEnclave(
-                expected_stripped
-                    .first()
-                    .map_or(stripped.get(), |page| page.virtual_address()),
-            ));
+        let mut leaves = 0;
+        visit_present_leaves(stripped, ENTRIES / 2, ENTRIES, |_, _, _, _| {
+            leaves += 1;
+            Ok(())
+        })?;
+        if leaves != pages
+            || !enclave_matches(
+                pages,
+                |index| expected_page(root, enclave, index, true),
+                |index| observed_page(stripped, enclave, index),
+            )
+        {
+            return Err(refused);
         }
         Ok(())
-    }
-
-    fn expected_enclave(
-        &self,
-        enclave: super::kpti::EntryEnclave,
-        pages: usize,
-    ) -> Result<Vec<EnclavePage>, MapError> {
-        let mut expected_full = Vec::new();
-        let mut expected_stripped = Vec::new();
-        let mut observed_full = Vec::new();
-        expected_full
-            .try_reserve_exact(pages)
-            .map_err(|_| MapError::OutOfMemory)?;
-        expected_stripped
-            .try_reserve_exact(pages)
-            .map_err(|_| MapError::OutOfMemory)?;
-        observed_full
-            .try_reserve_exact(pages)
-            .map_err(|_| MapError::OutOfMemory)?;
-
-        for mapping in enclave.mappings() {
-            let section = mapping.section();
-            let mut address = section.start;
-            while address < section.end {
-                let Some((physical, flags, span)) = walk(self.root(), address) else {
-                    return Err(MapError::InvalidEntryEnclave(address));
-                };
-                expected_full.push(
-                    EnclavePage::new(address, physical.get(), mapping.full_access())
-                        .map_err(|_| MapError::InvalidEntryEnclave(address))?,
-                );
-                expected_stripped.push(
-                    EnclavePage::new(address, physical.get(), mapping.stripped_access())
-                        .map_err(|_| MapError::InvalidEntryEnclave(address))?,
-                );
-                observed_full.push(ObservedPage::new(address, physical.get(), span, flags));
-                address = address
-                    .checked_add(PAGE_SIZE)
-                    .ok_or(MapError::InvalidEntryEnclave(address))?;
-            }
-        }
-        if !enclave_matches(&expected_full, &observed_full) {
-            return Err(MapError::InvalidEntryEnclave(
-                expected_full
-                    .first()
-                    .map_or(self.root().get(), |page| page.virtual_address()),
-            ));
-        }
-        Ok(expected_stripped)
     }
 
     pub(super) fn reserve_shared_kernel_topology(&mut self) -> Result<(), MapError> {
@@ -162,7 +130,7 @@ impl AddressSpace {
     }
 }
 
-fn enclave_pages(enclave: super::kpti::EntryEnclave) -> Result<usize, MapError> {
+fn enclave_pages(enclave: EntryEnclave) -> Result<usize, MapError> {
     enclave.mappings().try_fold(0usize, |total, mapping| {
         let pages = usize::try_from(mapping.section().mapped_len() / PAGE_SIZE)
             .map_err(|_| MapError::OutOfMemory)?;
@@ -170,10 +138,47 @@ fn enclave_pages(enclave: super::kpti::EntryEnclave) -> Result<usize, MapError> 
     })
 }
 
-fn mapped_guard(
+// The enclave's `index`th page and the mapping it belongs to, counted through the sections.
+fn enclave_page(enclave: EntryEnclave, mut index: usize) -> Option<(u64, EnclaveMapping)> {
+    for mapping in enclave.mappings() {
+        let section = mapping.section();
+        let pages = usize::try_from(section.mapped_len() / PAGE_SIZE).ok()?;
+        if index < pages {
+            return Some((section.start + index as u64 * PAGE_SIZE, mapping));
+        }
+        index -= pages;
+    }
+    None
+}
+
+// The page as the full root maps it, with the access the full or the stripped root must give it.
+fn expected_page(
     root: PhysicalAddress,
-    enclave: super::kpti::EntryEnclave,
-) -> Result<Option<u64>, MapError> {
+    enclave: EntryEnclave,
+    index: usize,
+    stripped: bool,
+) -> Option<EnclavePage> {
+    let (address, mapping) = enclave_page(enclave, index)?;
+    let (physical, _, _) = walk(root, address)?;
+    let access = if stripped {
+        mapping.stripped_access()
+    } else {
+        mapping.full_access()
+    };
+    EnclavePage::new(address, physical.get(), access).ok()
+}
+
+fn observed_page(
+    root: PhysicalAddress,
+    enclave: EntryEnclave,
+    index: usize,
+) -> Option<ObservedPage> {
+    let (address, _) = enclave_page(enclave, index)?;
+    let (physical, flags, span) = walk(root, address)?;
+    Some(ObservedPage::new(address, physical.get(), span, flags))
+}
+
+fn mapped_guard(root: PhysicalAddress, enclave: EntryEnclave) -> Result<Option<u64>, MapError> {
     for guard in enclave.guards() {
         let mut address = guard.start;
         while address < guard.end {
@@ -186,27 +191,4 @@ fn mapped_guard(
         }
     }
     Ok(None)
-}
-
-fn observe_stripped_higher_half(
-    root: PhysicalAddress,
-    expected_pages: usize,
-) -> Result<Vec<ObservedPage>, MapError> {
-    let mut observed = Vec::new();
-    observed
-        .try_reserve_exact(expected_pages)
-        .map_err(|_| MapError::OutOfMemory)?;
-    visit_present_leaves(
-        root,
-        ENTRIES / 2,
-        ENTRIES,
-        |address, physical, flags, span| {
-            if observed.len() == expected_pages {
-                return Err(MapError::InvalidEntryEnclave(address));
-            }
-            observed.push(ObservedPage::new(address, physical.get(), span, flags));
-            Ok(())
-        },
-    )?;
-    Ok(observed)
 }

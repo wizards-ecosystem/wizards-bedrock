@@ -46,10 +46,13 @@ impl WorldClock {
     }
 
     // The page is a frame of the world it serves.
-    pub(crate) fn start(&self, frame: ArenaFrame) -> Result<(), Error> {
+    pub(crate) fn start(&self, frame: ArenaFrame, home: ArenaFrame) -> Result<(), Error> {
         let layout = SharedLayout::new(PAGE_SIZE as usize, [NOW_NS, NOW_NS + 4])
             .map_err(|_| Error::Absent)?;
-        let mut page = frame.share().into_ring(layout).map_err(|_| Error::Absent)?;
+        let mut page = frame
+            .share(home)
+            .into_ring(layout)
+            .map_err(|_| Error::Absent)?;
 
         let mode = if time::is_calibrated() {
             mode::NORMAL

@@ -1,11 +1,13 @@
-use x86_paging::{Entry, Level, TablePrivilege};
+use core::ops::Range;
+
+use x86_paging::{ENTRIES, Entry, Level, TablePrivilege};
 
 use super::super::{cpu, task::Released};
 use super::{
     AddressSpace, AddressSpaceRoots, MapError, Reach, ReclaimError, ReclaimFailure, TableRoot,
-    active_root, is_active, is_user_address,
+    active_root, entry_slot, is_active, is_user_address,
 };
-use crate::mm::pool::{Earmark, FrameKind};
+use crate::mm::pool::{ArenaFrame, Earmark, FrameKind};
 use crate::mm::{self, PhysicalAddress};
 
 impl AddressSpace {
@@ -26,14 +28,14 @@ impl AddressSpace {
             return Err(MapError::KernelTopologyFrozen(virtual_address));
         }
         if let Some(tables) = supply {
-            self.arena_tables
-                .try_reserve(1)
-                .map_err(|_| MapError::OutOfMemory)?;
+            if self.arena != Some(tables.arena()) {
+                return Err(MapError::NotYours(virtual_address));
+            }
             let frame = tables.take(FrameKind::Table).ok_or(MapError::OutOfMemory)?;
-            let address = frame.address();
-            let link = Entry::table(address.get(), privilege).map_err(MapError::Encoding)?;
-            self.arena_tables.push(frame);
-            return Ok((address, link));
+            let link =
+                Entry::table(frame.address().get(), privilege).map_err(MapError::Encoding)?;
+            self.arena_tables += 1;
+            return Ok((frame.into_link(), link));
         }
         self.tables
             .try_reserve(1)
@@ -67,7 +69,8 @@ impl AddressSpace {
             drop(unsafe { mm::Frame::from_raw(table) });
         }
         // The refusals prove nothing walks them, so each returns zeroed to its arena.
-        self.arena_tables.clear();
+        self.each_arena_table(drop);
+        self.arena_tables = 0;
         if self.reach == Reach::UserHalfOnly {
             self.roots = None;
             return Ok(returned);
@@ -125,6 +128,29 @@ impl AddressSpace {
         None
     }
 
+    // Rebuilds the token of every arena table once, each after the tables below it: the user half
+    // of the full root, the stripped root's higher half (the enclave), then the roots.
+    pub(super) fn each_arena_table(&mut self, mut each: impl FnMut(ArenaFrame)) {
+        let (Some(roots), Some(arena)) = (self.roots, self.arena) else {
+            return;
+        };
+        let mut found = |table: PhysicalAddress| {
+            if ArenaFrame::is_linked_table(table, arena) {
+                // SAFETY: the table frames of this arena under these roots were linked by
+                // `into_link` for this space alone, each in one slot, and the walk visits each
+                // slot once, so this is each frame's only token.
+                each(unsafe { ArenaFrame::from_link(table, arena) });
+            }
+        };
+        below(roots.full_root(), 0..ENTRIES / 2, 0, &mut found);
+        if let Some(stripped) = roots.stripped_root() {
+            below(stripped, ENTRIES / 2..ENTRIES, 0, &mut found);
+            found(stripped);
+        }
+        found(roots.full_root());
+        self.arena = None;
+    }
+
     pub const fn is_reclaimed(&self) -> bool {
         self.roots.is_none()
     }
@@ -134,5 +160,30 @@ impl AddressSpace {
         current_root: PhysicalAddress,
     ) -> bool {
         roots.contains(current_root) || (is_active() && roots.contains(active_root()))
+    }
+}
+
+// Calls `each` for every table linked through `slots` of `table`, a table `depth` levels below a
+// root, after the tables below that one.
+fn below(
+    table: PhysicalAddress,
+    slots: Range<usize>,
+    depth: u32,
+    each: &mut dyn FnMut(PhysicalAddress),
+) {
+    for index in slots {
+        let Ok(slot) = entry_slot(table, index) else {
+            continue;
+        };
+        let entry = slot.read();
+        if !entry.is_present() || entry.is_huge() {
+            continue;
+        }
+        let child = PhysicalAddress::from_entry(entry);
+        // A page directory's children are page tables, whose entries are leaves.
+        if depth < 2 {
+            below(child, 0..ENTRIES, depth + 1, each);
+        }
+        each(child);
     }
 }

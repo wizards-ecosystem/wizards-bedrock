@@ -614,8 +614,17 @@ each record's references and then reclaim the tables. The ring, buffer 0 and tim
 arena data frames the kernel also reads through a shared view (`mm::SharedRing`,
 `mm::SharedBytes`). Each has a shared record, and `Space::share` maps it by `map_frame` and keeps
 a `SharedFrame` reference to it, so the frame outlives every leaf naming it whatever order the queue
-and the space go in; `clear` drops those references only after its flush. The time page is a frame
-of the root world, made when the root world starts.
+and the space go in; `clear` drops those references only after its flush. The holder count and the
+frame's token live in an arena object frame of the same world, so sharing takes nothing from the
+kernel heap. The time page is a frame of the root world, made when the root world starts.
+
+A user space's roots and tables are arena `Table` frames of its world, named only by their links:
+the space keeps their count and its arena, and rebuilds each token from the tree, checked against
+the frame table, when `reclaim` returns them or a dropped space surrenders them. `Unmap` unlinks
+every table under the range that no entry uses, in the flush that clears the leaves, chains the
+unlinked tables through their first entry (never present), and returns them after that flush. The
+entry enclave is checked by walking the tables again, not by building lists, so building a user
+space takes no kernel heap either.
 
 The time page is mapped read-only at its placed address (`kernel/src/timepage.rs`, layout and
 field widths in `native_abi::timepage`, whose `Constants::encode` writes the constants). Version 2 holds constants written

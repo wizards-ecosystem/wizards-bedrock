@@ -165,10 +165,15 @@ pub(crate) fn start_root(context: &mut ThreadContext) {
 
 // A program reading its time page must find the mode word, not a page fault.
 fn publish_time_page(context: &mut ThreadContext, root: NodeRef) {
-    let frame = registry::hold(root)
-        .and_then(|world| pool::earmark(context, world.arena, 1).ok())
-        .and_then(|mut earmark| earmark.take(FrameKind::ArenaData));
-    match frame.map(|frame| timepage::root().start(frame)) {
+    let frames = registry::hold(root)
+        .and_then(|world| pool::earmark(context, world.arena, 2).ok())
+        .and_then(|mut earmark| {
+            Some((
+                earmark.take(FrameKind::ArenaData)?,
+                earmark.take(FrameKind::ArenaObject)?,
+            ))
+        });
+    match frames.map(|(frame, home)| timepage::root().start(frame, home)) {
         Some(Ok(())) => info!(
             "time: world clock page v{}, world time from 0 in steps of {} ns",
             native_abi::timepage::VERSION,
