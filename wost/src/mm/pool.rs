@@ -323,7 +323,7 @@ impl ArenaFrame {
     }
 
     #[must_use = "a refused frame write changed no bytes"]
-    pub fn write_at(&self, at: usize, bytes: &[u8]) -> bool {
+    pub fn write_at(&mut self, at: usize, bytes: &[u8]) -> bool {
         self.span().write_at(at, bytes)
     }
 
