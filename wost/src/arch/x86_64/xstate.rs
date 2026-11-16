@@ -1,11 +1,6 @@
-//! Eager x87, SSE and AVX state isolation, since lazy switching is the CVE-2018-3665 disclosure.
-//!
-//! `x86_cpuid::xstate` owns the host-tested layout arithmetic and this module the control
-//! registers and save instructions; all fallible validation precedes enabling user-visible state.
-
 use core::arch::asm;
 use core::arch::x86_64::__cpuid_count;
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 
 use x86_cpuid::xstate::{self, Alignment, Component, Layout};
 
@@ -16,50 +11,52 @@ mod selftest;
 #[cfg(feature = "selftest")]
 pub use selftest::{Probe, read_probe, save_stays_inside_its_area, write_probe};
 
-/// The leaf that describes extended state.
 const XSTATE_LEAF: u32 = 0x0D;
 
-/// `CPUID.01H:ECX` bit 26, the processor's own `XSAVE` support.
 const XSAVE_SUPPORTED: u32 = 1 << 26;
 
-/// `CPUID.0DH.1:EAX` bit 1, the compacted save instruction.
 const XSAVEC_SUPPORTED: u32 = 1 << 1;
 
 const AVX_INDEX: u32 = 2;
 
-/// Bytes `.bss` reserves per thread for a save area; the instructions get the `CPUID` size.
-///
-/// [`init`] refuses a larger size instead of overrunning it: 576 bytes of legacy area and header
-/// plus 256 for AVX leave generous room, and a mask this kernel does not set cannot grow it.
+// `CPUID.0DH.i:ECX` bit 1: the component starts on a 64-byte boundary in the compacted form.
+const ALIGNED_TO_64: u32 = 1 << 1;
+
 pub const CEILING: usize = 1024;
 
-/// Bytes the save instructions actually write, or zero before [`init`].
 static BYTES: AtomicUsize = AtomicUsize::new(0);
 
-/// Which save instruction to use: 0 none, 1 `XSAVE`, 2 `XSAVEC`.
-static FORM: AtomicUsize = AtomicUsize::new(0);
+static FORM: AtomicU8 = AtomicU8::new(SaveForm::None as u8);
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
+enum SaveForm {
+    None,
+    Standard,
+    Compacted,
+}
+
+impl SaveForm {
+    fn current() -> Self {
+        match FORM.load(Ordering::Acquire) {
+            1 => Self::Standard,
+            2 => Self::Compacted,
+            _ => Self::None,
+        }
+    }
+}
 
 static MASK: AtomicU64 = AtomicU64::new(0);
 
-/// Components the save and restore instructions are asked to transfer.
 const OPERATION_MASK: u32 = u32::MAX;
 
-/// What [`init`] decided, for the boot report and the checks.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Extended {
-    /// Bytes a save area needs.
     pub bytes: usize,
-    /// The mask in `XCR0`.
     pub mask: u64,
-    /// Whether the compacted form is in use.
     pub compacted: bool,
 }
 
-/// Turn on extended-state saving, and report what it costs.
-///
-/// `None` without a usable `XSAVE`, so user launch stays closed: switches cannot isolate that
-/// state. Safe: state bits and their instruction features are checked before any control register
-/// is changed.
 pub fn init() -> Option<Extended> {
     let basic = __cpuid_count(1, 0);
     if basic.ecx & XSAVE_SUPPORTED == 0 {
@@ -92,7 +89,6 @@ pub fn init() -> Option<Extended> {
         return None;
     }
 
-    // Every fallible preflight precedes the irreversible control-register write.
     cpu::enable_extended_state();
     // SAFETY: every bit was reported available, x87 and SSE are among them, AVX only with its
     // instruction support, and `CR4.OSXSAVE` is set.
@@ -100,7 +96,12 @@ pub fn init() -> Option<Extended> {
 
     MASK.store(mask, Ordering::Release);
     BYTES.store(bytes, Ordering::Release);
-    FORM.store(if compacted { 2 } else { 1 }, Ordering::Release);
+    let form = if compacted {
+        SaveForm::Compacted
+    } else {
+        SaveForm::Standard
+    };
+    FORM.store(form as u8, Ordering::Release);
     Some(Extended {
         bytes,
         mask,
@@ -108,14 +109,12 @@ pub fn init() -> Option<Extended> {
     })
 }
 
-/// What one component of the state costs and whether it wants alignment.
 fn describe(index: u32) -> Component {
-    // A sub-leaf the processor does not describe answers zeros, which `Component::new` reads as
-    // absent.
+    // A sub-leaf the processor does not describe answers zeros, which reads as absent.
     let leaf = __cpuid_count(XSTATE_LEAF, index);
     Component::new(
         leaf.eax,
-        if leaf.ecx & (1 << 1) != 0 {
+        if leaf.ecx & ALIGNED_TO_64 != 0 {
             Alignment::Bytes64
         } else {
             Alignment::Natural
@@ -123,46 +122,34 @@ fn describe(index: u32) -> Component {
     )
 }
 
-/// Bytes a save area needs, or zero if nothing is saved.
 pub fn bytes() -> usize {
     BYTES.load(Ordering::Acquire)
 }
 
-/// Whether extended state is being saved at all.
 pub fn is_enabled() -> bool {
-    FORM.load(Ordering::Acquire) != 0
+    SaveForm::current() != SaveForm::None
 }
 
-/// Whether the configured save machinery and hardware still isolate user state.
 pub fn user_state_is_isolated() -> bool {
-    configured_policy_is_live()
-}
-
-fn configured_policy_is_live() -> bool {
     is_enabled()
         && cpu::extended_state_is_enabled()
         && extended_control() == MASK.load(Ordering::Acquire)
 }
 
-/// Save this CPU's extended state into `area`.
-///
 /// # Safety
 ///
 /// `area` must be 64-byte aligned, at least [`bytes`] long and writable for that whole span.
 /// Nothing else may be reading or writing it.
-///
-/// # Panics
-///
-/// Panics if the live control registers no longer match the sized policy.
 pub(super) unsafe fn save(area: *mut u8) {
     assert!(
-        configured_policy_is_live(),
+        user_state_is_isolated(),
         "extended-state controls diverged from the sized save policy"
     );
-    match FORM.load(Ordering::Acquire) {
-        2 => {
-            // SAFETY: the caller's, plus `XSAVEC` needs only `CR4.OSXSAVE`, which `init` set
-            // before storing a non-zero form.
+    match SaveForm::current() {
+        SaveForm::Compacted => {
+            // SAFETY: the caller supplies an exclusive, 64-byte-aligned area of at least
+            // `bytes()`, all `XSAVEC` writes for the mask `init` sized, and the assert above
+            // re-read `CR4.OSXSAVE` and `XCR0`.
             unsafe {
                 asm!(
                     "xsavec [{area}]",
@@ -173,8 +160,8 @@ pub(super) unsafe fn save(area: *mut u8) {
                 );
             }
         }
-        1 => {
-            // SAFETY: as above, for the uncompacted form.
+        SaveForm::Standard => {
+            // SAFETY: as for `XSAVEC`: `init` sized `bytes()` for the standard form in this case.
             unsafe {
                 asm!(
                     "xsave [{area}]",
@@ -185,30 +172,24 @@ pub(super) unsafe fn save(area: *mut u8) {
                 );
             }
         }
-        _ => {}
+        SaveForm::None => {}
     }
 }
 
-/// Restore this CPU's extended state from `area`.
-///
 /// # Safety
 ///
 /// `area` must satisfy [`save`]'s requirements and hold either a state [`save`] wrote or one
 /// [`write_initial`] wrote.
-///
-/// # Panics
-///
-/// Panics if the live control registers no longer match the sized policy.
 pub(super) unsafe fn restore(area: *const u8) {
-    if FORM.load(Ordering::Acquire) == 0 {
+    if SaveForm::current() == SaveForm::None {
         return;
     }
     assert!(
-        configured_policy_is_live(),
+        user_state_is_isolated(),
         "extended-state controls diverged from the sized restore policy"
     );
-    // SAFETY: the caller's, plus `CR4.OSXSAVE` is set: `init` stored a non-zero form only after
-    // setting it.
+    // SAFETY: the caller supplies an exclusive, aligned area holding a `save` or `write_initial`
+    // image, so `XRSTOR` reads only well-formed state, and the assert above re-read the controls.
     unsafe {
         asm!(
             "xrstor [{area}]",
@@ -220,22 +201,15 @@ pub(super) unsafe fn restore(area: *const u8) {
     }
 }
 
-/// Fill `area` with the architectural initial state in standard form.
-///
-/// A zero `XSTATE_BV` and `XCOMP_BV` encode initial registers and zero reserved header bytes
-/// satisfy `XRSTOR`'s format checks, but `XRSTOR` loads `MXCSR` from memory, so it is set to the
-/// reset value with every SIMD exception masked.
-///
 /// # Safety
 ///
 /// `area` must be writable for [`CEILING`] bytes, with nothing else reading or writing it.
 pub(super) unsafe fn write_initial(area: *mut u8) {
-    /// Byte offset of `MXCSR` in the legacy region.
     const MXCSR_OFFSET: usize = 24;
-    /// `MXCSR` after reset: all exceptions masked, round to nearest.
     const MXCSR_RESET: u32 = 0x1F80;
     // SAFETY: the caller's span covers `CEILING` bytes.
     unsafe { area.write_bytes(0, CEILING) };
+    // `XRSTOR` loads `MXCSR` from memory even with `XSTATE_BV` zero, so it gets the reset value.
     // SAFETY: the legacy region lies inside that span, and the write needs no alignment.
     unsafe {
         area.wrapping_add(MXCSR_OFFSET)
@@ -244,15 +218,14 @@ pub(super) unsafe fn write_initial(area: *mut u8) {
     }
 }
 
-/// Write `mask` to `XCR0`.
-///
 /// # Safety
 ///
 /// `CR4.OSXSAVE` must be set, and every bit of `mask` must be one `CPUID.0DH.0` reported as
 /// available, with bit 0 among them; `XSETBV` faults otherwise.
 unsafe fn set_extended_control(mask: u64) {
     let (low, high) = register_bits::u32_halves(mask);
-    // SAFETY: the caller's.
+    // SAFETY: the caller guarantees `CR4.OSXSAVE` is set and that `mask` holds only reported
+    // components, x87 among them, which is everything `XSETBV` checks.
     unsafe {
         asm!(
             "xsetbv",
@@ -264,12 +237,8 @@ unsafe fn set_extended_control(mask: u64) {
     }
 }
 
-/// Read `XCR0` back, for the check that the write took.
-///
-/// Zero before [`init`] succeeds, as on a processor without `XSAVE`, for the same reason.
 pub fn extended_control() -> u64 {
-    // `XGETBV` legality comes from live `CR4.OSXSAVE`; consulting the later `FORM` publication
-    // would make the read self-referential.
+    // Gated on live `CR4.OSXSAVE`, not on `FORM`, which `init` publishes only afterwards.
     if !cpu::extended_state_is_enabled() {
         return 0;
     }

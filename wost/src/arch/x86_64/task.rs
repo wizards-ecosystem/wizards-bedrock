@@ -1,9 +1,3 @@
-//! Kernel threads: the saved state of each, and the switch between them.
-//!
-//! Each slot retains a verified arena stack and saved pointer, with callee-saved registers on that
-//! stack. The naked switch loads only state produced here on stacks [`init`] verified, and dead
-//! slots cannot resume; scheduling policy remains in the kernel.
-
 use core::fmt;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
@@ -21,79 +15,55 @@ use crate::cell::HardwareCell;
 use crate::panic::PanicToken;
 use crate::sync::{Once, SpinLock};
 
-/// Slots the table holds, the boot thread's among them.
-///
-/// A cap on the arena: [`init`] accepts any arena of fewer stacks, and the kernel's own constant
-/// decides how many it maps.
 pub(crate) const MAX_TASKS: usize = 32;
 
-/// The slot of the boot thread, the flow that called [`init`] on the bootloader's stack.
 pub const BOOT: usize = 0;
 
-/// What a fabricated thread begins by running; it never returns, and a finished thread calls
-/// [`exit_to`].
 pub type Entry = extern "C" fn(usize) -> !;
 
-/// Why a request was refused.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum TaskError {
-    /// [`init`] has not run, or ran twice.
     NotInitialised,
-    /// The kernel's own tables are not active, so the arena is not mapped.
     Inactive,
-    /// A stack the arena claims is not mapped writable and non-executable where the table looks.
     Unmapped(u64),
-    /// The arena holds more stacks than the table has slots.
     TooMany(usize),
-    /// No such slot.
     OutOfRange(usize),
-    /// The slot has never been fabricated.
     Vacant(usize),
-    /// The slot's thread has exited, and nothing may resume it.
     Dead(usize),
-    /// The slot's thread is live; fabricating over it would discard a stack still in use.
     Occupied(usize),
-    /// The slot is the one already running.
     Current(usize),
-    /// The boot slot has no arena stack to fabricate a frame on, and no address space to bind.
     Boot,
-    /// The interrupted code was not accepting interrupts, so it is inside a critical section that
-    /// must not be switched out of.
     Uninterruptible,
-    /// [`switch_from_trap`] was called outside a trap handler.
     NotInTrap,
-    /// [`switch_to`] was called inside a trap handler, whose frame the switch would carry away.
     InTrap,
-    /// The frame handed to [`switch_from_trap`] is not the live handler's, so nothing it claims
-    /// about the interrupted code is evidence.
     ForeignFrame,
 }
 
 impl fmt::Display for TaskError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
-            Self::NotInitialised => {
-                core::fmt::Write::write_str(f, "the task table is not initialised")
+            Self::NotInitialised => formatter.write_str("the task table is not initialised"),
+            Self::Inactive => formatter.write_str("the kernel's page tables are not active"),
+            Self::Unmapped(address) => {
+                write!(formatter, "stack at {address:#x} is not mapped as a stack")
             }
-            Self::Inactive => {
-                core::fmt::Write::write_str(f, "the kernel's page tables are not active")
+            Self::TooMany(stacks) => {
+                write!(formatter, "{stacks} stacks exceed {MAX_TASKS} task slots")
             }
-            Self::Unmapped(address) => write!(f, "stack at {address:#x} is not mapped as a stack"),
-            Self::TooMany(stacks) => write!(f, "{stacks} stacks exceed {MAX_TASKS} task slots"),
-            Self::OutOfRange(slot) => write!(f, "slot {slot} does not exist"),
-            Self::Vacant(slot) => write!(f, "slot {slot} holds no thread"),
-            Self::Dead(slot) => write!(f, "slot {slot} has exited"),
-            Self::Occupied(slot) => write!(f, "slot {slot} is live"),
-            Self::Current(slot) => write!(f, "slot {slot} is already running"),
-            Self::Boot => core::fmt::Write::write_str(f, "the boot slot has no arena stack"),
+            Self::OutOfRange(slot) => write!(formatter, "slot {slot} does not exist"),
+            Self::Vacant(slot) => write!(formatter, "slot {slot} holds no thread"),
+            Self::Dead(slot) => write!(formatter, "slot {slot} has exited"),
+            Self::Occupied(slot) => write!(formatter, "slot {slot} is live"),
+            Self::Current(slot) => write!(formatter, "slot {slot} is already running"),
+            Self::Boot => formatter.write_str("the boot slot has no arena stack"),
             Self::Uninterruptible => {
-                core::fmt::Write::write_str(f, "the interrupted code holds a critical section")
+                formatter.write_str("the interrupted code holds a critical section")
             }
-            Self::NotInTrap => core::fmt::Write::write_str(f, "not inside a trap handler"),
-            Self::InTrap => core::fmt::Write::write_str(f, "inside a trap handler"),
+            Self::NotInTrap => formatter.write_str("not inside a trap handler"),
+            Self::InTrap => formatter.write_str("inside a trap handler"),
             Self::ForeignFrame => {
-                core::fmt::Write::write_str(f, "not the frame the live handler was entered with")
+                formatter.write_str("not the frame the live handler was entered with")
             }
         }
     }
@@ -111,15 +81,10 @@ enum State {
 #[derive(Clone, Copy, Debug)]
 struct Slot {
     state: State,
-    /// The pinned arena index. Absent for the boot slot.
     stack_index: Option<usize>,
     entry: Option<(Entry, usize)>,
-    /// Whether the thread should be accepting interrupts on its first run.
     starts_interruptible: bool,
-    /// The tables to install when this thread runs, or `None` to keep the kernel's; written only
-    /// by [`bind_address_space`], which takes evidence the space agrees about the higher half.
     page_table: Option<AddressSpaceRoots>,
-    /// Where thread-local storage begins, switched with the privilege stack, tables and xstate.
     thread_base: CanonicalAddress,
 }
 
@@ -137,9 +102,7 @@ impl Slot {
 #[derive(Debug)]
 struct Table {
     slots: [Slot; MAX_TASKS],
-    /// Slots in use, the boot slot included.
     count: usize,
-    /// Stack identities used to derive each retained-hardware pointer.
     stacks: Option<TaskStackPin>,
 }
 
@@ -156,16 +119,11 @@ static TABLE: SpinLock<Table> = SpinLock::new(Table {
     stacks: None,
 });
 
-/// Each slot's saved stack pointer.
-///
-/// The switch's assembly stores `rsp` here, so it is a raw pointer instead of a lock assembly
-/// cannot take. Every access has the flag clear and the slot settled under [`TABLE`], which on
-/// one CPU is exclusivity.
+// The switch assembly writes these; every access has interrupts clear and the slot settled
+// under `TABLE`.
 static CONTEXTS: HardwareCell<[u64; MAX_TASKS]> = HardwareCell::new([0; MAX_TASKS]);
 
-/// One extended-state save area per slot, static so switching is allocation-free.
-///
-/// Boot verifies the CPUID size against each ceiling-sized area.
+#[derive(Debug)]
 #[repr(C, align(64))]
 struct SaveAreas([[u8; xstate::CEILING]; MAX_TASKS]);
 
@@ -175,35 +133,21 @@ static EXTENDED: HardwareCell<SaveAreas> =
 static CURRENT: AtomicUsize = AtomicUsize::new(BOOT);
 static INIT: Once = Once::new();
 
-/// A task-table initialization refusal and the still-owned stack arena.
 #[derive(Debug)]
 #[must_use = "a refused task-table initialization returns its stack arena"]
 pub struct InitFailure {
-    /// Why the task table refused the arena.
     pub reason: TaskError,
-    /// The mappings no task-table slot retained.
     pub arena: StackArena,
 }
 
 impl fmt::Display for InitFailure {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&self.reason, f)
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.reason, formatter)
     }
 }
 
 impl core::error::Error for InitFailure {}
 
-/// Take the arena's stacks into the table, making the caller the boot thread.
-///
-/// Every guard and original stack page is walked in the live tables before the complete extents
-/// are pinned. Returns how many threads can be fabricated.
-///
-/// # Errors
-///
-/// [`TaskError::Inactive`] before the kernel's tables are active, [`TaskError::Unmapped`] naming
-/// the first stack the walk could not find, [`TaskError::TooMany`] for an arena larger than the
-/// table, and [`TaskError::NotInitialised`] on a second call. [`InitFailure`] returns the arena
-/// unchanged because no slot retained it.
 pub fn init(arena: StackArena) -> Result<usize, InitFailure> {
     let saved = interrupt::disable();
     let layout = match validate_arena(&arena) {
@@ -254,22 +198,11 @@ fn validate_arena(arena: &StackArena) -> Result<stack_layout::StackLayout, TaskE
     Ok(layout)
 }
 
-/// The slot whose stack this CPU is running on.
 pub fn current() -> usize {
     CURRENT.load(Ordering::Acquire)
 }
 
-/// Give `slot` a fresh thread that will begin at `entry(arg)`.
-///
-/// The initial frame returns into `thread_start` with ABI alignment. Dead-slot reuse is safe
-/// because no switch can resume the prior context. Interrupt admission is captured from the
-/// creator before scheduler locking; the switch itself always observes the disabled state.
-///
-/// # Errors
-///
-/// [`TaskError::Occupied`] if the slot's thread is live, [`TaskError::Boot`] for the boot slot,
-/// [`TaskError::OutOfRange`] past the table, and [`TaskError::NotInitialised`] before [`init`].
-pub fn fabricate(slot: usize, entry: Entry, arg: usize) -> Result<(), TaskError> {
+pub fn fabricate(slot: usize, entry: Entry, argument: usize) -> Result<(), TaskError> {
     // Before the lock, which clears the flag: the caller's own flag is wanted.
     let starts_interruptible = interrupt::are_enabled();
     let mut table = TABLE.lock_leaf();
@@ -294,13 +227,12 @@ pub fn fabricate(slot: usize, entry: Entry, arg: usize) -> Result<(), TaskError>
         .as_mut_ptr()
         .cast::<u8>()
         .wrapping_add(slot * xstate::CEILING);
-    // SAFETY: `slot` is in TABLE, so below `MAX_TASKS`; the guard and clear flag exclude the switch
-    // path that uses this complete save area, and the slot is not live yet.
+    // SAFETY: `slot` is below `count`, so below `MAX_TASKS`, and `extended` starts one
+    // `CEILING`-byte element of `EXTENDED`; the lock and clear flag exclude the switch path, its
+    // only other user, and the slot is not live.
     unsafe { xstate::write_initial(extended) };
 
-    let Some(stack_index) = table.slots[slot].stack_index else {
-        return Err(TaskError::Vacant(slot));
-    };
+    let stack_index = table.slots[slot].stack_index;
     let Some(top) = table.kernel_stack_top(slot) else {
         panic!("a reusable task lost its pinned stack identity");
     };
@@ -317,8 +249,8 @@ pub fn fabricate(slot: usize, entry: Entry, arg: usize) -> Result<(), TaskError>
 
     table.slots[slot] = Slot {
         state: State::Alive,
-        stack_index: Some(stack_index),
-        entry: Some((entry, arg)),
+        stack_index,
+        entry: Some((entry, argument)),
         starts_interruptible,
         page_table: None,
         thread_base: CanonicalAddress::ZERO,
@@ -326,16 +258,6 @@ pub fn fabricate(slot: usize, entry: Entry, arg: usize) -> Result<(), TaskError>
     Ok(())
 }
 
-/// Run `slot`, returning when something switches back to this one.
-///
-/// The caller's interrupt flag is restored on return; the target resumes its own saved flag or
-/// inherits the creator's on first entry.
-///
-/// # Errors
-///
-/// [`TaskError::Current`] for the running slot, [`TaskError::Dead`] for an exited one,
-/// [`TaskError::Vacant`] for an unfabricated one, [`TaskError::OutOfRange`] past the table, and
-/// [`TaskError::NotInitialised`] before [`init`], and [`TaskError::InTrap`] inside a trap handler.
 pub fn switch_to(slot: usize) -> Result<(), TaskError> {
     if interrupt::in_trap() {
         return Err(TaskError::InTrap);
@@ -351,16 +273,6 @@ pub fn switch_to(slot: usize) -> Result<(), TaskError> {
     outcome
 }
 
-/// Run `slot` from a trap handler, returning into that same handler later.
-///
-/// The live frame must prove the interrupted code admitted interrupts, or switching could strand a
-/// critical section. Trap depth follows the thread and is restored on resumption.
-///
-/// # Errors
-///
-/// [`TaskError::Uninterruptible`] if the interrupted code had the flag clear,
-/// [`TaskError::NotInTrap`] outside a handler, [`TaskError::ForeignFrame`] for a frame the live
-/// handler was not entered with, and otherwise as [`switch_to`].
 pub fn switch_from_trap(slot: usize, frame: &TrapFrame) -> Result<(), TaskError> {
     if !interrupt::in_trap() {
         return Err(TaskError::NotInTrap);
@@ -368,7 +280,7 @@ pub fn switch_from_trap(slot: usize, frame: &TrapFrame) -> Result<(), TaskError>
     if !interrupt::is_live_frame(frame) {
         return Err(TaskError::ForeignFrame);
     }
-    if frame.flags() & interrupt::FLAGS_INTERRUPT == 0 {
+    if !frame.was_interruptible() {
         return Err(TaskError::Uninterruptible);
     }
 
@@ -385,14 +297,6 @@ pub fn switch_from_trap(slot: usize, frame: &TrapFrame) -> Result<(), TaskError>
     outcome
 }
 
-/// Leave the running thread for good, from trap context, and run `slot`.
-///
-/// Marks the leaving slot dead before switching, making its stack and slot reusable without
-/// permitting the interrupted context to resume.
-///
-/// # Errors
-///
-/// As [`switch_from_trap`].
 pub fn retire_to(slot: usize, frame: &TrapFrame) -> Result<(), TaskError> {
     if !interrupt::in_trap() {
         return Err(TaskError::NotInTrap);
@@ -400,7 +304,7 @@ pub fn retire_to(slot: usize, frame: &TrapFrame) -> Result<(), TaskError> {
     if !interrupt::is_live_frame(frame) {
         return Err(TaskError::ForeignFrame);
     }
-    if frame.flags() & interrupt::FLAGS_INTERRUPT == 0 {
+    if !frame.was_interruptible() {
         return Err(TaskError::Uninterruptible);
     }
 
@@ -408,8 +312,7 @@ pub fn retire_to(slot: usize, frame: &TrapFrame) -> Result<(), TaskError> {
     let suspended = interrupt::suspend_trap();
     match prepare(slot, State::Dead) {
         Ok((save, load)) => {
-            // This handler and every exclusion parked on its stack die with the context; the
-            // target's parked ledger becomes current.
+            // This handler and every exclusion parked on its stack die with the context.
             saved.commit_context_disabled();
             interrupt::switch_context(slot);
             // SAFETY: as in `switch_from_trap`, and the slot being left is now `Dead`, so this
@@ -425,15 +328,6 @@ pub fn retire_to(slot: usize, frame: &TrapFrame) -> Result<(), TaskError> {
     }
 }
 
-/// Leave the running thread for good and run `slot`.
-///
-/// The caller's slot is marked dead before the switch, so no later [`switch_to`] can land on its
-/// stack, which makes fabricating a new thread over it safe. Returns only if the switch was
-/// refused; on success, the calling context is never resumed.
-///
-/// # Errors
-///
-/// As [`switch_to`].
 pub fn exit_to(slot: usize) -> TaskError {
     let saved = interrupt::disable();
     match prepare(slot, State::Dead) {
@@ -452,14 +346,6 @@ pub fn exit_to(slot: usize) -> TaskError {
     }
 }
 
-/// Validate `slot`, move bookkeeping to it, and return the two stack pointers.
-///
-/// The leaving slot becomes `leaving`. Called with the interrupt flag clear.
-///
-/// # Panics
-///
-/// Panics if a spin lock is held: a switch would leave it locked on a context nothing can
-/// schedule, and the next taker spins with the flag clear.
 fn prepare(slot: usize, leaving: State) -> Result<(*mut u64, u64), TaskError> {
     assert!(
         crate::sync::spinlocks_held() == 0,
@@ -468,17 +354,12 @@ fn prepare(slot: usize, leaving: State) -> Result<(*mut u64, u64), TaskError> {
     let mut table = TABLE.lock_leaf();
     let current = admit(&table, slot)?;
 
-    // Revoke the old route before changing the logical current task, so an NMI during the
-    // bookkeeping fails closed instead of dispatching through the previous task's otherwise-valid
-    // route.
+    // Revoke the old route before changing the current task, so an NMI here fails closed.
     kpti::begin_route_update();
     table.slots[current].state = leaving;
     CURRENT.store(slot, Ordering::Release);
 
-    // Every switch moves page-table and privilege-stack state together, the kernel root for slots
-    // without a space. A paired slot publishes its complete route and transition RSP0 in this
-    // interrupt-excluded transaction; every other slot clears the route and restores its ordinary
-    // RSP0 before it can run.
+    // Root, route and privilege stack move together before the target can run.
     let roots = table.slots[slot].page_table;
     let wanted = roots
         .map(AddressSpaceRoots::full_root)
@@ -516,14 +397,14 @@ fn prepare(slot: usize, leaving: State) -> Result<(*mut u64, u64), TaskError> {
         );
     }
 
-    // Eager save and restore sit outside the naked switch because `+soft-float` guarantees the
-    // intervening kernel path cannot disturb them.
+    // Saving outside the naked switch is sound only because the kernel is built soft-float.
     if xstate::is_enabled() {
         let areas = EXTENDED.as_mut_ptr().cast::<u8>();
         let leaving = areas.wrapping_add(current * xstate::CEILING);
         let arriving = areas.wrapping_add(slot * xstate::CEILING);
-        // SAFETY: both indices are below `MAX_TASKS`; each area is aligned and at least `bytes()`
-        // long, and the lock and clear flag exclude access.
+        // SAFETY: both indices are below `MAX_TASKS`, so each pointer starts a `CEILING`-byte
+        // element of the 64-byte-aligned `EXTENDED` (1024 is a multiple of 64), and `init`
+        // refused any `bytes()` above `CEILING`; the lock and clear flag exclude other access.
         unsafe { xstate::save(leaving) };
         // SAFETY: as above, and the area holds initial-state zeros or a complete `save`.
         unsafe { xstate::restore(arriving) };
@@ -540,7 +421,6 @@ fn prepare(slot: usize, leaving: State) -> Result<(*mut u64, u64), TaskError> {
     Ok((save, load))
 }
 
-/// The running slot, once `slot` is a live switch target other than it.
 fn admit(table: &Table, slot: usize) -> Result<usize, TaskError> {
     if table.count == 0 {
         return Err(TaskError::NotInitialised);
@@ -571,8 +451,7 @@ fn restore_ordinary_entry(table: &Table, slot: usize) {
     kpti::clear_route();
 }
 
-// Read FS_BASE at the switch because ring 3 can change its own value without updating remembered
-// state.
+// Ring 3 can change its own FS base, so the switch reads it rather than trusting the slot.
 fn switch_thread_base(table: &mut Table, current: usize, slot: usize) {
     let Some(leaving) = CanonicalAddress::new(read_thread_base()) else {
         panic!("the processor retained a non-canonical FS base");
@@ -582,17 +461,6 @@ fn switch_thread_base(table: &mut Table, current: usize, slot: usize) {
     write_thread_base(table.slots[slot].thread_base);
 }
 
-/// Install `binding`'s tables whenever `slot` runs.
-///
-/// Consumes checked [`Binding`] evidence, preventing a bare unverified `CR3` or a second slot from
-/// naming the same space.
-///
-/// # Errors
-///
-/// [`TaskError::OutOfRange`] past the table, [`TaskError::Boot`] for the boot slot,
-/// [`TaskError::Vacant`] for a slot with no thread, and [`TaskError::Current`] for the running one,
-/// whose tables only the switch may change. A refusal returns the unconsumed binding with the
-/// error.
 pub fn bind_address_space(slot: usize, binding: Binding) -> Result<Bound, (TaskError, Binding)> {
     let roots = binding.roots();
     let saved = interrupt::disable();
@@ -616,15 +484,6 @@ pub fn bind_address_space(slot: usize, binding: Binding) -> Result<Bound, (TaskE
         .map_err(|error| (error, binding))
 }
 
-/// Give a fabricated slot back before anything has run on it.
-///
-/// Rolls back setup between [`fabricate`] and scheduler publication so the two slot ledgers cannot
-/// disagree.
-///
-/// # Errors
-///
-/// [`TaskError::OutOfRange`] past the table, [`TaskError::Current`] for the running slot, which
-/// cannot retire itself this way, and [`TaskError::Vacant`] for one nothing fabricated.
 pub fn retire(slot: usize) -> Result<(), TaskError> {
     let saved = interrupt::disable();
     let mut table = TABLE.lock_leaf();
@@ -651,54 +510,34 @@ pub fn retire(slot: usize) -> Result<(), TaskError> {
     outcome
 }
 
-/// Evidence that one task-table slot names an address space.
-///
-/// Minted only when [`bind_address_space`] installs a [`Binding`]. The token stays with the
-/// process owner until retirement, so release cannot be asked about a root that still has an
-/// uninstalled binding elsewhere.
 #[derive(Debug)]
 pub struct Bound {
     roots: AddressSpaceRoots,
 }
 
 impl Bound {
-    /// The inseparable roots installed in the task table.
     pub const fn roots(&self) -> AddressSpaceRoots {
         self.roots
     }
 }
 
-/// Evidence that no binding can install or revisit `root`.
-///
-/// Minted by consuming an uninstalled [`Binding`] or a retired [`Bound`]. `AddressSpace` cannot
-/// inspect the task table, so it takes this answer instead of guessing from the current `CR3`.
 #[derive(Debug)]
 pub struct Released {
     roots: AddressSpaceRoots,
 }
 
 impl Released {
-    /// The inseparable roots nothing can install.
     pub const fn roots(&self) -> AddressSpaceRoots {
         self.roots
     }
 }
 
-/// Cancel a binding that was never installed in the task table.
-///
-/// Consuming the one-shot [`Binding`] proves no later caller can install it; the rollback path for
-/// construction that stops before [`bind_address_space`].
 pub fn release_uninstalled(binding: Binding) -> Released {
     Released {
         roots: binding.roots(),
     }
 }
 
-/// Give up an installed binding, if no live slot still runs on it.
-///
-/// Clears the binding from every slot naming it, all dead by then, and hands back the evidence
-/// [`AddressSpace::reclaim`](super::paging::AddressSpace::reclaim) needs. Returns the token
-/// unchanged if a live slot still names it.
 pub fn release_address_space(bound: Bound) -> Result<Released, Bound> {
     let roots = bound.roots();
     let saved = interrupt::disable();
@@ -723,10 +562,8 @@ pub fn release_address_space(bound: Bound) -> Result<Released, Bound> {
     }
 }
 
-/// `IA32_FS_BASE`, where a thread's local storage begins.
 const FS_BASE: u32 = 0xC000_0100;
 
-/// Where the running thread's local storage begins.
 pub fn read_thread_base() -> u64 {
     msr::read(FS_BASE)
 }
@@ -736,9 +573,6 @@ fn write_thread_base(base: CanonicalAddress) {
     unsafe { msr::write(FS_BASE, base.get()) };
 }
 
-/// Point the running thread's local storage at `base`, if it may.
-///
-/// Non-canonical and higher-half bases are refused without writing.
 #[must_use = "a refused thread-base write changed no register"]
 pub fn set_thread_base(base: u64) -> bool {
     let Some(base) = CanonicalAddress::new(base) else {
@@ -751,19 +585,12 @@ pub fn set_thread_base(base: u64) -> bool {
     true
 }
 
-/// Bytes the fabricated frame occupies below the stack top.
-///
-/// Six callee-saved registers, the return address, and one padding word: the pops and `ret`
-/// consume seven, leaving `rsp` eight below the page-aligned top, the entry alignment of the ABI.
+// Six callee-saved registers, the return address and a pad: `rsp` ends eight below the top.
 const FRAME_BYTES: u64 = FRAME_WORDS as u64 * 8;
 
 const FRAME_WORDS: usize = 8;
 
-/// Where every fabricated thread begins: on its own stack, with nothing in its registers, and the
-/// interrupt flag its creator had.
-///
-/// The flag is set here because the switch arrives with it clear by construction; see
-/// [`fabricate`].
+// The switch always arrives with interrupts clear, so the creator's flag is restored here.
 extern "C" fn thread_start() -> ! {
     let slot = current();
     let (entry, interruptible) = {
@@ -773,94 +600,69 @@ extern "C" fn thread_start() -> ! {
             table.slots[slot].starts_interruptible,
         )
     };
-    let Some((entry, arg)) = entry else {
+    let Some((entry, argument)) = entry else {
         panic!("slot {slot} started with no entry point");
     };
     if interruptible {
         interrupt::enable();
     }
-    entry(arg)
+    entry(argument)
 }
 
-/// Why the CPU would not be sent to ring 3.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum UserError {
-    /// Maskable interrupts were not admitted before the transition.
     InterruptsNotAdmitted,
-    /// The kernel's own tables are not installed.
     Inactive,
-    /// Nothing is mapped at the entry point, or it is not user-executable.
     EntryNotExecutable(u64),
-    /// The stack is not mapped, or not user-writable, or executable.
     StackNotWritable(u64),
-    /// The stack pointer is not sixteen-byte aligned, which the ABI requires.
     StackMisaligned(u64),
-    /// No ring-0 stack is set, so a trap out of ring 3 would have nowhere to land.
     NoKernelStack,
-    /// `syscall` or `sysenter` is still enabled, a second door into ring 0 this kernel does not
-    /// use and did not choose.
     FastSyscallOpen,
-    /// The processor is not enforcing non-executable page mappings.
     NoExecuteProtection,
     AccessClearUnarmed,
-    /// Thread switches are not saving and restoring user FP/SIMD state.
     NoExtendedState,
-    /// Actual CPU evidence does not permit shared higher-half mappings.
     NoSharedKernelIsolation,
-    /// The current paired address space lacks its exact live entry route.
     NoPairedKernelIsolation,
 }
 
 impl fmt::Display for UserError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             Self::InterruptsNotAdmitted => {
-                core::fmt::Write::write_str(f, "maskable interrupts are not admitted")
+                formatter.write_str("maskable interrupts are not admitted")
             }
-            Self::Inactive => {
-                core::fmt::Write::write_str(f, "the kernel's tables are not installed")
+            Self::Inactive => formatter.write_str("the kernel's tables are not installed"),
+            Self::EntryNotExecutable(address) => {
+                write!(formatter, "{address:#x} is not executable from ring 3")
             }
-            Self::EntryNotExecutable(at) => {
-                write!(f, "{at:#x} is not executable from ring 3")
+            Self::StackNotWritable(address) => {
+                write!(formatter, "{address:#x} is not writable from ring 3")
             }
-            Self::StackNotWritable(at) => write!(f, "{at:#x} is not writable from ring 3"),
-            Self::StackMisaligned(at) => write!(f, "{at:#x} is not sixteen-byte aligned"),
+            Self::StackMisaligned(address) => {
+                write!(formatter, "{address:#x} is not sixteen-byte aligned")
+            }
             Self::NoKernelStack => {
-                core::fmt::Write::write_str(f, "no ring-0 stack is set for traps from ring 3")
+                formatter.write_str("no ring-0 stack is set for traps from ring 3")
             }
-            Self::FastSyscallOpen => {
-                core::fmt::Write::write_str(f, "syscall or sysenter is still enabled")
+            Self::FastSyscallOpen => formatter.write_str("syscall or sysenter is still enabled"),
+            Self::NoExecuteProtection => formatter.write_str("no-execute protection is not active"),
+            Self::AccessClearUnarmed => {
+                formatter.write_str("smap is on but trap entry does not clear ac")
             }
-            Self::NoExecuteProtection => {
-                core::fmt::Write::write_str(f, "no-execute protection is not active")
+            Self::NoExtendedState => formatter.write_str("extended user state is not isolated"),
+            Self::NoSharedKernelIsolation => {
+                formatter.write_str("shared kernel mappings have no hardware isolation proof")
             }
-            Self::AccessClearUnarmed => f.write_str("smap is on but trap entry does not clear ac"),
-            Self::NoExtendedState => {
-                core::fmt::Write::write_str(f, "extended user state is not isolated")
+            Self::NoPairedKernelIsolation => {
+                formatter.write_str("the paired user roots have no complete live entry route")
             }
-            Self::NoSharedKernelIsolation => core::fmt::Write::write_str(
-                f,
-                "shared kernel mappings have no hardware isolation proof",
-            ),
-            Self::NoPairedKernelIsolation => core::fmt::Write::write_str(
-                f,
-                "the paired user roots have no complete live entry route",
-            ),
         }
     }
 }
 
 impl core::error::Error for UserError {}
 
-/// Enter ring 3 at `entry`, on `stack_top`. Returns only on refusal.
-///
-/// Preflight walks the live entry, user stack, and current `RSP0` before `iretq`, reporting
-/// invalid mappings instead of triple-faulting.
-///
-/// # Errors
-///
-/// See [`UserError`]. On success this never returns: the only way back is a trap.
 pub fn enter_user(entry: u64, stack_top: u64) -> UserError {
     let disabled = interrupt::disable();
     if !disabled.were_enabled() {
@@ -922,8 +724,7 @@ fn user_entry_preflight(entry: u64, stack_top: u64) -> Result<(), UserError> {
                 && flags.contains(Flags::NO_EXECUTE) => {}
         _ => return Err(UserError::StackNotWritable(first_push)),
     }
-    // As `prepare` and `continue_on_stack`: entry never returns, so a guard live in the caller's
-    // frame is a lock nothing can ever release.
+    // Entry never returns, so a guard live in the caller's frame could never be released.
     assert!(
         crate::sync::spinlocks_held() == 0,
         "a spin lock is held, so entering ring 3 would strand it"
@@ -960,18 +761,8 @@ fn shared_isolation(mine: Option<KernelStackTop<'_>>) -> Result<(), UserError> {
     }
 }
 
-/// Abandon the current stack and continue on `stack`, never returning.
-///
-/// [`MappedStack`] proves writable pages and an absent guard;
-/// [`is_installed`](MappedStack::is_installed) ties them to the active root.
-///
-/// # Panics
-///
-/// If the stack belongs to an address space that is not installed, which would otherwise be a
-/// jump onto memory this CPU cannot reach.
-pub fn continue_on_stack(stack: MappedStack, continuation: Entry, arg: usize) -> ! {
-    // Hold the exclusion across the live re-walk and the nonreturning stack load, so the mapping
-    // cannot be retired between them.
+pub fn continue_on_stack(stack: MappedStack, continuation: Entry, argument: usize) -> ! {
+    // The exclusion spans the re-walk and the stack load, so the mapping cannot retire between.
     let disabled = interrupt::disable();
     assert!(
         stack.is_installed(),
@@ -980,8 +771,7 @@ pub fn continue_on_stack(stack: MappedStack, continuation: Entry, arg: usize) ->
     let stack = stack
         .retain()
         .unwrap_or_else(|reason| panic!("the boot stack could not be retained: {reason}"));
-    // As `prepare`: a guard live on the abandoned stack is a lock nothing can release, because the
-    // frame that would drop it is gone.
+    // A guard live on the abandoned stack could never be released.
     assert!(
         crate::sync::spinlocks_held() == 0,
         "a spin lock is held, so the stack being abandoned would strand it"
@@ -990,17 +780,15 @@ pub fn continue_on_stack(stack: MappedStack, continuation: Entry, arg: usize) ->
 
     // SAFETY: `stack` proves a mapped, writable, guarded top nothing else holds; `is_installed` saw
     // the CPU walk its space; `continuation` never returns, so no return address is owed.
-    unsafe { load_stack(stack.top(), continuation, arg) }
+    unsafe { load_stack(stack.top(), continuation, argument) }
 }
 
-/// Load `stack_top` into `rsp` and jump to `continuation(arg)`.
-///
 /// # Safety
 ///
 /// `stack_top` must be the sixteen-byte-aligned top of a mapped, writable region nothing else is
 /// using, reachable in the live tables.
 #[unsafe(naked)]
-unsafe extern "C" fn load_stack(stack_top: u64, continuation: Entry, arg: usize) -> ! {
+unsafe extern "C" fn load_stack(stack_top: u64, continuation: Entry, argument: usize) -> ! {
     ::core::arch::naked_asm!(
         // A jump supplies no return word, so subtract one for the alignment a call would create.
         "lea rsp, [rdi - 8]",
@@ -1011,12 +799,6 @@ unsafe extern "C" fn load_stack(stack_top: u64, continuation: Entry, arg: usize)
     )
 }
 
-/// Save the callee-saved registers and the stack pointer, then load another stack and return into
-/// it.
-///
-/// Only ABI callee-saved registers cross. The flag must be clear: an interrupt between the
-/// stack-pointer store and load would run on ambiguously owned stack state.
-///
 /// # Safety
 ///
 /// `save` must point at a word this thread's saved pointer may be written to, and `load` must be a
@@ -1043,7 +825,6 @@ unsafe extern "C" fn switch(save: *mut u64, load: u64) {
     )
 }
 
-/// Reclaim the table's lock on the terminal panic path.
 pub(crate) fn force_unlock(panic: &PanicToken) {
     TABLE.force_unlock(panic);
 }

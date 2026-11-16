@@ -6,7 +6,7 @@ use wost::arch::current::interrupt::TrapFrame;
 // SMAP is read inside the handler, after the entry path ran.
 pub(super) fn observe_syscall_entry(frame: &TrapFrame) {
     LAST_SYSCALL.record(frame);
-    SMAP_ON_ENTRY.store(!cpu::access_check_is_off(), Ordering::Release);
+    SMAP_ON_ENTRY.store(!cpu::access_flag_is_set(), Ordering::Release);
 }
 
 pub(super) static USER_COPY_RECOVERIES: AtomicUsize = AtomicUsize::new(0);

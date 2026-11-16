@@ -1,10 +1,4 @@
-/// Whether `EFLAGS.AC` is set right now, letting ring 0 touch user pages past SMAP.
-///
-/// Read instead of assumed, because ring 3 can set this bit and interrupt delivery does not
-/// clear it.
-#[cfg(feature = "selftest")]
-pub fn access_check_is_off() -> bool {
-    /// `EFLAGS.AC`.
+pub fn access_flag_is_set() -> bool {
     const AC: u64 = 1 << 18;
 
     let flags: u64;

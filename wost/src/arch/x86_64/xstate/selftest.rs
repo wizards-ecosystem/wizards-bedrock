@@ -1,10 +1,5 @@
 use super::*;
 
-/// Whether a save leaves a sentinel immediately beyond [`bytes`] untouched.
-///
-/// Verifies the independently published save form and size agree; `false` when extended state
-/// is disabled.
-#[cfg(feature = "selftest")]
 pub fn save_stays_inside_its_area() -> bool {
     const ROOM: usize = 4096;
     const SENTINEL: usize = 128;
@@ -13,7 +8,7 @@ pub fn save_stays_inside_its_area() -> bool {
     #[repr(C, align(64))]
     struct Area([u8; ROOM]);
 
-    if !configured_policy_is_live() {
+    if !user_state_is_isolated() {
         return false;
     }
     let bytes = bytes();
@@ -32,30 +27,20 @@ pub fn save_stays_inside_its_area() -> bool {
         .all(|byte| *byte == MARK)
 }
 
-/// Values spanning every extended-state component this kernel enables.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[cfg(feature = "selftest")]
 pub struct Probe {
-    /// One exactly representable value on the x87 register stack.
     pub x87: i64,
-    /// The low quadword of `xmm0`, in the legacy SSE component.
     pub xmm: u64,
-    /// The low quadword of `ymm0`'s upper half, in the AVX component.
     pub ymm: u64,
 }
 
-/// Put `probe` in x87, SSE and AVX state, refusing unless all three components are live.
-///
-/// The soft-float target cannot keep values in these registers, so this test-only clobber
-/// cannot collide with compiled code.
-#[cfg(feature = "selftest")]
 pub fn write_probe(probe: Probe) -> bool {
     if !probe_components_are_live() {
         return false;
     }
     let x87 = probe.x87;
-    // SAFETY: the instructions touch only the three components above, which compiled code cannot
-    // hold; the mask check proves each is enabled, and `x87` stays live for the memory read.
+    // SAFETY: the instructions touch only x87, SSE and AVX state, which soft-float compiled code
+    // cannot hold; the mask check proves each is enabled, and `x87` stays live for the read.
     unsafe {
         asm!(
             "fninit\nfild qword ptr [{x87}]",
@@ -71,11 +56,7 @@ pub fn write_probe(probe: Probe) -> bool {
     true
 }
 
-/// Read and consume the values [`write_probe`] installed.
-///
-/// The x87 value is popped so repeated probes cannot fill its eight-entry stack; the SSE and AVX
-/// lanes are only read.
-#[cfg(feature = "selftest")]
+// The x87 value is popped, so repeated probes cannot fill its eight-entry stack.
 pub fn read_probe() -> Option<Probe> {
     if !probe_components_are_live() {
         return None;
@@ -101,5 +82,5 @@ pub fn read_probe() -> Option<Probe> {
 }
 
 fn probe_components_are_live() -> bool {
-    configured_policy_is_live() && xstate::includes_avx(MASK.load(Ordering::Acquire))
+    user_state_is_isolated() && xstate::includes_avx(MASK.load(Ordering::Acquire))
 }

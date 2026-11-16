@@ -1,9 +1,3 @@
-//! What the kernel does when the CPU raises a vector: an exception or a local APIC interrupt.
-//! An interrupt is dismissed and returned from; an unexpected one still ends the machine,
-//! which keeps a leaked legacy line from arriving as something else.
-//! A user-copy fault resumes at the fixup, a ring-3 fault retires the program, other faults halt.
-//! Breakpoints resume; supervised restart remains absent.
-
 use core::fmt;
 #[cfg(feature = "selftest")]
 use core::sync::atomic::Ordering;
@@ -32,7 +26,6 @@ pub(crate) use selftest::{
 static HANDLERS: interrupt::Handlers =
     interrupt::Handlers::new(on_trap, refuse_invalid_user_return);
 
-/// Route every vector to this module.
 pub(crate) fn init() {
     interrupt::init(&HANDLERS, Some(vector::SYSCALL));
 }
@@ -46,48 +39,27 @@ fn refuse_invalid_user_return(frame: &TrapFrame, error: interrupt::UserReturnErr
     panic!("invalid user return could not be retired: {error:?}");
 }
 
-/// The kernel's response to every vector.
-/// Dispatched on the decoded cause, never the raw vector: `libs/trap-cause` reads its meaning once.
-/// Nothing here logs: a fault can be raised while a lock is held, and taking the console lock
-/// in trap context can deadlock against the interrupted code.
-/// The timer is dismissed before any switch: the APIC holds its priority class until EOI,
-/// and a switched-in thread would hold every expiry hostage.
-/// A thread woken by a keystroke must not wait for the next expiry: there may not be one.
-/// The saved privilege decides: a kernel-context `int 0x80` must not be served as a ring-3 call.
-/// A spurious interrupt is not dismissed: it sets no in-service bit, so an EOI here would retire
-/// a real interrupt underneath it.
-/// Only a ring-0 fault inside the user-copy interval recovers; a ring-3 fault at the same address
-/// is the program's.
-/// Other survivable ring-3 faults retire the program, not the machine.
+// Nothing here logs: a fault may arrive under a held lock, and the console lock could deadlock.
 fn on_trap(frame: &TrapFrame) {
     let cause = TrapCause::decode(frame.vector(), frame.error_code());
     match cause {
         TrapCause::Fault(trap_cause::Fault::Breakpoint) => {}
 
         TrapCause::Interrupt(raw) if raw == vector::TIMER.get() => {
+            // Dismissed before any switch, or the APIC would hold the timer's class until EOI.
             let eoi = claim_eoi(frame, vector::TIMER);
             crate::time::on_expiry();
             dismiss(eoi);
             crate::thread::reschedule(frame);
         }
 
-        TrapCause::Interrupt(raw) if raw == vector::KEYBOARD.get() => {
-            let eoi = claim_eoi(frame, vector::KEYBOARD);
-            let woke = crate::input::on_interrupt();
-            dismiss(eoi);
-            if woke {
-                crate::thread::reschedule(frame);
-            }
-        }
-
-        TrapCause::Interrupt(raw)
-            if raw == vector::SYSCALL.get() && frame.code_selector() & 0b11 == 3 =>
-        {
+        TrapCause::Interrupt(raw) if raw == vector::SYSCALL.get() && frame.is_from_user() => {
             #[cfg(feature = "selftest")]
             observe_syscall_entry(frame);
             crate::user::call(frame);
         }
 
+        // A spurious interrupt sets no in-service bit, so an EOI would retire a real one beneath.
         TrapCause::Interrupt(raw) if raw == vector::SPURIOUS.get() => {}
 
         TrapCause::Interrupt(raw) if raw == vector::ERROR.get() => panic!(
@@ -131,36 +103,30 @@ fn dismiss(token: apic::EoiToken<'_>) {
     }
 }
 
-/// Whether this fault is a program's to die of rather than the machine's; both must hold.
-/// It came from ring 3: the kernel faulting is still a kernel bug and still terminal.
-/// The machine survives it: a double fault means the fault path itself failed, a machine check is
-/// the hardware reporting its own failure, and neither becomes survivable because a program ran.
 fn is_the_programs(frame: &TrapFrame, fault: trap_cause::Fault) -> bool {
-    let from_ring_three = frame.code_selector() & 0b11 == 3;
     let survivable = !matches!(
         fault,
         trap_cause::Fault::DoubleFault
             | trap_cause::Fault::MachineCheck
             | trap_cause::Fault::NonMaskable
     );
-    from_ring_three && survivable
+    frame.is_from_user() && survivable
 }
 
-/// A fault formatted for the panic message.
-/// CR2 belongs only to page faults; other vectors leave its old value.
+#[derive(Debug)]
 struct Report<'frame> {
     frame: &'frame TrapFrame,
     cause: TrapCause,
 }
 
 impl fmt::Display for Report<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let frame = self.frame;
         let name = self.cause.name();
         let vector = self.cause.vector();
 
         write!(
-            f,
+            formatter,
             "{} (vector {}, error {:#x}) at {:#018x}, cs {:#x}, flags {:#x}, rsp {:#018x}",
             name,
             vector,
@@ -173,7 +139,7 @@ impl fmt::Display for Report<'_> {
 
         if let TrapCause::Fault(trap_cause::Fault::PageFault(fault)) = self.cause {
             write!(
-                f,
+                formatter,
                 ", faulting address {:#018x}: {fault:?}",
                 cpu::faulting_address()
             )?;

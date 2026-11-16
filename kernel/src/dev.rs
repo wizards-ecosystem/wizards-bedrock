@@ -1,9 +1,8 @@
 // The locks keep interrupts on, as scrolling is slow; trap handlers use only the `try_` ones.
 
 use wost::boot::Framebuffer;
-use wost::sync::{SpinLock, ThreadLock};
+use wost::sync::ThreadLock;
 
-use crate::arch::current::ioapic::IoApic;
 use crate::arch::current::uart::{Uart, UartError};
 use crate::console::Console;
 use crate::theme;
@@ -75,10 +74,4 @@ pub(crate) fn attach_back_buffer() {
     } else {
         warn!("console: no memory for a back buffer; scrolling still reads the device");
     }
-}
-
-static IO_APIC: SpinLock<Option<IoApic>> = SpinLock::new(None);
-
-pub(crate) fn keep_io_apic(io_apic: IoApic) {
-    *IO_APIC.lock_leaf() = Some(io_apic);
 }

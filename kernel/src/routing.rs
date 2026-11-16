@@ -1,5 +1,4 @@
 use alloc::vec::Vec;
-use core::fmt;
 
 use wost::arch::current::interrupt;
 use wost::arch::current::paging::{self, ReleasableDevice};
@@ -7,11 +6,10 @@ use wost::sync::SpinLock;
 use x86_apic::io;
 
 use crate::acpi::{self, Interrupts};
-use crate::arch::current::ioapic::{self, IoApic};
-use crate::arch::current::vector;
+use crate::arch::current::ioapic::IoApic;
 use crate::mem::{DeviceRetirement, map_device, unmap_device_exact};
 use crate::thread::{self, ThreadContext};
-use crate::{dev, info, input, pci, warn};
+use crate::{info, warn};
 
 pub(crate) fn route_keyboard(routing: Option<ExternalControllersMasked>) {
     let Some(routing) = routing else {
@@ -34,76 +32,11 @@ pub(crate) fn route_keyboard(routing: Option<ExternalControllersMasked>) {
         }
     };
 
-    if !matches!(pci::topology_presence(), pci::TopologyPresence::Empty) {
-        if !rollback_keyboard_route(routing) {
-            warn!("keyboard: masked routing owner remains quarantined; staying polled");
-            return;
-        }
-        info!("keyboard: PCI interrupt isolation keeps every io-apic line masked; polling");
+    if !rollback_keyboard_route(routing) {
+        warn!("keyboard: masked routing owner remains quarantined; staying polled");
         return;
     }
-
-    commit_keyboard_route(routing);
-}
-
-#[derive(Debug)]
-enum KeyboardRouteError {
-    NotOwned(u32),
-    Controller(ioapic::RoutingError),
-    Keyboard(crate::arch::current::i8042::InterruptEnableError),
-}
-
-impl fmt::Display for KeyboardRouteError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NotOwned(gsi) => write!(formatter, "gsi {gsi} is not this controller's"),
-            Self::Controller(reason) => fmt::Display::fmt(reason, formatter),
-            Self::Keyboard(reason) => fmt::Display::fmt(reason, formatter),
-        }
-    }
-}
-
-impl core::error::Error for KeyboardRouteError {}
-
-fn configure_keyboard_route(routing: &mut Routing) -> Result<u32, KeyboardRouteError> {
-    let gsi = routing.interrupts.gsi_for(KEYBOARD_IRQ);
-    if !routing.io_apic.handles(gsi) {
-        return Err(KeyboardRouteError::NotOwned(gsi));
-    }
-
-    let wiring = match routing.interrupts.flags_for(KEYBOARD_IRQ) {
-        0 => ioapic::Wiring::isa_default(),
-        flags => ioapic::Wiring::from_flags(flags),
-    };
-    routing
-        .io_apic
-        .route(gsi, vector::KEYBOARD, wiring)
-        .map_err(KeyboardRouteError::Controller)?;
-
-    input::enable_interrupts().map_err(KeyboardRouteError::Keyboard)?;
-    Ok(gsi)
-}
-
-fn commit_keyboard_route(mut routing: Routing) {
-    let gsi = match configure_keyboard_route(&mut routing) {
-        Ok(gsi) => gsi,
-        Err(reason) => {
-            if !rollback_keyboard_route(routing) {
-                warn!(
-                    "keyboard: routing refused after {reason}; rollback authority remains quarantined; staying polled"
-                );
-                return;
-            }
-            warn!("keyboard: routing refused: {reason}; staying polled");
-            return;
-        }
-    };
-    input::take_interrupts();
-    dev::keep_io_apic(routing.io_apic.retain());
-    info!(
-        "keyboard: irq {KEYBOARD_IRQ} on gsi {gsi} routed to vector {:#x}",
-        vector::KEYBOARD.get()
-    );
+    info!("keyboard: PCI interrupt isolation keeps every io-apic line masked; polling");
 }
 
 fn rollback_keyboard_route(mut routing: Routing) -> bool {
@@ -145,11 +78,10 @@ const KEYBOARD_IRQ: u8 = 1;
 
 static RETAINED: SpinLock<Option<Routing>> = SpinLock::new(None);
 
-static RETAINED_MAPPING: SpinLock<Option<(paging::DeviceMapping, Vec<IoApic<ReleasableDevice>>)>> =
+static RETAINED_MAPPING: SpinLock<Option<(paging::DeviceMapping, Vec<IoApic>)>> =
     SpinLock::new(None);
 
-static RETAINED_REGISTERS: SpinLock<Option<(ReleasableDevice, Vec<IoApic<ReleasableDevice>>)>> =
-    SpinLock::new(None);
+static RETAINED_REGISTERS: SpinLock<Option<(ReleasableDevice, Vec<IoApic>)>> = SpinLock::new(None);
 
 #[derive(Debug)]
 pub(crate) struct Preparation {
@@ -266,20 +198,14 @@ fn prepare(context: &mut ThreadContext, interrupts: Interrupts, gsi: u32) -> Pre
     })
 }
 
-fn abandon_candidates(
-    context: &mut ThreadContext,
-    controllers: &mut Vec<IoApic<ReleasableDevice>>,
-) -> Preparation {
+fn abandon_candidates(context: &mut ThreadContext, controllers: &mut Vec<IoApic>) -> Preparation {
     if release_io_apics(context, controllers).is_none() {
         warn!("ioapic: candidate cleanup was incomplete; interrupts stay off");
     }
     Preparation::unproven()
 }
 
-fn poll_after_release(
-    context: &mut ThreadContext,
-    controllers: &mut Vec<IoApic<ReleasableDevice>>,
-) -> Preparation {
+fn poll_after_release(context: &mut ThreadContext, controllers: &mut Vec<IoApic>) -> Preparation {
     match release_io_apics(context, controllers) {
         Some(released) => Preparation::polled_safe(released),
         None => Preparation::unproven(),
@@ -288,7 +214,7 @@ fn poll_after_release(
 
 #[derive(Debug)]
 enum IoApicProbe {
-    Ready(IoApic<ReleasableDevice>),
+    Ready(IoApic),
     Refused,
     Retained(ProbeOwner),
 }
@@ -299,7 +225,7 @@ enum ProbeOwner {
     Registers(ReleasableDevice),
 }
 
-fn retain_probe_owner(owner: ProbeOwner, controllers: Vec<IoApic<ReleasableDevice>>) {
+fn retain_probe_owner(owner: ProbeOwner, controllers: Vec<IoApic>) {
     match owner {
         ProbeOwner::Mapping(mapping) => retain_mapping(mapping, controllers),
         ProbeOwner::Registers(registers) => retain_registers(registers, controllers),
@@ -359,7 +285,7 @@ fn probe_io_apic(context: &mut ThreadContext, description: acpi_tables::IoApic) 
 
 fn release_io_apics(
     context: &mut ThreadContext,
-    controllers: &mut Vec<IoApic<ReleasableDevice>>,
+    controllers: &mut Vec<IoApic>,
 ) -> Option<ControllersReleased> {
     while let Some(controller) = controllers.pop() {
         if let DeviceRetirement::Retained(registers) =
@@ -378,11 +304,11 @@ const IO_APIC_WINDOW: u64 = 4096;
 
 #[derive(Debug)]
 pub(crate) struct Routing {
-    io_apic: IoApic<ReleasableDevice>,
+    io_apic: IoApic,
     interrupts: Interrupts,
 }
 
-fn retain_mapping(mapping: paging::DeviceMapping, controllers: Vec<IoApic<ReleasableDevice>>) {
+fn retain_mapping(mapping: paging::DeviceMapping, controllers: Vec<IoApic>) {
     let mut retained = RETAINED_MAPPING.lock_leaf();
     assert!(
         retained.is_none(),
@@ -391,7 +317,7 @@ fn retain_mapping(mapping: paging::DeviceMapping, controllers: Vec<IoApic<Releas
     *retained = Some((mapping, controllers));
 }
 
-fn retain_registers(registers: ReleasableDevice, controllers: Vec<IoApic<ReleasableDevice>>) {
+fn retain_registers(registers: ReleasableDevice, controllers: Vec<IoApic>) {
     let mut retained = RETAINED_REGISTERS.lock_leaf();
     assert!(
         retained.is_none(),

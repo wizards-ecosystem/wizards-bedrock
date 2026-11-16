@@ -1,18 +1,9 @@
-//! Intel 8042 keyboard controller driver: raw set 2, interrupt or polled.
-//! It raises IRQ 1 once routed; until then, and with no I/O APIC, a thread drains it at intervals.
-//! Translation is off either way: `ps2-keys` decodes set 2 as the keyboard sends it.
-//! Every wait is bounded: a controller that stops answering costs a timeout and a decline, never a
-//! hang.
-
 use core::fmt;
 use wost::arch::current::port::{self, Port};
 
 mod status {
-    /// A byte is waiting in the output buffer.
     pub(super) const OUTPUT_FULL: u8 = 1 << 0;
-    /// The controller has not yet consumed the last byte written to it.
     pub(super) const INPUT_FULL: u8 = 1 << 1;
-    /// The waiting byte came from the second port, the mouse.
     pub(super) const FROM_SECOND_PORT: u8 = 1 << 5;
 }
 
@@ -27,16 +18,12 @@ mod command {
 }
 
 mod config {
-    /// Raise IRQ 1 when a first-port byte arrives.
     pub(super) const FIRST_IRQ: u8 = 1 << 0;
-    /// Raise IRQ 12 when a second-port byte arrives.
     pub(super) const SECOND_IRQ: u8 = 1 << 1;
-    /// Translate the keyboard's set 2 into set 1, the compatibility shim firmware leaves on.
     pub(super) const TRANSLATE: u8 = 1 << 6;
 }
 
 mod device {
-    /// Read at bring-up to learn whether bytes will be translated.
     pub(super) const IDENTIFY: u8 = 0xF2;
     pub(super) const ENABLE_SCANNING: u8 = 0xF4;
     pub(super) const RESET: u8 = 0xFF;
@@ -46,138 +33,60 @@ mod reply {
     pub(super) const INTERFACE_OK: u8 = 0x00;
     pub(super) const SELF_TEST_OK: u8 = 0x55;
     pub(super) const ACK: u8 = 0xFA;
-    /// The keyboard's basic assurance test passed, following a reset.
     pub(super) const TEST_PASSED: u8 = 0xAA;
 }
 
-/// An MF2 keyboard's identity behind a translating controller; `(0xAB, 0x83)` when unrewritten.
-/// VMware answers this while reporting its translation bit clear, so the driver does not consult
-/// the bit.
-pub(crate) const TRANSLATED_MF2: (u8, u8) = (0xAB, 0x41);
+// An MF2 keyboard behind a translating controller; VMware sends it with the translate bit clear.
+const TRANSLATED_MF2: (u8, u8) = (0xAB, 0x41);
 
-/// A missing controller floats the bus high, so the status register reads as this forever.
 const ABSENT_STATUS: u8 = 0xFF;
 
-/// Stale bytes to discard before giving up on an output buffer that will not drain.
 const FLUSH_LIMIT: u32 = 32;
 
-/// Poll attempts for an ordinary command's acknowledgement.
 const RESPONSE_ATTEMPTS: u32 = 100_000;
 
-/// Poll attempts for the basic assurance test the protocol allows hundreds of ms after a reset.
+// The protocol allows the self-test after a reset hundreds of milliseconds.
 const RESET_ATTEMPTS: u32 = 2_000_000;
 
-/// Why enabling the keyboard's interrupt source did not commit.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum InterruptEnableError {
-    /// No configuration change was completed.
-    Unavailable,
-    /// The requested byte did not read back, and the prior byte was restored.
-    RefusedRestored,
-    /// Neither the requested byte nor the prior byte could be verified.
-    RollbackRefused,
-}
-
-impl fmt::Display for InterruptEnableError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Unavailable => {
-                core::fmt::Write::write_str(f, "controller configuration was unavailable")
-            }
-            Self::RefusedRestored => core::fmt::Write::write_str(
-                f,
-                "controller refused the interrupt bit; prior byte restored",
-            ),
-            Self::RollbackRefused => core::fmt::Write::write_str(
-                f,
-                "controller refused the interrupt bit and its rollback",
-            ),
-        }
-    }
-}
-
-impl core::error::Error for InterruptEnableError {}
-
-/// Why the keyboard could not be brought up.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum I8042Error {
-    /// Another driver already owns these ports.
+pub(crate) enum BringUpError {
     PortsUnavailable,
-    /// Nothing answers on the status port.
     NotPresent,
-    /// The controller failed its self-test.
     SelfTestFailed,
-    /// The keyboard port failed its interface test.
     InterfaceTestFailed,
-    /// The controller did not retain its required configuration byte.
     ConfigurationRefused,
-    /// The controller did not accept a command byte.
     TransportRefused,
-    /// No keyboard acknowledged the reset.
     KeyboardMissing,
-    /// The keyboard refused a configuration command.
     CommandRefused,
 }
 
-impl fmt::Display for I8042Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::PortsUnavailable => {
-                core::fmt::Write::write_str(f, "its ports are already claimed")
-            }
-            Self::NotPresent => {
-                core::fmt::Write::write_str(f, "no controller answered on the status port")
-            }
-            Self::SelfTestFailed => {
-                core::fmt::Write::write_str(f, "the controller failed its self-test")
-            }
-            Self::InterfaceTestFailed => {
-                core::fmt::Write::write_str(f, "the keyboard port failed its interface test")
-            }
-            Self::ConfigurationRefused => {
-                core::fmt::Write::write_str(f, "the controller refused its configuration byte")
-            }
-            Self::TransportRefused => {
-                core::fmt::Write::write_str(f, "the controller transport refused a command")
-            }
-            Self::KeyboardMissing => {
-                core::fmt::Write::write_str(f, "no keyboard acknowledged the reset")
-            }
-            Self::CommandRefused => {
-                core::fmt::Write::write_str(f, "the keyboard refused a configuration command")
-            }
-        }
+impl fmt::Display for BringUpError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::PortsUnavailable => "its ports are already claimed",
+            Self::NotPresent => "no controller answered on the status port",
+            Self::SelfTestFailed => "the controller failed its self-test",
+            Self::InterfaceTestFailed => "the keyboard port failed its interface test",
+            Self::ConfigurationRefused => "the controller refused its configuration byte",
+            Self::TransportRefused => "the controller transport refused a command",
+            Self::KeyboardMissing => "no keyboard acknowledged the reset",
+            Self::CommandRefused => "the keyboard refused a configuration command",
+        })
     }
 }
 
-impl core::error::Error for I8042Error {}
+impl core::error::Error for BringUpError {}
 
-/// The keyboard controller, claimed and configured for polled raw input.
 #[derive(Debug)]
 pub(crate) struct Controller {
     data: Port<u8>,
     control: Port<u8>,
-    /// Whether the bytes this delivers are set 1 rather than set 2, read from the keyboard's
-    /// identity at bring-up, not from the configuration byte.
-    /// Some real controllers translate while reporting the bit clear, and the identity is the reply
-    /// they cannot answer falsely.
     translated: bool,
 }
 
 impl Controller {
-    /// Claim the controller and walk it into the polled configuration.
-    /// Both ports or neither: a claim is permanent, so a stranded data port would mean no keyboard
-    /// controller for the rest of the boot.
-    /// Some controllers reset their configuration during the `0xAA` self-test, so the
-    /// interrupts-off, translation-off byte is written again afterwards.
-    /// Every required control command and configuration write is admitted and verified before the
-    /// sequence advances.
-    /// The identity is asked before scanning starts, or the reply would interleave with key data; a
-    /// silent controller is taken at the configuration byte's word.
-    /// Reset supplies the protocol's set 2 default. A refused scanning enable is fatal because a
-    /// keyboard that will not scan is not an input device.
-    pub(crate) fn new() -> Result<Self, I8042Error> {
-        let (data, control) = port::i8042().ok_or(I8042Error::PortsUnavailable)?;
+    pub(crate) fn new() -> Result<Self, BringUpError> {
+        let (data, control) = port::i8042().ok_or(BringUpError::PortsUnavailable)?;
         let mut controller = Self {
             data,
             control,
@@ -185,48 +94,47 @@ impl Controller {
         };
 
         if Port::read(&mut controller.control) == ABSENT_STATUS {
-            return Err(I8042Error::NotPresent);
+            return Err(BringUpError::NotPresent);
         }
         controller.require_controller_command(command::DISABLE_FIRST)?;
         controller.require_controller_command(command::DISABLE_SECOND)?;
-        if !Self::flush(&mut controller) {
-            return Err(I8042Error::NotPresent);
+        if !controller.flush() {
+            return Err(BringUpError::NotPresent);
         }
 
         let configured = controller
-            .require_controller_query(command::READ_CONFIG, I8042Error::NotPresent)?
+            .require_controller_query(command::READ_CONFIG, BringUpError::NotPresent)?
             & !(config::FIRST_IRQ | config::SECOND_IRQ | config::TRANSLATE);
         controller.require_config(configured)?;
 
-        if controller.require_controller_query(command::SELF_TEST, I8042Error::SelfTestFailed)?
+        if controller.require_controller_query(command::SELF_TEST, BringUpError::SelfTestFailed)?
             != reply::SELF_TEST_OK
         {
-            return Err(I8042Error::SelfTestFailed);
+            return Err(BringUpError::SelfTestFailed);
         }
+        // Some controllers reset their configuration byte during the self-test.
         controller.require_config(configured)?;
 
         if controller
-            .require_controller_query(command::TEST_FIRST, I8042Error::InterfaceTestFailed)?
+            .require_controller_query(command::TEST_FIRST, BringUpError::InterfaceTestFailed)?
             != reply::INTERFACE_OK
         {
-            return Err(I8042Error::InterfaceTestFailed);
+            return Err(BringUpError::InterfaceTestFailed);
         }
         controller.require_controller_command(command::ENABLE_FIRST)?;
 
         if !controller.reset_keyboard() {
-            return Err(I8042Error::KeyboardMissing);
+            return Err(BringUpError::KeyboardMissing);
         }
+        // Asked before scanning starts, or the reply would interleave with key data.
         controller.translated = controller.identity() == Some(TRANSLATED_MF2);
         if !controller.device_command(device::ENABLE_SCANNING) {
-            return Err(I8042Error::CommandRefused);
+            return Err(BringUpError::CommandRefused);
         }
         Ok(controller)
     }
 
-    /// The next byte from the keyboard, or `None` when the buffer is empty.
-    /// Bytes from the disabled second port are discarded, boundedly: callers hold a lock with
-    /// interrupts excluded, and a controller dead into a floating bus reads as endlessly full
-    /// *and* from the second port, so an unbounded discard would wedge the machine silently.
+    // Bounded: a dead controller on a floating bus reads full and from the second port forever.
     pub(crate) fn poll_byte(&mut self) -> Option<u8> {
         for _ in 0..FLUSH_LIMIT {
             let status = Port::read(&mut self.control);
@@ -241,45 +149,12 @@ impl Controller {
         None
     }
 
-    /// Have the controller raise IRQ 1 when the keyboard has a byte for us.
-    /// [`new`](Self::new) leaves it off: a line nothing routes would fire into a vector with no
-    /// handler. It is turned on only once the I/O APIC has somewhere to send it.
-    /// The change is read back, since some controllers quietly ignore a configuration write.
-    pub(crate) fn enable_interrupt(&mut self) -> Result<(), InterruptEnableError> {
-        if !Self::flush(self) {
-            return Err(InterruptEnableError::Unavailable);
-        }
-        let Some(current) = self.read_config() else {
-            return Err(InterruptEnableError::Unavailable);
-        };
-        let wanted = current | config::FIRST_IRQ;
-        if wanted == current {
-            return Ok(());
-        }
-        if !self.write_config_value(wanted) {
-            return Err(InterruptEnableError::Unavailable);
-        }
-        if self.read_config() == Some(wanted) {
-            return Ok(());
-        }
-        if self.write_config(current) {
-            Err(InterruptEnableError::RefusedRestored)
-        } else {
-            Err(InterruptEnableError::RollbackRefused)
-        }
-    }
-
-    /// Whether the bytes this controller delivers are set 1, by identity, not configuration byte.
     pub(crate) const fn is_translated(&self) -> bool {
         self.translated
     }
 
-    /// The two bytes the keyboard identifies itself with: an MF2 keyboard answers `0xAB 0x83`, and
-    /// `0xAB 0x41` behind a translating controller, which rewrites the reply like everything else.
-    /// So the pair says which set arrives without a human at the machine; the configuration byte
-    /// says so only if the controller reports it honestly.
-    pub(crate) fn identity(&mut self) -> Option<(u8, u8)> {
-        if !Self::flush(self) {
+    fn identity(&mut self) -> Option<(u8, u8)> {
+        if !self.flush() {
             return None;
         }
         if !self.device_command(device::IDENTIFY) {
@@ -290,8 +165,7 @@ impl Controller {
         Some((first, second))
     }
 
-    /// Reset the keyboard and wait for its basic assurance test result, `0xAA`.
-    /// Emulators disagree about the acknowledgement before it, so either shape is accepted.
+    // Emulators disagree about an acknowledgement before the self-test result, so both shapes pass.
     fn reset_keyboard(&mut self) -> bool {
         if !self.write_data(device::RESET) {
             return false;
@@ -303,13 +177,10 @@ impl Controller {
         }
     }
 
-    /// Send one byte to the keyboard and require its acknowledgement.
     fn device_command(&mut self, byte: u8) -> bool {
         self.write_data(byte) && self.read_reply(RESPONSE_ATTEMPTS) == Some(reply::ACK)
     }
 
-    /// Send one unacknowledged command to the controller; one with a reply goes through
-    /// `controller_query`.
     fn controller_command(&mut self, command: u8) -> bool {
         if !self.wait_writable() {
             return false;
@@ -318,53 +189,35 @@ impl Controller {
         true
     }
 
-    fn require_controller_command(&mut self, command: u8) -> Result<(), I8042Error> {
+    fn require_controller_command(&mut self, command: u8) -> Result<(), BringUpError> {
         self.controller_command(command)
             .then_some(())
-            .ok_or(I8042Error::TransportRefused)
+            .ok_or(BringUpError::TransportRefused)
     }
 
     fn require_controller_query(
         &mut self,
         command: u8,
-        no_reply: I8042Error,
-    ) -> Result<u8, I8042Error> {
+        no_reply: BringUpError,
+    ) -> Result<u8, BringUpError> {
         self.require_controller_command(command)?;
         self.read_reply(RESPONSE_ATTEMPTS).ok_or(no_reply)
     }
 
-    /// Send one controller command and read its reply byte.
-    fn controller_query(&mut self, command: u8) -> Option<u8> {
-        if !self.controller_command(command) {
+    fn read_config(&mut self) -> Option<u8> {
+        if !self.controller_command(command::READ_CONFIG) {
             return None;
         }
         self.read_reply(RESPONSE_ATTEMPTS)
     }
 
-    fn read_config(&mut self) -> Option<u8> {
-        self.controller_query(command::READ_CONFIG)
+    fn require_config(&mut self, value: u8) -> Result<(), BringUpError> {
+        let kept = self.controller_command(command::WRITE_CONFIG)
+            && self.write_data(value)
+            && self.read_config() == Some(value);
+        kept.then_some(()).ok_or(BringUpError::ConfigurationRefused)
     }
 
-    fn write_config(&mut self, value: u8) -> bool {
-        self.write_config_value(value) && self.read_config() == Some(value)
-    }
-
-    fn write_config_value(&mut self, value: u8) -> bool {
-        if !self.wait_writable() {
-            return false;
-        }
-        Port::write(&mut self.control, command::WRITE_CONFIG);
-        self.write_data(value)
-    }
-
-    fn require_config(&mut self, value: u8) -> Result<(), I8042Error> {
-        self.write_config(value)
-            .then_some(())
-            .ok_or(I8042Error::ConfigurationRefused)
-    }
-
-    /// Discard what waits in the output buffer; false if it never drains, which means nothing real
-    /// is on the other end of these ports.
     fn flush(&mut self) -> bool {
         drains(
             FLUSH_LIMIT,
@@ -400,7 +253,6 @@ impl Controller {
     }
 }
 
-/// Discard up to `limit` bytes, then whether the output buffer reads empty.
 fn drains(limit: u32, mut full: impl FnMut() -> bool, mut discard: impl FnMut()) -> bool {
     for _ in 0..limit {
         if !full() {

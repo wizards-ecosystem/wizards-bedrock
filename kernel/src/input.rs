@@ -2,9 +2,9 @@
 
 use ps2_keys::{Arriving, Decoder, KeyEvent, KeyState, SetProbe, Shift, us};
 use wost::arch::current::interrupt;
-use wost::sync::{Once, SpinLock};
+use wost::sync::SpinLock;
 
-use crate::arch::current::i8042::{Controller, InterruptEnableError};
+use crate::arch::current::i8042::Controller;
 use crate::thread::ThreadContext;
 use crate::wait::WaitQueue;
 use crate::{info, warn};
@@ -227,9 +227,6 @@ pub(crate) fn read_key(context: &mut ThreadContext) -> Keystroke {
 }
 
 pub(crate) fn start_poller() {
-    if is_interrupt_driven() {
-        return;
-    }
     match crate::thread::spawn("keyboard-poll", poll_forever) {
         Ok(_) if crate::time::is_calibrated() && interrupt::are_enabled() => {
             info!("keyboard: polled every {POLL_INTERVAL_MS} ms")
@@ -252,34 +249,4 @@ fn poll_forever() {
             crate::thread::yield_now(&mut context);
         }
     }
-}
-
-static INTERRUPT_DRIVEN: Once = Once::new();
-
-pub(crate) fn is_interrupt_driven() -> bool {
-    INTERRUPT_DRIVEN.is_claimed()
-}
-
-fn record_interrupt_handoff(latch: &Once) {
-    assert!(
-        latch.claim(),
-        "the keyboard interrupt handoff happened more than once"
-    );
-}
-
-pub(crate) fn take_interrupts() {
-    record_interrupt_handoff(&INTERRUPT_DRIVEN);
-}
-
-pub(crate) fn on_interrupt() -> bool {
-    poll() > 0
-}
-
-pub(crate) fn enable_interrupts() -> Result<(), InterruptEnableError> {
-    let mut guard = KEYBOARD.lock_leaf();
-    guard
-        .as_mut()
-        .ok_or(InterruptEnableError::Unavailable)?
-        .controller
-        .enable_interrupt()
 }

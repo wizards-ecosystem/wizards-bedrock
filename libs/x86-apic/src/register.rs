@@ -35,8 +35,6 @@ pub const SPURIOUS_INTERRUPT_VECTOR: Register = Register::new(0x0F0);
 // Latches on write, so it is written before it is read.
 pub const ERROR_STATUS: Register = Register::new(0x280);
 
-pub const COMMAND: Register = Register::new(0x300);
-
 const LVT_CMCI: Register = Register::new(0x2F0);
 
 pub const LVT_TIMER: Register = Register::new(0x320);

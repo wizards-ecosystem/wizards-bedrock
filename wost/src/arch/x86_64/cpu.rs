@@ -1,8 +1,3 @@
-//! Direct CPU control: halting, feature discovery, and the protection bits.
-//!
-//! The interrupt flag lives in [`interrupt`] instead, next to the table whose existence is the
-//! precondition for setting it.
-
 use core::arch::asm;
 use core::arch::x86_64::{__cpuid_count, __get_cpuid_max};
 use core::fmt;
@@ -22,25 +17,20 @@ use crate::mm::PhysicalAddress;
 #[cfg(feature = "selftest")]
 mod selftest;
 #[cfg(feature = "selftest")]
-pub use selftest::access_check_is_off;
+pub use selftest::access_flag_is_set;
 
-/// Extended feature enable register.
 const EFER: u32 = 0xC000_0080;
 
-/// `EFER` bit: enable `syscall`/`sysret`; this kernel enters through its DPL-3 gate instead.
 const EFER_SYSCALL: u64 = 1 << 0;
 
-/// `IA32_SYSENTER_CS`. Zero makes `sysenter` fault, which is the shut state.
 const SYSENTER_CS: u32 = 0x174;
 
-/// `EFER` bit: honour the no-execute page bit instead of treating it as reserved.
 const EFER_NO_EXECUTE: u64 = 1 << 11;
 
 const CR0_EM: u64 = 1 << 2;
 
 const CR0_NE: u64 = 1 << 5;
 
-/// `CR0` bit: supervisor writes obey read-only page-table entries.
 const CR0_WRITE_PROTECT: u64 = 1 << 16;
 
 const CR4_TSD: u64 = 1 << 2;
@@ -53,33 +43,26 @@ const CR4_PCE: u64 = 1 << 8;
 
 const CR4_FSGSBASE: u64 = 1 << 16;
 
+// A bootloader may leave these set; each would hand ring 3 a counter, a register or a breakpoint.
 const CR4_CLEARED: u64 = CR4_TSD | CR4_DE | CR4_PCE | CR4_FSGSBASE;
 
-const FLAGS_RESERVED: u64 = 1 << 1;
+pub(super) const FLAGS_RESERVED: u64 = 1 << 1;
 
-/// `CR4` bit: user mode instruction prevention.
 const CR4_UMIP: u64 = 1 << 11;
 
 const CR4_PCIDE: u64 = 1 << 17;
 
-/// `CR4` bit: supervisor mode execution prevention.
 const CR4_SMEP: u64 = 1 << 20;
 
-/// `CR4` bit: supervisor mode access prevention.
 const CR4_SMAP: u64 = 1 << 21;
 
-/// Halt this CPU until an enabled interrupt or another architectural wake event.
-///
-/// An ordinary maskable interrupt cannot wake `hlt` while `IF` is clear.
+// A maskable interrupt cannot wake `hlt` while IF is clear.
 pub fn halt() {
     // SAFETY: `hlt` in ring 0 waits for an interrupt with no precondition and cannot fail; it stays
     // a compiler memory barrier so state publication cannot move past the sleep.
     unsafe { asm!("hlt", options(nostack, preserves_flags)) };
 }
 
-/// Disable interrupts and halt permanently.
-///
-/// The kernel's terminal state, for the panic handler and the idle path before a scheduler exists.
 pub fn halt_forever() -> ! {
     interrupt::disable_for_good();
     loop {
@@ -87,21 +70,12 @@ pub fn halt_forever() -> ! {
     }
 }
 
-/// Whether this processor's timestamp counter runs at a constant rate whatever the core is doing.
-///
-/// Without this CPUID guarantee, throttling and deep idle may change or stop the count, making it
-/// a performance counter and no clock.
 pub fn has_invariant_tsc() -> bool {
-    /// `cpuid` leaf 0x8000_0007, `EDX` bit 8.
     const INVARIANT: u32 = 1 << 8;
 
     max_leaf(0x8000_0000) >= 0x8000_0007 && cpuid(0x8000_0007, 0).edx & INVARIANT != 0
 }
 
-/// Frequency evidence from `cpuid` leaves 0x15 and 0x16.
-///
-/// The pure decoder keeps the architectural ratio distinct from leaf 0x16's nominal frequency.
-/// Unsupported leaves are absent instead of queried and mistaken for another leaf's answer.
 pub fn frequency_hints() -> FrequencyHints {
     let maximum = max_leaf(0);
     let ratio = (maximum >= 0x15).then(|| {
@@ -112,7 +86,6 @@ pub fn frequency_hints() -> FrequencyHints {
     FrequencyHints::from_leaves(ratio, base_mhz)
 }
 
-/// The running processor's validated `MAXPHYADDR`.
 pub(crate) fn physical_address_width() -> Option<PhysicalAddressWidth> {
     let maximum = max_leaf(0x8000_0000);
     let eax = if maximum >= ADDRESS_SIZE_LEAF {
@@ -123,10 +96,7 @@ pub(crate) fn physical_address_width() -> Option<PhysicalAddressWidth> {
     PhysicalAddressWidth::from_leaf(maximum, eax)
 }
 
-/// The timestamp counter: cycles since the processor started.
-///
-/// `lfence` and the compiler memory barrier keep this non-serialising instruction inside the
-/// interval it is meant to measure.
+// `lfence` keeps the non-serialising `rdtsc` inside the interval it measures.
 pub fn timestamp() -> u64 {
     let low: u32;
     let high: u32;
@@ -144,7 +114,6 @@ pub fn timestamp() -> u64 {
     u64::from(high) << 32 | u64::from(low)
 }
 
-/// The current stack pointer.
 pub fn stack_pointer() -> u64 {
     let value: u64;
     // SAFETY: reading `rsp` has no preconditions and no effects.
@@ -158,10 +127,7 @@ pub fn stack_pointer() -> u64 {
     value
 }
 
-/// The address whose access raised the last page fault.
-///
-/// Meaningful only inside a page fault handler: `CR2` is written by the fault and otherwise holds
-/// whatever the previous one left there.
+// Meaningful only inside a page-fault handler; other vectors leave `CR2` stale.
 pub fn faulting_address() -> u64 {
     let value: u64;
     // SAFETY: reading a control register in ring 0 has no preconditions and no effects.
@@ -175,28 +141,24 @@ pub fn faulting_address() -> u64 {
     value
 }
 
-/// The CPU protections that separate ring 0 from ring 3.
-///
-/// Each is independent, and each may be absent on an older CPU or a virtual machine that does not
-/// expose it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Protections {
-    /// Supervisor writes honour read-only page-table entries.
     pub write_protect: bool,
-    /// Supervisor mode execution prevention: ring 0 cannot execute a user-accessible page.
     pub smep: bool,
-    /// Supervisor mode access prevention: ring 0 cannot read or write one either, except inside a
-    /// deliberate window around a checked copy.
     pub smap: bool,
-    /// User mode instruction prevention: ring 3 cannot read the descriptor table registers, which
-    /// would otherwise leak kernel addresses.
     pub umip: bool,
-    /// The no-execute page bit is honoured, making W^X enforceable once the kernel owns its tables.
     pub nx: bool,
 }
 
+const SMEP_SUPPORTED: u32 = 1 << 7;
+
+const SMAP_SUPPORTED: u32 = 1 << 20;
+
+const UMIP_SUPPORTED: u32 = 1 << 2;
+
+const NX_SUPPORTED: u32 = 1 << 20;
+
 impl Protections {
-    /// What this CPU implements, whether or not it is switched on.
     pub fn supported() -> Self {
         let structured = if max_leaf(0) >= 7 {
             cpuid(7, 0)
@@ -211,14 +173,13 @@ impl Protections {
 
         Self {
             write_protect: true,
-            smep: structured.ebx & 1 << 7 != 0,
-            smap: structured.ebx & 1 << 20 != 0,
-            umip: structured.ecx & 1 << 2 != 0,
-            nx: extended.edx & 1 << 20 != 0,
+            smep: structured.ebx & SMEP_SUPPORTED != 0,
+            smap: structured.ebx & SMAP_SUPPORTED != 0,
+            umip: structured.ecx & UMIP_SUPPORTED != 0,
+            nx: extended.edx & NX_SUPPORTED != 0,
         }
     }
 
-    /// What is switched on, read back from the control registers instead of remembered.
     pub fn enabled() -> Self {
         let cr4 = read_cr4();
         Self {
@@ -232,7 +193,7 @@ impl Protections {
 }
 
 impl fmt::Display for Protections {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut separator = "";
         for (enabled, name) in [
             (self.write_protect, "wp"),
@@ -242,13 +203,13 @@ impl fmt::Display for Protections {
             (self.nx, "nx"),
         ] {
             if enabled {
-                core::fmt::Write::write_str(f, separator)?;
-                core::fmt::Write::write_str(f, name)?;
+                formatter.write_str(separator)?;
+                formatter.write_str(name)?;
                 separator = " ";
             }
         }
         if separator.is_empty() {
-            core::fmt::Write::write_str(f, "none")?;
+            formatter.write_str("none")?;
         }
         Ok(())
     }
@@ -256,14 +217,11 @@ impl fmt::Display for Protections {
 
 const CR4_OSXSAVE: u64 = 1 << 18;
 
-/// Whether `CR4.OSXSAVE` is set, read from the register since its caller asks whether the write
-/// took and a remembered flag would answer with the memory of the write.
 pub(crate) fn extended_state_is_enabled() -> bool {
     read_cr4() & CR4_OSXSAVE != 0
 }
 
-// Restricted to `xstate::init`: enabling SSE before save and restore are ready would share
-// register state with ring 3.
+// Only `xstate::init` may call this: SSE enabled before switches save it is shared with ring 3.
 pub(super) fn enable_extended_state() {
     const CR0_MP: u64 = 1 << 1;
 
@@ -339,14 +297,11 @@ fn normalise_flags() -> u64 {
     flags
 }
 
-/// Enable every protection in [`Protections`] this CPU supports, and report what is now on.
-///
-/// Safe because none of these bits can produce undefined behaviour, only a fault the kernel
-/// reports, which is why this is called only after the interrupt table is installed.
+// These bits cause no undefined behaviour, only faults, so they wait for the interrupt table.
 pub fn enable_protections() -> Protections {
     let supported = Protections::supported();
 
-    enable_write_protection();
+    write_cr0(read_cr0() | CR0_WRITE_PROTECT);
 
     let mut additions = Cr4Additions::none();
     if supported.smep {
@@ -374,21 +329,10 @@ pub fn enable_protections() -> Protections {
     Protections::enabled()
 }
 
-/// Whether supervisor writes honour read-only page-table entries.
-///
-/// Read back from `CR0` instead of remembered from the write that asked for it.
-pub(crate) fn write_protection_is_enabled() -> bool {
+fn write_protection_is_enabled() -> bool {
     read_cr0() & CR0_WRITE_PROTECT != 0
 }
 
-fn enable_write_protection() {
-    write_cr0(read_cr0() | CR0_WRITE_PROTECT);
-}
-
-/// Close `syscall` and `sysenter`, which this kernel does not use.
-///
-/// Both instructions bypass the IDT and would enter through state this kernel never configured,
-/// so boot closes them explicitly instead of trusting firmware defaults.
 fn shut_the_fast_syscall_doors() {
     // SAFETY: only `EFER` is named, and the only bit removed enables an instruction this kernel
     // never executes: no `syscall` or `sysret` appears in the tree.
@@ -398,45 +342,28 @@ fn shut_the_fast_syscall_doors() {
     unsafe { msr::write(SYSENTER_CS, 0) };
 }
 
-/// Whether both fast-syscall doors are shut.
-///
-/// Read back from the registers, as for `XCR0`: a flag records that the write was attempted, and
-/// the question is what the CPU holds.
 pub(crate) fn fast_syscall_doors_are_shut() -> bool {
     msr::read(EFER) & EFER_SYSCALL == 0 && msr::read(SYSENTER_CS) == 0
 }
 
-/// Whether this processor has a local advanced programmable interrupt controller of its own.
 pub(super) fn has_local_apic() -> bool {
-    /// `cpuid` leaf 1, `EDX` bit 9.
     const APIC: u32 = 1 << 9;
 
     cpuid(1, 0).edx & APIC != 0
 }
 
-/// Whether that controller has an x2APIC mode, whose registers are MSRs instead of a memory page.
 pub(super) fn has_x2apic() -> bool {
-    /// `cpuid` leaf 1, `ECX` bit 21.
     const X2APIC: u32 = 1 << 21;
 
     cpuid(1, 0).ecx & X2APIC != 0
 }
 
-/// Whether this processor implements `MD_CLEAR`, the `VERW` buffer flush.
-///
-/// Separate from [`Speculation`] because it is a capability and no claim about immunity: a
-/// machine may have the instruction and also report `MDS_NO`, where using it buys nothing.
 pub fn has_buffer_clear() -> bool {
-    /// `cpuid` leaf 7 subleaf 0, `EDX` bit 10.
     const MD_CLEAR: u32 = 1 << 10;
 
     max_leaf(0) >= 7 && cpuid(7, 0).edx & MD_CLEAR != 0
 }
 
-/// Read the machine's speculation posture and enable enhanced IBRS if it has it.
-///
-/// `x86_cpuid` owns the host-tested policy. QEMU TCG lacks the architectural capabilities MSR, so
-/// native and VMware qualification exercise the write.
 pub fn enable_speculation_controls() -> Speculation {
     let posture = speculation_posture();
     if !posture.wants_boot_ibrs() {
@@ -463,21 +390,14 @@ fn speculation_posture() -> Speculation {
     )
 }
 
-/// The CPU evidence that permits kernel mappings in user page tables.
-///
-/// The QEMU TCG answer is trusted development-host configuration, not a hardware attestation, so
-/// native and other virtualized machines need the processor's affirmative `RDCL_NO` report.
+// QEMU TCG's answer is trusted host configuration; elsewhere only `RDCL_NO` admits sharing.
 pub fn shared_kernel_mapping_reason(
     speculation: &Speculation,
 ) -> Option<SharedKernelMappingReason> {
     x86_cpuid::shared_kernel_mapping_reason(speculation, execution_environment())
 }
 
-/// CPU-resident identity for the qualified DMA-handoff platform, if any.
-///
-/// PCI requesters can rewrite guest RAM but cannot forge the architectural hypervisor leaf, so
-/// ACPI handoff bytes have authority only on the exact QEMU TCG and VMware release environments
-/// `x86-cpuid` recognizes.
+// A PCI requester can rewrite RAM but not the hypervisor leaf this identity is read from.
 pub fn dma_handoff_platform() -> Option<DmaHandoffPlatform> {
     execution_environment().dma_handoff_platform()
 }
@@ -490,12 +410,10 @@ fn execution_environment() -> ExecutionEnvironment {
     })
 }
 
-/// Reread unforgeable hardware evidence for the final ring-3 crossing.
 pub(super) fn shared_kernel_mappings_are_safe() -> bool {
     shared_kernel_mapping_reason(&speculation_posture()).is_some()
 }
 
-/// One `cpuid` answer.
 #[derive(Clone, Copy, Default, Debug)]
 struct CpuidResult {
     eax: u32,
@@ -504,15 +422,11 @@ struct CpuidResult {
     edx: u32,
 }
 
-/// The highest sub-leaf `cpuid` will answer for `leaf`'s family.
-///
-/// Both this and [`cpuid`] are safe calls, since `cpuid` is architectural on x86_64. A leaf the
-/// CPU does not implement answers with the highest one it does, so callers check the range first.
+// An unimplemented leaf answers as the highest implemented one, so callers check the range.
 fn max_leaf(leaf: u32) -> u32 {
     __get_cpuid_max(leaf).0
 }
 
-/// Ask the CPU about itself.
 fn cpuid(leaf: u32, sub_leaf: u32) -> CpuidResult {
     let answer = __cpuid_count(leaf, sub_leaf);
     CpuidResult {
@@ -537,8 +451,9 @@ fn read_cr0() -> u64 {
 }
 
 fn write_cr0(value: u64) {
-    // SAFETY: callers change only `MP`, `EM` and `NE`, which govern how x87 and SSE fault, and
-    // `WP`, which makes supervisor writes obey permissions the page tables already state.
+    // SAFETY: private to this module, whose callers pass the value just read with only `MP`, `NE`
+    // or `WP` set and `EM` cleared; `PE`, `PG` and the cache bits are written back unchanged, so
+    // paging and memory stay as compiled code assumes, and the changed bits only decide faults.
     unsafe {
         asm!(
             "mov cr0, {value}",
@@ -561,16 +476,10 @@ fn read_cr4() -> u64 {
     value
 }
 
-fn page_table_context_ids_are_enabled() -> bool {
-    read_cr4() & CR4_PCIDE != 0
-}
-
-/// Whether an ordinary `CR3` write flushes every non-global translation.
 pub(super) fn page_table_context_ids_are_disabled() -> bool {
-    !page_table_context_ids_are_enabled()
+    read_cr4() & CR4_PCIDE == 0
 }
 
-/// A reversible change to the page attribute table.
 #[derive(Debug)]
 #[must_use = "dropping the transition restores the previous PAT entry"]
 pub struct WriteCombining {
@@ -579,7 +488,6 @@ pub struct WriteCombining {
 }
 
 impl WriteCombining {
-    /// Keep the new entry after the page tables selecting it are active.
     #[must_use = "a refused PAT commit restores the previous entry on drop"]
     pub fn commit(mut self) -> bool {
         let enabled = write_combining_is_enabled();
@@ -590,8 +498,13 @@ impl WriteCombining {
     }
 }
 
-/// The page attribute table, `IA32_PAT`.
 const PAT: u32 = 0x277;
+
+const PAT_ENTRY_1_SHIFT: u32 = 8;
+
+const PAT_ENTRY_1: u64 = 0xff << PAT_ENTRY_1_SHIFT;
+
+const WRITE_COMBINING: u64 = 0x01;
 
 impl Drop for WriteCombining {
     fn drop(&mut self) {
@@ -599,20 +512,16 @@ impl Drop for WriteCombining {
             return;
         }
         let current = msr::read(PAT);
-        let restored = (current & !(0xff << 8)) | (u64::from(self.previous) << 8);
-        // SAFETY: only PAT entry 1 is restored to the byte read from it before
-        // this transition. All other entries retain their current values.
+        let restored = (current & !PAT_ENTRY_1) | (u64::from(self.previous) << PAT_ENTRY_1_SHIFT);
+        // SAFETY: only PAT entry 1 changes, back to the byte read from it before the transition;
+        // the root reload that follows drops translations cached under the write-combining type.
         unsafe { msr::write(PAT, restored) };
         reload_page_table();
     }
 }
 
-/// Give page tables a write-combining memory type to select.
-///
-/// Only the unused write-through entry changes. Call before activating tables
-/// that select it; activation's `CR3` load supplies the required flush.
+// Call before activating the tables that select it; activation's `CR3` load is the flush.
 pub fn enable_write_combining() -> Option<WriteCombining> {
-    /// `cpuid` leaf 1, `EDX` bit 16.
     const SUPPORTED: u32 = 1 << 16;
 
     if cpuid(1, 0).edx & SUPPORTED == 0 {
@@ -620,10 +529,10 @@ pub fn enable_write_combining() -> Option<WriteCombining> {
     }
 
     let current = msr::read(PAT);
-    let previous = ((current >> 8) & 0xff) as u8;
-    let updated = (current & !(0xff << 8)) | (1 << 8);
-    // SAFETY: only entry 1 changes, to the architectural WC encoding. The
-    // transition restores this exact byte unless the caller commits it.
+    let previous = ((current & PAT_ENTRY_1) >> PAT_ENTRY_1_SHIFT) as u8;
+    let updated = (current & !PAT_ENTRY_1) | (WRITE_COMBINING << PAT_ENTRY_1_SHIFT);
+    // SAFETY: only PAT entry 1 changes, from the write-through type no live mapping selects to
+    // write-combining, and the reload below drops translations cached under the old type.
     unsafe { msr::write(PAT, updated) };
     reload_page_table();
     Some(WriteCombining {
@@ -632,7 +541,6 @@ pub fn enable_write_combining() -> Option<WriteCombining> {
     })
 }
 
-/// Reload the current root so a PAT change cannot leave cached translations.
 fn reload_page_table() {
     let root = page_table_base();
     // SAFETY: `root` is the table the processor is executing through now, so reloading it keeps
@@ -640,21 +548,10 @@ fn reload_page_table() {
     unsafe { set_page_table_base(root) };
 }
 
-/// Whether the page attribute table's second entry is write-combining.
-///
-/// Read back, since a hypervisor may decline the write and the whole point of the entry is that
-/// a mapping selecting it behaves differently.
-pub(crate) fn write_combining_is_enabled() -> bool {
-    /// Encoding of write-combining in a PAT entry.
-    const WRITE_COMBINING: u64 = 0x01;
-
-    (msr::read(PAT) >> 8) & 0xFF == WRITE_COMBINING
+fn write_combining_is_enabled() -> bool {
+    (msr::read(PAT) & PAT_ENTRY_1) >> PAT_ENTRY_1_SHIFT == WRITE_COMBINING
 }
 
-/// The physical address of the page table the CPU is walking.
-///
-/// The low twelve bits of `CR3` hold cache-control flags and are masked off, so a comparison
-/// against a table's address can match.
 pub fn page_table_base() -> PhysicalAddress {
     let value: u64;
     // SAFETY: reading a control register in ring 0 has no preconditions and no effects.
@@ -668,10 +565,6 @@ pub fn page_table_base() -> PhysicalAddress {
     PhysicalAddress::from_entry(Entry::from_bits(value))
 }
 
-/// Drop any cached translation for `address` from this CPU's TLB.
-///
-/// Removing a cached entry can only make the CPU reread its page tables;
-/// [`CanonicalAddress`] excludes the operands that raise `#GP`.
 pub(crate) fn invalidate_page(address: CanonicalAddress) {
     // SAFETY: constructing `CanonicalAddress` proved the operand canonical, and `invlpg`
     // dereferences no memory and only evicts this CPU's cached translation.
@@ -680,11 +573,6 @@ pub(crate) fn invalidate_page(address: CanonicalAddress) {
     };
 }
 
-/// Write the cache line holding `address` back to memory and drop it.
-///
-/// For a device that reads memory without snooping the processor caches, so a table entry the CPU
-/// wrote reaches the bytes the device will read.
-///
 /// # Safety
 ///
 /// `address` must be mapped: `clflush` references its operand and faults on an unmapped one.
@@ -694,22 +582,15 @@ pub(crate) unsafe fn flush_cache_line(address: *const u8) {
     unsafe { asm!("clflush [{}]", in(reg) address, options(nostack, preserves_flags)) };
 }
 
-/// Point the CPU at a different top-level page table.
-///
 /// # Safety
 ///
 /// `address` must be the physical address of a correctly formed, 4 KiB-aligned PML4 that stays
 /// live while loaded and maps, at the addresses they already occupy, every page this CPU is about
 /// to touch: the code executing this call, its stack, and anything either reads or writes before
 /// the next switch. A table missing any faults with no handler mapped, a triple fault and reset.
-///
-/// # Panics
-///
-/// If `CR4.PCIDE` is set. This kernel flushes inactive roots by reloading `CR3`, and a tagged
-/// translation would survive that reload.
 pub(super) unsafe fn set_page_table_base(address: PhysicalAddress) {
     assert!(
-        !page_table_context_ids_are_enabled(),
+        page_table_context_ids_are_disabled(),
         "page-table switching requires CR4.PCIDE to remain clear"
     );
     // SAFETY: the caller guarantees the table maps everything this CPU stands on, the whole
@@ -728,9 +609,10 @@ fn add_cr4(additions: Cr4Additions) {
 }
 
 fn write_cr4(value: u64) {
-    // SAFETY: callers add only the reviewed extended-state, protection and supported machine-check
-    // bits, or clear `TSD`, `DE`, `PCE` and `FSGSBASE`, none of which a running kernel depends on;
-    // the asm is a memory barrier because these bits change which accesses the CPU permits.
+    // SAFETY: private to this module, whose callers pass the value just read with only
+    // `Cr4Additions` bits or a supported `MCE` added, or `TSD`, `DE`, `PCE` and `FSGSBASE`
+    // cleared; paging-mode bits are written back unchanged and no memory changes, and the asm
+    // stays a memory barrier because these bits change which accesses the processor permits.
     unsafe {
         asm!(
             "mov cr4, {value}",

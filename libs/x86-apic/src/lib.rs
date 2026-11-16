@@ -6,7 +6,6 @@
 )]
 
 pub mod base;
-pub mod command;
 pub mod in_service;
 pub mod io;
 pub mod lifecycle;
