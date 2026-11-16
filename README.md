@@ -109,6 +109,7 @@ docs/            architecture, conventions, roadmap and decisions
 | `mmio-range` | checked offsets for repeated MMIO accesses |
 | `native-abi` | every value that crosses ring 3: calls, errors, the entry block, ring layout, rights, the time page and fixed addresses |
 | `nvme` | NVMe registers, queues and commands |
+| `object-pool` | object slot indices, generations that retire, strong counts and page arithmetic |
 | `panic-record` | escaped, framed panic records |
 | `path-walk` | paths that cannot name an ancestor |
 | `pci-config` | configuration-space addresses, BARs, claims and topology |

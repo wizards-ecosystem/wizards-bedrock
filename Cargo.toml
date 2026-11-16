@@ -17,6 +17,7 @@ members = [
     "libs/mmio-range",
     "libs/native-abi",
     "libs/nvme",
+    "libs/object-pool",
     "libs/panic-record",
     "libs/path-walk",
     "libs/pci-config",
@@ -57,6 +58,7 @@ default-members = [
     "libs/mmio-range",
     "libs/native-abi",
     "libs/nvme",
+    "libs/object-pool",
     "libs/panic-record",
     "libs/path-walk",
     "libs/pci-config",
@@ -102,6 +104,7 @@ memory-map = { path = "libs/memory-map" }
 mmio-range = { path = "libs/mmio-range" }
 native-abi = { path = "libs/native-abi" }
 nvme = { path = "libs/nvme" }
+object-pool = { path = "libs/object-pool" }
 panic-record = { path = "libs/panic-record" }
 path-walk = { path = "libs/path-walk" }
 pci-config = { path = "libs/pci-config" }
