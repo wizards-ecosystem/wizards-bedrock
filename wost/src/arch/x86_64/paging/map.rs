@@ -68,9 +68,9 @@ impl AddressSpace {
 
         Ok(Unmapped {
             pages,
-            // SAFETY: preflight proved the `pages` frames at `base` one ascending run of owned leaves,
-            // each frame moved here by a `map_owned` and named by no other handle, and those leaves
-            // were just cleared; `Segment` frees frame by frame, so a sub-run or merged run is exact.
+            // SAFETY: preflight proved the `pages` frames at `base` an ascending run of owned leaves;
+            // each is allocated, its handle was forgotten when it was mapped, and no other handle
+            // names it now that its leaf is cleared.
             frames: ManuallyDrop::new(unsafe { Segment::from_raw(base, pages as usize) }),
             was_user,
         })
