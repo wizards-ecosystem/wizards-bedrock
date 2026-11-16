@@ -25,6 +25,7 @@ const STARTED: u8 = 0;
 const READY: u8 = 1;
 const PASSED: u8 = 2;
 const REFUSED: u8 = 3;
+const ADMITTED: u8 = 4;
 
 static STAGES: [AtomicU8; MAX_PROCESSORS] = [const { AtomicU8::new(STARTED) }; MAX_PROCESSORS];
 
@@ -143,6 +144,7 @@ fn start_others(
             continue;
         }
         if percpu::admit(joining) {
+            stage.store(ADMITTED, Ordering::Release);
             info!("cpu: processor {index} (apic {apic_id:#x}) is online and parked");
         } else {
             warn!("cpu: processor {apic_id:#x} came after the first user root; it is not online");
@@ -174,6 +176,10 @@ fn application(index: usize) -> ! {
     STAGES[index].store(verdict, Ordering::Release);
     if verdict == REFUSED {
         cpu::halt_forever();
+    }
+    // Only the boot processor knows whether it was admitted; until then nothing may reach it.
+    while STAGES[index].load(Ordering::Acquire) != ADMITTED {
+        core::hint::spin_loop();
     }
     // Online, it may hold kernel translations, so it takes the shootdown vector and nothing else.
     interrupt::enable();
