@@ -191,10 +191,12 @@ Phase 7:
   processes. Per-world arenas need frames that name their pool and colour, and a handle table per
   process carved from its world's arena.
 - Frame ownership lives in a page-table software bit, nothing changes a permission or unmaps a
-  shared mapping, spawn takes each segment as one contiguous run with no quota, and `USegment::from`
-  does not zero (`wost/src/arch/x86_64/paging.rs`, `kernel/src/user/load.rs`,
-  `wost/src/mm/shared.rs`). Memory objects need objects that own their frames, a protect primitive,
-  a shared unmap, accounting that cannot starve a sibling, and a conversion that zeroes.
+  shared mapping, and spawn takes each segment as one contiguous run with no quota
+  (`wost/src/arch/x86_64/paging.rs`, `kernel/src/user/load.rs`). Memory objects need objects that
+  own their frames, a protect primitive, a shared unmap and accounting that cannot starve a
+  sibling.
+- `DmaSegment::from` wraps a `Segment` without zeroing it, and each caller zeroes first
+  (`wost/src/mm/dma.rs`). Memory a device reaches needs the same zeroing conversion as a `USegment`.
 - The direct map aliases kernel text as executable, so W^X holds per mapping and not per frame
   (`kernel/src/mem.rs`). Write-then-seal needs W^X per frame.
 - The kernel parses ELF and loads one borrowed Limine module (`kernel/src/user/load.rs`,

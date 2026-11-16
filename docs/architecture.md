@@ -175,9 +175,10 @@ run while the trap depth is non-zero, so nothing allocates in a handler that may
 the allocator.
 
 Memory that ring 3 or a device can write has its own type, `mm::USegment`, which admits only
-plain-data copies, and `map_user` takes only a `USegment`. A `USegment` is zeroed before its
-frames return to the pool, and a run whose clear fails is withheld. Callers zero a `Segment`
-before converting it into a `USegment` that ring 3 will read.
+plain-data copies, and `map_user` takes only a `USegment`. `USegment::zeroed` is the only way to
+make one: it zeroes the `Segment` it consumes and refuses a run it cannot clear, so ring 3 sees
+only zeros and the bytes the kernel writes afterwards. A `USegment` is zeroed again before its
+frames return to the pool, and a run whose clear fails is withheld.
 
 `wost/src/arch/x86_64/paging.rs` owns every table write, over the encoding in `libs/x86-paging`.
 No mapping call takes a bare physical address: `map_owned` consumes allocator frames, `map_boot`

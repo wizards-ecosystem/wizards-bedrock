@@ -14,6 +14,21 @@ pub struct USegment {
 }
 
 impl USegment {
+    #[must_use = "a refused conversion frees the run"]
+    pub fn zeroed(mut segment: Segment) -> Option<Self> {
+        if !segment.zero() {
+            return None;
+        }
+        Some(Self {
+            segment: ManuallyDrop::new(segment),
+        })
+    }
+
+    #[must_use = "a refused segment write changed no bytes"]
+    pub fn write_at(&mut self, offset: usize, bytes: &[u8]) -> bool {
+        self.segment.write_at(offset, bytes)
+    }
+
     pub fn address(&self) -> PhysicalAddress {
         self.segment.address()
     }
@@ -201,12 +216,4 @@ fn read_shared(allocation: &SharedAllocation, offset: usize, into: &mut [u8]) ->
         return false;
     };
     span.read_at(offset, into)
-}
-
-impl From<Segment> for USegment {
-    fn from(segment: Segment) -> Self {
-        Self {
-            segment: ManuallyDrop::new(segment),
-        }
-    }
 }

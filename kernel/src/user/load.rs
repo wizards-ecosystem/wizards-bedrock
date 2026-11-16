@@ -1,7 +1,7 @@
 use elf64::{Elf, ElfError, SegmentKind};
 use wost::arch::current::paging::{AddressSpace, MapError};
 use wost::boot::HandoffError;
-use wost::mm;
+use wost::mm::{self, USegment};
 use wost::sync::SpinLock;
 use x86_paging::{Flags, PAGE_SIZE};
 
@@ -10,13 +10,11 @@ use crate::{info, warn};
 
 pub(super) fn place_stack(space: &mut AddressSpace, which: u64) -> Option<u64> {
     let at = STACK + which * APART;
-    let mut stack = mm::allocate_contiguous((STACK_BYTES / PAGE_SIZE) as usize, 1)?;
-    if !stack.zero() {
-        return None;
-    }
+    let stack = mm::allocate_contiguous((STACK_BYTES / PAGE_SIZE) as usize, 1)?;
     // Untyped from here: nothing the kernel later reads from the program's stack may be believed.
+    let stack = USegment::zeroed(stack)?;
     space
-        .map_user(at, stack.into(), Flags::WRITABLE.union(Flags::NO_EXECUTE))
+        .map_user(at, stack, Flags::WRITABLE.union(Flags::NO_EXECUTE))
         .ok()?;
     Some(at)
 }
@@ -119,10 +117,8 @@ pub(crate) struct LoadedImage {
 
 // Filled before it is mapped, so an executable page is never writable.
 fn place(space: &mut AddressSpace, bytes: &[u8], placement: &Placement) -> Result<(), LoadError> {
-    let mut run = mm::allocate_contiguous(placement.pages, 1).ok_or(LoadError::OutOfMemory)?;
-    if !run.zero() {
-        return Err(LoadError::OutOfMemory);
-    }
+    let run = mm::allocate_contiguous(placement.pages, 1).ok_or(LoadError::OutOfMemory)?;
+    let mut run = USegment::zeroed(run).ok_or(LoadError::OutOfMemory)?;
     let Some(contents) = bytes.get(placement.from..placement.from + placement.len) else {
         return Err(LoadError::Truncated(placement.at));
     };
@@ -130,7 +126,7 @@ fn place(space: &mut AddressSpace, bytes: &[u8], placement: &Placement) -> Resul
         return Err(LoadError::Truncated(placement.at));
     }
     space
-        .map_user(placement.at, run.into(), placement.flags)
+        .map_user(placement.at, run, placement.flags)
         .map_err(|reason| LoadError::NotMapped(reason.reason()))
 }
 

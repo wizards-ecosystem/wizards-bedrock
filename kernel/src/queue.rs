@@ -138,10 +138,7 @@ pub(crate) struct Queue {
 
 impl Queue {
     pub(crate) fn new() -> Option<Arc<Self>> {
-        let mut run = mm::allocate_contiguous(native_abi::ring::BYTES / PAGE_SIZE as usize, 1)?;
-        if !run.zero() {
-            return None;
-        }
+        let run = mm::allocate_contiguous(native_abi::ring::BYTES / PAGE_SIZE as usize, 1)?;
         // Shared, never mapped as owned, so no unmap frees them while a program uses them.
         let layout = SharedLayout::new(
             native_abi::ring::BYTES,
@@ -153,7 +150,7 @@ impl Queue {
             ],
         )
         .ok()?;
-        let mut shared = USegment::from(run).share().into_ring(layout).ok()?;
+        let mut shared = USegment::zeroed(run)?.share().into_ring(layout).ok()?;
 
         // Written before the pages are ever mapped, so no program sees a ring it cannot read.
         write_u32(&mut shared, header::VERSION, native_abi::ring::VERSION);

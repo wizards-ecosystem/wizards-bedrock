@@ -10,13 +10,10 @@ pub(crate) struct ActiveMapping {
 pub(crate) fn map_user_page_for_test(
     context: &mut ThreadContext,
     base: u64,
-    run: mm::Segment,
+    run: mm::USegment,
     flags: Flags,
 ) -> Option<Result<ActiveMapping, UserMapError>> {
-    if run.len() != FRAME_SIZE {
-        return None;
-    }
-    with_active_space(context, |space| space.map_user(base, run.into(), flags)).map(|result| {
+    with_active_space(context, |space| space.map_user(base, run, flags)).map(|result| {
         result.map(|()| ActiveMapping {
             base,
             len: FRAME_SIZE,

@@ -21,13 +21,10 @@ static PAGE: SpinLock<Option<Arc<SharedBytes>>> = SpinLock::new(None);
 static DESIRED_MODE: AtomicU32 = AtomicU32::new(mode::NONE);
 
 pub(crate) fn init(counter_hz: u64) -> bool {
-    let Some(mut run) = mm::allocate_contiguous(1, 1) else {
+    let Some(run) = mm::allocate_contiguous(1, 1).and_then(USegment::zeroed) else {
         return false;
     };
-    if !run.zero() {
-        return false;
-    }
-    let mut shared = USegment::from(run).share().into_bytes();
+    let mut shared = run.share().into_bytes();
 
     write_u32(&mut shared, constants::VERSION, VERSION);
     write_u32(&mut shared, constants::PAGE_BYTES, PAGE_SIZE as u32);

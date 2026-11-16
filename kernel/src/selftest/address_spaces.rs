@@ -102,13 +102,12 @@ fn one_address_maps_apart(first: &mut AddressSpace, second: &mut AddressSpace) -
     const SHARED: u64 = user::CODE + 0x10_0000;
 
     let writable = Flags::WRITABLE.union(Flags::NO_EXECUTE);
-    let (Some(one), Some(two)) = (mm::allocate_contiguous(1, 1), mm::allocate_contiguous(1, 1))
-    else {
+    let (Some(one), Some(two)) = (user_page(), user_page()) else {
         return false;
     };
     let (one_at, two_at) = (one.address(), two.address());
-    if first.map_user(SHARED, one.into(), writable).is_err()
-        || second.map_user(SHARED, two.into(), writable).is_err()
+    if first.map_user(SHARED, one, writable).is_err()
+        || second.map_user(SHARED, two, writable).is_err()
     {
         return false;
     }
@@ -130,8 +129,12 @@ fn one_address_maps_apart(first: &mut AddressSpace, second: &mut AddressSpace) -
     separate && shared_kernel && unmapped
 }
 
-fn marked_page(marker: u8) -> Option<(mm::Segment, mm::PhysicalAddress)> {
-    let mut run = mm::allocate_contiguous(1, 1)?;
+fn user_page() -> Option<mm::USegment> {
+    mm::allocate_contiguous(1, 1).and_then(mm::USegment::zeroed)
+}
+
+fn marked_page(marker: u8) -> Option<(mm::USegment, mm::PhysicalAddress)> {
+    let mut run = user_page()?;
     run.write_at(0, &[marker; 16]).then_some(())?;
     let address = run.address();
     Some((run, address))
@@ -146,7 +149,7 @@ pub(super) fn a_user_page_comes_back_cleared() -> bool {
             return false;
         };
         if space
-            .map_user(AT, run.into(), Flags::WRITABLE.union(Flags::NO_EXECUTE))
+            .map_user(AT, run, Flags::WRITABLE.union(Flags::NO_EXECUTE))
             .is_err()
         {
             return false;
@@ -159,12 +162,12 @@ pub(super) fn a_user_page_comes_back_cleared() -> bool {
     });
 
     let direct = marked_page(0xa1).is_some_and(|(run, address)| {
-        drop(mm::USegment::from(run));
+        drop(run);
         mm::is_freed_run_zero(address, 1)
     });
 
     let shared = marked_page(0xb2).is_some_and(|(run, address)| {
-        drop(mm::USegment::from(run).share());
+        drop(run.share());
         mm::is_freed_run_zero(address, 1)
     });
 
@@ -174,7 +177,7 @@ pub(super) fn a_user_page_comes_back_cleared() -> bool {
         };
         let Err(error) = space.map_user(
             OUTSIDE_USER_HALF,
-            run.into(),
+            run,
             Flags::WRITABLE.union(Flags::NO_EXECUTE),
         ) else {
             return false;
@@ -192,10 +195,10 @@ pub(super) fn an_active_unmap_exposes_only_its_replacement(context: &mut ThreadC
     const FIRST: [u8; 16] = [0xa5; 16];
     const SECOND: [u8; 16] = [0x5a; 16];
 
-    let Some(mut first) = mm::allocate_contiguous(1, 1) else {
+    let Some(mut first) = user_page() else {
         return false;
     };
-    if !first.zero() || !first.write_at(0, &FIRST) {
+    if !first.write_at(0, &FIRST) {
         return false;
     }
     let first_physical = first.address();
@@ -211,11 +214,11 @@ pub(super) fn an_active_unmap_exposes_only_its_replacement(context: &mut ThreadC
         return false;
     };
 
-    let Some(mut second) = mm::allocate_contiguous(1, 1) else {
+    let Some(mut second) = user_page() else {
         drop(first_taken);
         return false;
     };
-    if !second.zero() || !second.write_at(0, &SECOND) {
+    if !second.write_at(0, &SECOND) {
         drop(first_taken);
         return false;
     }
@@ -329,11 +332,11 @@ pub(super) fn a_refused_mapping_leaves_no_trace() -> bool {
 pub(super) fn a_shared_mapping_keeps_its_frame() -> bool {
     const PROBE: u64 = 0x0000_3500_0000_0000;
     in_reclaimed_space(AddressSpace::for_user, |space| {
-        let Some(run) = mm::allocate_contiguous(1, 1) else {
+        let Some(run) = user_page() else {
             return false;
         };
         let physical = run.address();
-        let mut shared = mm::USegment::from(run).share().into_bytes();
+        let mut shared = run.share().into_bytes();
         if !shared.write_at(0, &[0xC7]) {
             return false;
         }
@@ -374,15 +377,15 @@ pub(super) fn a_user_space_cannot_reach_the_kernel_half() -> bool {
             && space.map_owned(KERNEL, kernel, no_execute) == Err(MapError::NotYours(KERNEL))
             && space.unmap(TOP, 2 * PAGE_SIZE).err() == Some(MapError::NonCanonical(TOP));
 
-        let (Some(top), Some(last)) = (page(), page()) else {
+        let (Some(top), Some(last)) = (user_page(), user_page()) else {
             return false;
         };
         let top_refused = space
-            .map_user(TOP, top.into(), Flags::NONE)
+            .map_user(TOP, top, Flags::NONE)
             .err()
             .is_some_and(|error| error.reason() == MapError::NotYours(TOP))
             && space.lookup(TOP).is_none();
-        let last_admitted = space.map_user(LAST_USER, last.into(), Flags::NONE).is_ok()
+        let last_admitted = space.map_user(LAST_USER, last, Flags::NONE).is_ok()
             && space.lookup(LAST_USER).is_some()
             && space.unmap(LAST_USER, PAGE_SIZE).map(drop).is_ok();
 
@@ -395,26 +398,26 @@ pub(super) fn a_user_space_cannot_reach_the_kernel_half() -> bool {
             Flags::USER.union(Flags::WRITABLE).union(no_execute),
         ) == Err(MapError::NotYours(OWNED));
 
-        let (Some(supervisor), Some(beside)) = (page(), page()) else {
+        let (Some(supervisor), Some(beside)) = (page(), user_page()) else {
             return false;
         };
         if space.map_owned(SUPERVISOR, supervisor, no_execute).is_err() {
             return false;
         }
         let table_not_widened = space
-            .map_user(BESIDE_SUPERVISOR, beside.into(), no_execute)
+            .map_user(BESIDE_SUPERVISOR, beside, no_execute)
             .err()
             .is_some_and(|error| error.reason() == MapError::Conflict(BESIDE_SUPERVISOR));
         let supervisor_removed = space.unmap(SUPERVISOR, PAGE_SIZE).map(drop).is_ok();
 
-        let (Some(executable), Some(shared)) = (page(), page()) else {
+        let (Some(executable), Some(shared)) = (user_page(), user_page()) else {
             return false;
         };
         let user_write_execute_refused = space
-            .map_user(WRITE_EXECUTE_USER, executable.into(), Flags::WRITABLE)
+            .map_user(WRITE_EXECUTE_USER, executable, Flags::WRITABLE)
             .err()
             .is_some_and(|error| error.reason() == MapError::WriteExecute(WRITE_EXECUTE_USER));
-        let shared = mm::USegment::from(shared).share().into_bytes();
+        let shared = shared.share().into_bytes();
         let shared_write_execute_refused =
             space.map_shared(WRITE_EXECUTE_SHARED, &shared, Flags::WRITABLE)
                 == Err(MapError::WriteExecute(WRITE_EXECUTE_SHARED));

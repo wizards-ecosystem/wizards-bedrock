@@ -163,6 +163,10 @@ number and is added here, as one entry or as an amending id on the entry it chan
   (D-107). A `USegment` is zeroed before its frames return on every drop path, a run whose clear
   refuses is withheld, and a refused `map_user` returns it unchanged (D-331), so ring-3 bytes never
   reach the free pool.
+- **D-469** A `USegment` is made only by `USegment::zeroed`, which zeroes the run it consumes, and
+  the kernel writes a program's bytes through it before mapping. Zeroing at the conversion, rather
+  than trusting each caller or zeroing every freed frame, keeps one place that proves ring 3 sees no
+  earlier owner's bytes (amends D-44).
 - **D-45** `activate` is safe: it walks the candidate tables for its own code, stack and direct map
   before writing `CR3`, and the kernel keeps the address space so mappings can be added to a live
   space, where a present entry is never rewritten (D-86, D-458). Activation refuses while
