@@ -31,7 +31,7 @@ CHECK TASKS:
                       test-boot --release, test-boot --debug, boot-check, degraded-check
 
 NOT IN CI:
-    model-check       run TLC over the ring models (needs java)
+    model-check       run TLC over the models (needs java)
     qualify-vmware    check the serial log of a VMware boot of the generated machine
     debug             open the debug kernel at kmain in GDB
     clean             remove build output

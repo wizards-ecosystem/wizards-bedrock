@@ -555,8 +555,14 @@ self-test name failures for the message only.
 
 `models/Ring.tla` checks ring admission: no dropped completion, reservations equal to unreported
 operations, and never more completions than operations. `models/RingMemory.tla` checks index
-publication with terminal ownership, and each `RingMemory.*.cfg` mutant must violate its named
-invariant. `cargo xtask model-check` runs them with the digest-pinned `tools/tla/tla2tools.jar`.
+publication with terminal ownership. `models/Wakeup.tla` checks the `libs/wake-state` word against a
+wake and a timeout over two waits: a blocked thread stays reachable by a waker, and a wait completes
+once, by a claim on that wait. `models/Shootdown.tla` checks `libs/tlb-generation` on three CPUs
+with two concurrent unmaps: a frame is freed only when every CPU that holds its translation is off
+the space with a slot seen below the flush, and every flush wait ends. `models/Pin.tla` checks the
+counted pin on a world node: no pinned world's frames are reused, and no pin is counted after the
+pin word closes. Each `*.cfg` named after a mutation must violate its named invariant.
+`cargo xtask model-check` runs them with the digest-pinned `tools/tla/tla2tools.jar`.
 
 ## 13. What the kernel trusts
 

@@ -31,6 +31,20 @@ const RUNS: &[(&str, &str, Option<&str>)] = &[
         "RingMemory.duplicate-terminal.cfg",
         Some("OneCompletionPerOperation"),
     ),
+    ("Wakeup.tla", "Wakeup.cfg", None),
+    (
+        "Wakeup.tla",
+        "Wakeup.untagged-claim.cfg",
+        Some("OneCompletion"),
+    ),
+    ("Shootdown.tla", "Shootdown.cfg", None),
+    (
+        "Shootdown.tla",
+        "Shootdown.stale-slot.cfg",
+        Some("FreedOnlyWhenFlushed"),
+    ),
+    ("Pin.tla", "Pin.cfg", None),
+    ("Pin.tla", "Pin.no-reload.cfg", Some("NoReuseWhilePinned")),
 ];
 
 pub(crate) fn verify(paths: &Paths) -> Result<()> {
@@ -56,6 +70,12 @@ pub(crate) fn verify(paths: &Paths) -> Result<()> {
             .output()
             .context("could not run java; put the JVM that runs TLC on PATH")?;
         let report = String::from_utf8_lossy(&output.stdout);
+        for line in report.lines() {
+            let states = line.contains("distinct states found") && !line.starts_with("Progress");
+            if states || line.starts_with("Finished in") {
+                println!("[xtask] model-check: {line}");
+            }
+        }
         let expected = match violated {
             None => output.status.success() && report.contains(CLEAN),
             Some(invariant) => {
