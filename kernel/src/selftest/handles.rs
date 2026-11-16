@@ -1,9 +1,10 @@
-use handle_space::Rights;
+use native_abi::Rights;
+use native_abi::ring::{Opcode, Submission, status};
 
 use super::rings::{post, table};
 use crate::handle::{HandleError, HandleTable};
 use crate::object;
-use crate::queue::{self, Opcode, Queue, Submission};
+use crate::queue::Queue;
 
 pub(super) fn a_completion_cannot_widen_what_was_offered() -> bool {
     let (Some(queue), Some(table), Some(full_table)) = (Queue::new(), table(8), table(1)) else {
@@ -39,9 +40,9 @@ pub(super) fn a_completion_cannot_widen_what_was_offered() -> bool {
         .resolve(narrowed.value as u32)
         .is_ok_and(|(_, rights)| rights == Rights::INSPECT);
     let refused = [
-        (0, 0xF001, queue::STATUS_BAD_HANDLE),
-        (2, 0x0BAD, queue::STATUS_DENIED),
-        (3, 0xF002, queue::STATUS_DENIED),
+        (0, 0xF001, status::BAD_HANDLE),
+        (2, 0x0BAD, status::DENIED),
+        (3, 0xF002, status::DENIED),
     ]
     .into_iter()
     .all(|(slot, token, status)| {
@@ -64,10 +65,10 @@ pub(super) fn a_completion_cannot_widen_what_was_offered() -> bool {
 
     served_full
         && no_slot.token == 0xFEED
-        && no_slot.status == queue::STATUS_NO_HANDLE_SLOT
+        && no_slot.status == status::NO_HANDLE_SLOT
         && no_slot.value == 0
         && narrowed.token == 0x5150
-        && narrowed.status == queue::STATUS_OK
+        && narrowed.status == status::OK
         && narrowed.value as u32 != source
         && granted
         && refused

@@ -1,35 +1,10 @@
-use super::ring::{
-    publish_index, read_entry_u32, read_entry_u64, write_entry_u32, write_entry_u64,
-};
-use super::{
-    COMPLETION_BYTES, COMPLETIONS_AT, Completion, DATA_AT, ENTRIES_AT, Opcode, Queue,
-    SUBMISSION_BYTES, SUBMISSIONS, Submission, completion, header, submission,
+use native_abi::ring::{
+    COMPLETION_BYTES, COMPLETIONS_AT, Completion, DATA_AT, ENTRIES_AT, SUBMISSION_BYTES,
+    SUBMISSIONS, Submission, header,
 };
 
-impl Submission {
-    pub(crate) const fn about(opcode: Opcode, token: u32, handle: u32, argument: u64) -> Self {
-        Self {
-            opcode,
-            token,
-            handle,
-            length: 0,
-            offset: 0,
-            argument,
-        }
-    }
-
-    pub(crate) const fn simple(opcode: Opcode, token: u32, argument: u64) -> Self {
-        Self::about(opcode, token, 0, argument)
-    }
-
-    pub(crate) const fn length(self, length: u32) -> Self {
-        Self { length, ..self }
-    }
-
-    pub(crate) const fn offset(self, offset: u64) -> Self {
-        Self { offset, ..self }
-    }
-}
+use super::Queue;
+use super::ring::publish_index;
 
 impl Queue {
     pub(crate) fn in_flight(&self) -> usize {
@@ -45,23 +20,7 @@ impl Queue {
     }
 
     pub(crate) fn post_submission_for_test(&self, index: usize, submission: Submission) {
-        let opcode = match submission.opcode {
-            Opcode::Echo => 1,
-            Opcode::Uptime => 2,
-            Opcode::Duplicate => 3,
-            Opcode::Timer => 4,
-            Opcode::Cancel => 5,
-            Opcode::OpenAt => 6,
-            Opcode::Read => 7,
-            Opcode::Unknown(other) => other,
-        };
-        let mut bytes = [0u8; SUBMISSION_BYTES];
-        write_entry_u32(&mut bytes, submission::OPCODE, opcode);
-        write_entry_u32(&mut bytes, submission::TOKEN, submission.token);
-        write_entry_u32(&mut bytes, submission::HANDLE, submission.handle);
-        write_entry_u32(&mut bytes, submission::LENGTH, submission.length);
-        write_entry_u64(&mut bytes, submission::OFFSET, submission.offset);
-        write_entry_u64(&mut bytes, submission::ARGUMENT, submission.argument);
+        let bytes = submission.encode();
         let at = ENTRIES_AT + index % SUBMISSIONS as usize * SUBMISSION_BYTES;
         assert!(
             self.ring.lock_leaf().pages.write_payload_at(at, &bytes),
@@ -91,10 +50,6 @@ impl Queue {
             self.ring.lock_leaf().pages.read_payload_at(at, &mut bytes),
             "a self-test completion slot was outside the shared pages"
         );
-        Completion {
-            token: read_entry_u32(&bytes, completion::TOKEN),
-            status: read_entry_u32(&bytes, completion::STATUS),
-            value: read_entry_u64(&bytes, completion::VALUE),
-        }
+        Completion::decode(&bytes)
     }
 }

@@ -1,6 +1,7 @@
 use core::fmt;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
+use native_abi::timepage::mode;
 use timebase::Timebase;
 use wost::arch::current::{apic, cpu, interrupt};
 use wost::sync::SpinLock;
@@ -660,7 +661,7 @@ fn revoke(reason: Revocation) -> bool {
         return false;
     }
     disarm();
-    match crate::timepage::publish(crate::timepage::MODE_NONE, origin_ticks(), conversion()) {
+    match crate::timepage::publish(mode::NONE, origin_ticks(), conversion()) {
         crate::timepage::Publication::Published | crate::timepage::Publication::Deferred => {}
     }
     true

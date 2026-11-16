@@ -1,6 +1,6 @@
 use alloc::sync::Arc;
 
-use handle_space::Rights;
+use native_abi::Rights;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum ObjectType {

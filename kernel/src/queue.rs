@@ -4,7 +4,8 @@ use alloc::sync::Arc;
 use core::num::NonZeroU64;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use handle_space::Rights;
+use native_abi::Rights;
+use native_abi::ring::{COMPLETIONS, Completion, Opcode, SUBMISSIONS, Submission, header, status};
 use ring_proto::{Capacity, Queues, SharedLayout};
 use wost::arch::current::interrupt::TrapFrame;
 use wost::arch::current::paging::{AddressSpace, MapError};
@@ -24,110 +25,9 @@ use ring::write_u32;
 use work::FILE_WORK;
 pub(crate) use work::{request_reap, start_worker, worker_is_ready};
 
-const SHARED_BYTES: u64 = 3 * PAGE_SIZE;
-
 const PUBLICATION_WORDS: usize = 4;
 
 type RingPages = SharedRing<PUBLICATION_WORDS>;
-
-const DATA_AT: usize = 2 * PAGE_SIZE as usize;
-
-const DATA_BYTES: usize = PAGE_SIZE as usize;
-
-const ENTRIES_AT: usize = PAGE_SIZE as usize;
-
-const COMPLETIONS_AT: usize = ENTRIES_AT + SUBMISSIONS as usize * SUBMISSION_BYTES;
-
-const SUBMISSION_BYTES: usize = 32;
-
-const COMPLETION_BYTES: usize = 16;
-
-const SUBMISSIONS: u32 = 8;
-
-const COMPLETIONS: u32 = 16;
-
-mod header {
-    pub(super) const VERSION: usize = 0;
-    pub(super) const SUBMISSIONS: usize = 4;
-    pub(super) const COMPLETIONS: usize = 8;
-    pub(super) const SUBMISSION_HEAD: usize = 16;
-    pub(super) const SUBMISSION_TAIL: usize = 20;
-    pub(super) const COMPLETION_HEAD: usize = 24;
-    pub(super) const COMPLETION_TAIL: usize = 28;
-}
-
-mod submission {
-    pub(super) const OPCODE: usize = 0;
-    pub(super) const TOKEN: usize = 4;
-    pub(super) const HANDLE: usize = 8;
-    pub(super) const LENGTH: usize = 12;
-    pub(super) const OFFSET: usize = 16;
-    pub(super) const ARGUMENT: usize = 24;
-}
-
-mod completion {
-    pub(super) const TOKEN: usize = 0;
-    pub(super) const STATUS: usize = 4;
-    pub(super) const VALUE: usize = 8;
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum Opcode {
-    Echo,
-    Uptime,
-    Duplicate,
-    Timer,
-    Cancel,
-    OpenAt,
-    Read,
-    Unknown(u32),
-}
-
-impl Opcode {
-    const fn decode(value: u32) -> Self {
-        match value {
-            1 => Self::Echo,
-            2 => Self::Uptime,
-            3 => Self::Duplicate,
-            4 => Self::Timer,
-            5 => Self::Cancel,
-            6 => Self::OpenAt,
-            7 => Self::Read,
-            other => Self::Unknown(other),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct Submission {
-    pub(crate) opcode: Opcode,
-    pub(crate) token: u32,
-    pub(crate) handle: u32,
-    pub(crate) length: u32,
-    pub(crate) offset: u64,
-    pub(crate) argument: u64,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) struct Completion {
-    pub(crate) token: u32,
-    pub(crate) status: u32,
-    pub(crate) value: u64,
-}
-
-pub(crate) const STATUS_OK: u32 = 0;
-pub(crate) const STATUS_UNKNOWN_OPCODE: u32 = 1;
-pub(crate) const STATUS_NO_HANDLE_SLOT: u32 = 2;
-pub(crate) const STATUS_BAD_HANDLE: u32 = 3;
-pub(crate) const STATUS_DENIED: u32 = 4;
-pub(crate) const STATUS_CANCELLED: u32 = 5;
-pub(crate) const STATUS_NOT_FOUND: u32 = 6;
-pub(crate) const STATUS_NO_ROOM: u32 = 7;
-pub(crate) const STATUS_BAD_BUFFER: u32 = 8;
-pub(crate) const STATUS_NO_ENTRY: u32 = 9;
-pub(crate) const STATUS_BAD_PATH: u32 = 10;
-pub(crate) const STATUS_UNAVAILABLE: u32 = 11;
-pub(crate) const STATUS_IO: u32 = 12;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct Pending {
@@ -238,13 +138,13 @@ pub(crate) struct Queue {
 
 impl Queue {
     pub(crate) fn new() -> Option<Arc<Self>> {
-        let mut run = mm::allocate_contiguous((SHARED_BYTES / PAGE_SIZE) as usize, 1)?;
+        let mut run = mm::allocate_contiguous(native_abi::ring::BYTES / PAGE_SIZE as usize, 1)?;
         if !run.zero() {
             return None;
         }
         // Shared, never mapped as owned, so no unmap frees them while a program uses them.
         let layout = SharedLayout::new(
-            SHARED_BYTES as usize,
+            native_abi::ring::BYTES,
             [
                 header::SUBMISSION_HEAD,
                 header::SUBMISSION_TAIL,
@@ -256,7 +156,7 @@ impl Queue {
         let mut shared = USegment::from(run).share().into_ring(layout).ok()?;
 
         // Written before the pages are ever mapped, so no program sees a ring it cannot read.
-        write_u32(&mut shared, header::VERSION, ring_proto::VERSION);
+        write_u32(&mut shared, header::VERSION, native_abi::ring::VERSION);
         write_u32(&mut shared, header::SUBMISSIONS, SUBMISSIONS);
         write_u32(&mut shared, header::COMPLETIONS, COMPLETIONS);
 
@@ -317,28 +217,28 @@ impl Queue {
         Some(match submission.opcode {
             Opcode::Echo => Completion {
                 token,
-                status: STATUS_OK,
+                status: status::OK,
                 value: submission.argument,
             },
             Opcode::Uptime => Completion {
                 token,
-                status: STATUS_OK,
+                status: status::OK,
                 value: crate::time::now_ns(),
             },
             Opcode::Duplicate => Self::duplicate(submission, table),
             Opcode::Timer => {
                 if !crate::time::is_calibrated() {
-                    return Some(refuse(token, STATUS_UNAVAILABLE));
+                    return Some(refuse(token, status::UNAVAILABLE));
                 }
                 if self.defer(submission).is_some() {
                     return None;
                 }
-                refuse(token, STATUS_NO_ROOM)
+                refuse(token, status::NO_ROOM)
             }
             Opcode::Cancel => self.cancel(submission),
             Opcode::OpenAt => return Self::open_at(self, submission, table),
             Opcode::Read => return Self::read(self, submission, table),
-            Opcode::Unknown(_) => refuse(token, STATUS_UNKNOWN_OPCODE),
+            Opcode::Unknown(_) => refuse(token, status::UNKNOWN_OPCODE),
         })
     }
 
@@ -346,7 +246,7 @@ impl Queue {
         let token = submission.token;
         let named = submission.handle;
         let Ok(reservation) = table.reserve_slot() else {
-            return refuse(token, STATUS_NO_HANDLE_SLOT);
+            return refuse(token, status::NO_HANDLE_SLOT);
         };
 
         // A cast would drop the high half of a word ring 3 wrote and admit undefined rights bits.
@@ -354,23 +254,23 @@ impl Queue {
             .ok()
             .and_then(Rights::from_bits)
         else {
-            return refuse(token, STATUS_DENIED);
+            return refuse(token, status::DENIED);
         };
 
         let Ok((object, held)) = table.resolve(named) else {
-            return refuse(token, STATUS_BAD_HANDLE);
+            return refuse(token, status::BAD_HANDLE);
         };
         if !held.contains(Rights::DUPLICATE) {
-            return refuse(token, STATUS_DENIED);
+            return refuse(token, status::DENIED);
         }
 
         match reservation.install(object, held, declared) {
             Ok(handle) => Completion {
                 token,
-                status: STATUS_OK,
+                status: status::OK,
                 value: u64::from(handle),
             },
-            Err(_) => refuse(token, STATUS_DENIED),
+            Err(_) => refuse(token, status::DENIED),
         }
     }
 
@@ -416,20 +316,20 @@ impl Queue {
     fn cancel(&self, submission: Submission) -> Completion {
         // Truncating a wider word would let a program end an operation it did not name.
         let Ok(target) = u32::try_from(submission.argument) else {
-            return refuse(submission.token, STATUS_NOT_FOUND);
+            return refuse(submission.token, status::NOT_FOUND);
         };
         let Some((index, entry)) =
             self.begin_settlement(|entry| entry.token == target && entry.kind.is_cancellable())
         else {
-            return refuse(submission.token, STATUS_NOT_FOUND);
+            return refuse(submission.token, status::NOT_FOUND);
         };
-        self.settle_pending(index, entry, STATUS_CANCELLED, 0);
+        self.settle_pending(index, entry, status::CANCELLED, 0);
         // Unclaimed work goes now, so a queued OpenAt returns its slot promise before this reports.
         drop(FILE_WORK.remove(self, index, entry.id));
         self.served.fetch_add(1, Ordering::Release);
         Completion {
             token: submission.token,
-            status: STATUS_OK,
+            status: status::OK,
             value: u64::from(entry.token),
         }
     }
@@ -445,9 +345,9 @@ impl Queue {
         }) {
             let deadline = entry.kind.deadline().unwrap_or(now_ns);
             let (status, value) = if clock_live {
-                (STATUS_OK, deadline)
+                (status::OK, deadline)
             } else {
-                (STATUS_UNAVAILABLE, 0)
+                (status::UNAVAILABLE, 0)
             };
             self.settle_pending(index, entry, status, value);
             due += 1;
@@ -464,7 +364,7 @@ impl Queue {
         let mut ended = 0;
         while let Some((index, entry)) = self.begin_settlement(|entry| entry.kind.is_cancellable())
         {
-            self.settle_pending(index, entry, STATUS_CANCELLED, 0);
+            self.settle_pending(index, entry, status::CANCELLED, 0);
             drop(FILE_WORK.remove(self, index, entry.id));
             ended += 1;
         }

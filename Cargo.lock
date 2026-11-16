@@ -135,6 +135,10 @@ name = "mmio-range"
 version = "0.3.1"
 
 [[package]]
+name = "native-abi"
+version = "0.3.1"
+
+[[package]]
 name = "noto-sans-mono-bitmap"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -422,6 +426,7 @@ dependencies = [
  "elf64",
  "fat32",
  "handle-space",
+ "native-abi",
  "noto-sans-mono-bitmap",
  "nvme",
  "panic-record",

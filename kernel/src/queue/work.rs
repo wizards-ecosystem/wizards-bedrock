@@ -1,15 +1,12 @@
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use handle_space::Rights;
+use native_abi::Rights;
+use native_abi::ring::{Completion, Submission, status};
 use wost::sync::SpinLock;
 
 use super::ring::data_bounds;
-use super::{
-    Completion, Pending, PendingKind, Queue, ReadRequest, STATUS_BAD_BUFFER, STATUS_BAD_HANDLE,
-    STATUS_BAD_PATH, STATUS_DENIED, STATUS_IO, STATUS_NO_ENTRY, STATUS_NO_HANDLE_SLOT,
-    STATUS_NO_ROOM, STATUS_OK, Submission, WorkPhase, refuse,
-};
+use super::{Pending, PendingKind, Queue, ReadRequest, WorkPhase, refuse};
 use crate::handle::{HandleTable, SlotReservation};
 use crate::vfs;
 use crate::wait::WaitQueue;
@@ -338,25 +335,25 @@ impl Queue {
         let token = submission.token;
 
         let Ok(reservation) = table.reserve_slot() else {
-            return Some(refuse(token, STATUS_NO_HANDLE_SLOT));
+            return Some(refuse(token, status::NO_HANDLE_SLOT));
         };
         let mut path = [0u8; MAX_PATH];
         let Some(len) = self.read_data(submission.argument, submission.length, &mut path) else {
-            return Some(refuse(token, STATUS_BAD_BUFFER));
+            return Some(refuse(token, status::BAD_BUFFER));
         };
 
         let Ok((object, held)) = table.resolve(submission.handle) else {
-            return Some(refuse(token, STATUS_BAD_HANDLE));
+            return Some(refuse(token, status::BAD_HANDLE));
         };
         let Some(directory) = object.as_directory().copied() else {
-            return Some(refuse(token, STATUS_BAD_HANDLE));
+            return Some(refuse(token, status::BAD_HANDLE));
         };
         if !held.contains(Rights::TRAVERSE) {
-            return Some(refuse(token, STATUS_DENIED));
+            return Some(refuse(token, status::DENIED));
         }
 
         let Some((pending, expected)) = self.defer_open_at(token) else {
-            return Some(refuse(token, STATUS_NO_ROOM));
+            return Some(refuse(token, status::NO_ROOM));
         };
         let work = Work::open_at(
             Arc::clone(self),
@@ -372,7 +369,7 @@ impl Queue {
         );
         if let Some(work) = FILE_WORK.submit(work) {
             work.remove_queued();
-            return Some(refuse(token, STATUS_NO_ROOM));
+            return Some(refuse(token, status::NO_ROOM));
         }
         None
     }
@@ -385,17 +382,17 @@ impl Queue {
         let token = submission.token;
 
         let Ok((object, held)) = table.resolve(submission.handle) else {
-            return Some(refuse(token, STATUS_BAD_HANDLE));
+            return Some(refuse(token, status::BAD_HANDLE));
         };
         let Some(file) = object.as_file().copied() else {
-            return Some(refuse(token, STATUS_BAD_HANDLE));
+            return Some(refuse(token, status::BAD_HANDLE));
         };
         if !held.contains(Rights::READ) {
-            return Some(refuse(token, STATUS_DENIED));
+            return Some(refuse(token, status::DENIED));
         }
 
         let Some(bounds) = data_bounds(submission.argument, submission.length) else {
-            return Some(refuse(token, STATUS_BAD_BUFFER));
+            return Some(refuse(token, status::BAD_BUFFER));
         };
 
         let wanted = (bounds.1).min(MAX_READ);
@@ -408,12 +405,12 @@ impl Queue {
             wanted,
         };
         let Some((pending, expected)) = self.defer_read(token, request) else {
-            return Some(refuse(token, STATUS_NO_ROOM));
+            return Some(refuse(token, status::NO_ROOM));
         };
         let work = Work::read(Arc::clone(self), pending, expected);
         if let Some(work) = FILE_WORK.submit(work) {
             work.remove_queued();
-            return Some(refuse(token, STATUS_NO_ROOM));
+            return Some(refuse(token, status::NO_ROOM));
         }
         None
     }
@@ -544,9 +541,9 @@ fn service(mut running: RunningWork) {
                         running.work.ring.write_data(request.at, &scratch[..read]),
                         "a read bounded at admission did not fit the data area"
                     );
-                    (STATUS_OK, read as u64)
+                    (status::OK, read as u64)
                 }
-                Err(_) => (STATUS_IO, 0),
+                Err(_) => (status::IO, 0),
             }
         }
         WorkTag::OpenAt => {
@@ -566,9 +563,9 @@ fn service(mut running: RunningWork) {
                 Err(error) => {
                     drop(reservation);
                     let status = match error {
-                        vfs::Error::Path(_) => STATUS_BAD_PATH,
-                        vfs::Error::NotADirectory | vfs::Error::NotFound => STATUS_NO_ENTRY,
-                        vfs::Error::Backend(_) | vfs::Error::NoVolume => STATUS_IO,
+                        vfs::Error::Path(_) => status::BAD_PATH,
+                        vfs::Error::NotADirectory | vfs::Error::NotFound => status::NO_ENTRY,
+                        vfs::Error::Backend(_) | vfs::Error::NoVolume => status::IO,
                     };
                     return running.finish(status, 0);
                 }
@@ -581,12 +578,12 @@ fn service(mut running: RunningWork) {
                 vfs::Node::Directory(directory) => (crate::object::directory(directory), held),
                 vfs::Node::Device(_) => {
                     drop(reservation);
-                    return running.finish(STATUS_DENIED, 0);
+                    return running.finish(status::DENIED, 0);
                 }
             };
             match reservation.install(produced, offered, offered) {
-                Ok(handle) => (STATUS_OK, u64::from(handle)),
-                Err(_) => (STATUS_DENIED, 0),
+                Ok(handle) => (status::OK, u64::from(handle)),
+                Err(_) => (status::DENIED, 0),
             }
         }
     };

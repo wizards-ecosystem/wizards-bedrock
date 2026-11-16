@@ -13,6 +13,7 @@ members = [
     "libs/handle-space",
     "libs/memory-map",
     "libs/mmio-range",
+    "libs/native-abi",
     "libs/nvme",
     "libs/panic-record",
     "libs/path-walk",
@@ -48,6 +49,7 @@ default-members = [
     "libs/handle-space",
     "libs/memory-map",
     "libs/mmio-range",
+    "libs/native-abi",
     "libs/nvme",
     "libs/panic-record",
     "libs/path-walk",
@@ -88,6 +90,7 @@ frame-space = { path = "libs/frame-space" }
 handle-space = { path = "libs/handle-space" }
 memory-map = { path = "libs/memory-map" }
 mmio-range = { path = "libs/mmio-range" }
+native-abi = { path = "libs/native-abi" }
 nvme = { path = "libs/nvme" }
 panic-record = { path = "libs/panic-record" }
 path-walk = { path = "libs/path-walk" }

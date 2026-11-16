@@ -1,3 +1,4 @@
+use native_abi::address::STACK;
 use wost::arch::current::paging::{self, ActivateError, AddressSpace, MapError, ReclaimError};
 use wost::arch::current::task;
 use wost::arch::current::usercopy::{self, UserCopyError};
@@ -137,7 +138,7 @@ fn marked_page(marker: u8) -> Option<(mm::Segment, mm::PhysicalAddress)> {
 }
 
 pub(super) fn a_user_page_comes_back_cleared() -> bool {
-    const AT: u64 = user::STACK + 0xA0_0000;
+    const AT: u64 = STACK + 0xA0_0000;
     const OUTSIDE_USER_HALF: u64 = 0xffff_8000_0010_0000;
 
     let unmapped = in_reclaimed_space(AddressSpace::for_user, |space| {
@@ -187,7 +188,7 @@ pub(super) fn a_user_page_comes_back_cleared() -> bool {
 }
 
 pub(super) fn an_active_unmap_exposes_only_its_replacement(context: &mut ThreadContext) -> bool {
-    const AT: u64 = user::STACK + 0x30_0000;
+    const AT: u64 = STACK + 0x30_0000;
     const FIRST: [u8; 16] = [0xa5; 16];
     const SECOND: [u8; 16] = [0x5a; 16];
 
@@ -300,7 +301,7 @@ pub(super) fn a_bound_space_is_not_reclaimed() -> bool {
 
 // The blocker sits on the second page, so a refusal that kept the first page would show.
 pub(super) fn a_refused_mapping_leaves_no_trace() -> bool {
-    const BASE: u64 = user::STACK + 0xC0_0000;
+    const BASE: u64 = STACK + 0xC0_0000;
     const BLOCKER: u64 = BASE + PAGE_SIZE;
 
     in_reclaimed_space(AddressSpace::for_user, |space| {

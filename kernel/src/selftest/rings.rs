@@ -1,11 +1,12 @@
 use alloc::sync::Arc;
 
-use handle_space::Rights;
+use native_abi::Rights;
+use native_abi::ring::{Completion, Opcode, Submission, status};
 
 use super::clocks::spins_until;
 use super::runs_until;
 use crate::handle::HandleTable;
-use crate::queue::{self, Completion, Opcode, Queue, Submission};
+use crate::queue::Queue;
 use crate::vfs;
 
 // What `xtask/src/image/corpus.rs` puts on the volume.
@@ -52,14 +53,14 @@ pub(super) fn every_submission_gets_exactly_one_completion() -> bool {
     let uptime = queue.read_completion(1);
     let refused = queue.read_completion(2);
     let matched = echo.token == 0x1111
-        && echo.status == queue::STATUS_OK
+        && echo.status == status::OK
         && echo.value == 0xDEAD_BEEF
         && uptime.token == 0x2222
-        && uptime.status == queue::STATUS_OK
+        && uptime.status == status::OK
         && uptime.value > 0
         && uptime.value <= crate::time::now_ns()
         && refused.token == 0x3333
-        && refused.status == queue::STATUS_UNKNOWN_OPCODE;
+        && refused.status == status::UNKNOWN_OPCODE;
 
     let echoes = [
         Submission::simple(Opcode::Echo, 0x5150, 7),
@@ -139,13 +140,13 @@ pub(super) fn a_word_that_does_not_fit_is_refused_rather_than_truncated() -> boo
         return false;
     }
 
-    widened.status == queue::STATUS_DENIED
+    widened.status == status::DENIED
         // The timer is still in flight: a token that does not fit names no operation.
-        && cancelled.status == queue::STATUS_NOT_FOUND
+        && cancelled.status == status::NOT_FOUND
         && queue.in_flight() == 1
-        && at_max.status == queue::STATUS_OK
+        && at_max.status == status::OK
         && at_max.value == 0
-        && past.status == queue::STATUS_OK
+        && past.status == status::OK
         && past.value == 0
         && untouched == [0u8; 32]
 }
@@ -232,7 +233,7 @@ fn open_the_small_file_in(
         return None;
     }
     let completion = queue.read_completion(2);
-    (completion.status == queue::STATUS_OK).then_some(completion.value as u32)
+    (completion.status == status::OK).then_some(completion.value as u32)
 }
 
 pub(super) fn opening_a_node_does_not_restore_universal_rights() -> bool {
@@ -273,7 +274,7 @@ pub(super) fn opening_a_node_does_not_restore_universal_rights() -> bool {
     }
 
     let opened = [0, 1, 2].map(|slot| queue.read_completion(slot));
-    if opened.iter().any(|open| open.status != queue::STATUS_OK) {
+    if opened.iter().any(|open| open.status != status::OK) {
         return false;
     }
     let [file, subdirectory, universal_file] = opened.map(|open| open.value as u32);
@@ -309,7 +310,7 @@ pub(super) fn opening_a_node_does_not_restore_universal_rights() -> bool {
 
     narrowed
         && read.token == 0xD200
-        && read.status == queue::STATUS_OK
+        && read.status == status::OK
         && read.value == 16
         && copied
         && bytes == SMALL_CONTENT[..16]
@@ -339,9 +340,9 @@ pub(super) fn a_ring_operation_cannot_reach_past_its_rights_or_its_pages() -> bo
         ],
     );
     let served = queue.serve(&table) == 3;
-    let denied = queue.read_completion(4).status == queue::STATUS_DENIED
-        && queue.read_completion(5).status == queue::STATUS_DENIED
-        && queue.read_completion(6).status == queue::STATUS_BAD_BUFFER;
+    let denied = queue.read_completion(4).status == status::DENIED
+        && queue.read_completion(5).status == status::DENIED
+        && queue.read_completion(6).status == status::BAD_BUFFER;
 
     // Every refusal gave its promised slot back.
     refused && served && denied && table.live() == 4 && table.promised() == 0
@@ -396,11 +397,11 @@ fn opens_are_refused(
             unwalkable,
             0u64,
             SMALL_NAME.len() as u32,
-            queue::STATUS_DENIED,
+            status::DENIED,
         ),
-        (0xD2, walkable, 256, 2, queue::STATUS_BAD_PATH),
-        (0xD3, walkable, 8192, 8, queue::STATUS_BAD_BUFFER),
-        (0xD4, walkable, 0, 0, queue::STATUS_BAD_BUFFER),
+        (0xD2, walkable, 256, 2, status::BAD_PATH),
+        (0xD3, walkable, 8192, 8, status::BAD_BUFFER),
+        (0xD4, walkable, 0, 0, status::BAD_BUFFER),
     ];
     post(
         queue,
@@ -461,7 +462,7 @@ pub(super) fn an_operation_completes_after_its_deadline_and_only_once() -> bool 
     let timer = queue.read_completion(0);
     let once = queue.expire(crate::time::now_ns()) == 0
         && timer.token == 0x7117
-        && timer.status == queue::STATUS_OK
+        && timer.status == status::OK
         && timer.value >= submitted_at.saturating_add(DELAY_NS);
 
     post(
@@ -474,9 +475,9 @@ pub(super) fn an_operation_completes_after_its_deadline_and_only_once() -> bool 
     let canceller = queue.read_completion(2);
     let separate = cancelled
         && target.token == 0xDEAD
-        && target.status == queue::STATUS_CANCELLED
+        && target.status == status::CANCELLED
         && canceller.token == 0xC0DE
-        && canceller.status == queue::STATUS_OK
+        && canceller.status == status::OK
         && canceller.value == 0xDEAD;
 
     post(
@@ -484,15 +485,14 @@ pub(super) fn an_operation_completes_after_its_deadline_and_only_once() -> bool 
         4,
         &[Submission::simple(Opcode::Cancel, 0xC0DF, 0xDEAD)],
     );
-    let again =
-        queue.serve(&table) == 1 && queue.read_completion(3).status == queue::STATUS_NOT_FOUND;
+    let again = queue.serve(&table) == 1 && queue.read_completion(3).status == status::NOT_FOUND;
 
     // The process-teardown path ends what is left, once.
     let abandoned = queue.abandon() == 1;
     let ended = queue.read_completion(4);
     let released = abandoned
         && ended.token == 0xA1
-        && ended.status == queue::STATUS_CANCELLED
+        && ended.status == status::CANCELLED
         && queue.is_quiet()
         && queue.in_flight() == 0
         && queue.outstanding() == 0

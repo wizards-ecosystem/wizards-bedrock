@@ -1,3 +1,4 @@
+use native_abi::address::{RING, STACK};
 use wost::arch::current::paging::{AddressSpace, MapError};
 use wost::arch::current::task;
 use wost::mm::PhysicalAddress;
@@ -33,11 +34,6 @@ pub(crate) use selftest::{
 
 #[cfg(feature = "selftest")]
 pub(crate) const CODE: u64 = 0x0000_4000_0000_0000;
-
-// Far from the code, so a stack run-off hits nothing.
-pub(crate) const STACK: u64 = 0x0000_3000_0000_0000;
-
-const RING: u64 = 0x0000_2000_0000_0000;
 
 // Keeps two programs' addresses distinct, though their page tables already isolate them.
 const APART: u64 = 0x1_0000;

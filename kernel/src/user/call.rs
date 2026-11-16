@@ -1,5 +1,8 @@
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+use native_abi::Call;
+use native_abi::entry::{self, offset};
+use native_abi::error::{EINVAL, ENOSYS};
 use wost::arch::current::interrupt::{self, TrapFrame};
 use wost::arch::current::task;
 use wost::arch::current::{cpu, usercopy};
@@ -9,38 +12,7 @@ use super::{BOOTSTRAPS, LAUNCHES, STACK_BYTES};
 use crate::handle::HandleTable;
 use crate::{info, queue, thread, warn};
 
-const ENTRY_VERSION: u64 = 1;
-
-const ENTRY_BYTES: usize = 24;
-
-mod entry {
-    pub(super) const VERSION: usize = 0;
-    pub(super) const ARGUMENT: usize = 8;
-    pub(super) const BOOTSTRAP_HANDLE: usize = 16;
-}
-
-const ENTRY_STACK_BYTES: u64 = (ENTRY_BYTES as u64 + 15) & !15;
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Call {
-    Exit,
-    RingEnter,
-    RingWait,
-    ThreadBase,
-    Unknown(u64),
-}
-
-impl Call {
-    const fn decode(value: u64) -> Self {
-        match value {
-            0 => Self::Exit,
-            1 => Self::RingEnter,
-            2 => Self::ThreadBase,
-            3 => Self::RingWait,
-            other => Self::Unknown(other),
-        }
-    }
-}
+const ENTRY_STACK_BYTES: u64 = (entry::BYTES as u64 + 15) & !15;
 
 static REFUSED_CALLS: AtomicUsize = AtomicUsize::new(0);
 
@@ -77,10 +49,6 @@ pub(crate) fn refusals() -> (usize, usize) {
         LAST_REFUSED.load(Ordering::Acquire),
     )
 }
-
-const ENOSYS: u64 = (-38i64) as u64;
-
-const EINVAL: u64 = (-22i64) as u64;
 
 fn answer_call(frame: &TrapFrame, value: u64) {
     assert!(
@@ -180,11 +148,14 @@ pub(super) fn cross(_: &mut thread::ThreadContext, _: usize) {
     }
 
     let top = launch.stack + STACK_BYTES - ENTRY_STACK_BYTES;
-    if usercopy::copy_to_user(top + entry::VERSION as u64, &ENTRY_VERSION.to_le_bytes()).is_err()
-        || usercopy::copy_to_user(top + entry::ARGUMENT as u64, &launch.argument.to_le_bytes())
-            .is_err()
+    if usercopy::copy_to_user(top + offset::VERSION as u64, &entry::VERSION.to_le_bytes()).is_err()
         || usercopy::copy_to_user(
-            top + entry::BOOTSTRAP_HANDLE as u64,
+            top + offset::ARGUMENT as u64,
+            &launch.argument.to_le_bytes(),
+        )
+        .is_err()
+        || usercopy::copy_to_user(
+            top + offset::BOOTSTRAP_HANDLE as u64,
             &u64::from(launch.bootstrap_handle).to_le_bytes(),
         )
         .is_err()

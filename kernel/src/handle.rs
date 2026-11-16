@@ -2,7 +2,8 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use handle_space::{Mixer, Quota, Rights, SLOTS, Slot};
+use handle_space::{Mixer, Quota, SLOTS, Slot};
+use native_abi::Rights;
 use wost::sync::SpinLock;
 
 use crate::object::ObjectRef;

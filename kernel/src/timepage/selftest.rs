@@ -1,9 +1,10 @@
 use core::sync::atomic::{Ordering, fence};
 
+use native_abi::timepage::{CLOCK_AT, clock};
 use timebase::{Seq, Timebase};
 use wost::mm::SharedBytes;
 
-use super::{CLOCK_AT, PAGE, clock, read_u32};
+use super::{PAGE, read_u32};
 
 pub(crate) fn read() -> Option<Reading> {
     const ATTEMPTS: usize = 64;

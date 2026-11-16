@@ -1,4 +1,4 @@
-use super::*;
+use crate::Rights;
 
 #[test]
 fn attenuation_never_widens_the_held_rights() {

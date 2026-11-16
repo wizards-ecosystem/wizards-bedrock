@@ -1,6 +1,6 @@
 use core::fmt;
 
-use handle_space::Rights;
+use native_abi::Rights;
 use wost::arch::current::paging::{ActivateError, AddressSpace, MapError};
 use wost::arch::current::task;
 use wost::arch::current::{cpu, xstate};

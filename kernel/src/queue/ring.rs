@@ -1,7 +1,9 @@
-use super::{
-    COMPLETION_BYTES, COMPLETIONS_AT, Completion, DATA_AT, DATA_BYTES, ENTRIES_AT, Opcode, Queue,
-    RingPages, SUBMISSION_BYTES, SUBMISSIONS, Submission, completion, header, submission,
+use native_abi::ring::{
+    COMPLETION_BYTES, COMPLETIONS_AT, Completion, DATA_AT, DATA_BYTES, ENTRIES_AT,
+    SUBMISSION_BYTES, SUBMISSIONS, Submission, header,
 };
+
+use super::{Queue, RingPages};
 
 impl Queue {
     pub(super) fn read_data(&self, offset: u64, length: u32, into: &mut [u8]) -> Option<usize> {
@@ -54,28 +56,11 @@ impl Queue {
         }
 
         // Only the copy is validated and used: a second read of the page is a double fetch.
-        let opcode = Opcode::decode(read_entry_u32(&bytes, submission::OPCODE));
-        let token = read_entry_u32(&bytes, submission::TOKEN);
-        let handle = read_entry_u32(&bytes, submission::HANDLE);
-        let length = read_entry_u32(&bytes, submission::LENGTH);
-        let offset = read_entry_u64(&bytes, submission::OFFSET);
-        let argument = read_entry_u64(&bytes, submission::ARGUMENT);
-
-        Some(Submission {
-            opcode,
-            token,
-            handle,
-            length,
-            offset,
-            argument,
-        })
+        Some(Submission::decode(&bytes))
     }
 
     pub(super) fn post(&self, completion: Completion) {
-        let mut bytes = [0u8; COMPLETION_BYTES];
-        write_entry_u32(&mut bytes, completion::TOKEN, completion.token);
-        write_entry_u32(&mut bytes, completion::STATUS, completion.status);
-        write_entry_u64(&mut bytes, completion::VALUE, completion.value);
+        let bytes = completion.encode();
 
         // One guard makes every completion path one producer, so no tail passes an unwritten slot.
         let mut ring = self.ring.lock_leaf();
@@ -130,29 +115,4 @@ pub(super) fn publish_index(shared: &RingPages, at: usize, value: u32) {
         shared.store_release_u32(at, value),
         "a ring index was out of bounds or misaligned"
     );
-}
-
-pub(super) fn read_entry_u32(bytes: &[u8], at: usize) -> u32 {
-    u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
-}
-
-pub(super) fn read_entry_u64(bytes: &[u8], at: usize) -> u64 {
-    u64::from_le_bytes([
-        bytes[at],
-        bytes[at + 1],
-        bytes[at + 2],
-        bytes[at + 3],
-        bytes[at + 4],
-        bytes[at + 5],
-        bytes[at + 6],
-        bytes[at + 7],
-    ])
-}
-
-pub(super) fn write_entry_u32(bytes: &mut [u8], at: usize, value: u32) {
-    bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
-}
-
-pub(super) fn write_entry_u64(bytes: &mut [u8], at: usize, value: u64) {
-    bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
 }

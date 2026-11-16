@@ -7,9 +7,6 @@
 
 use core::fmt;
 
-// Bumped whenever a reader-visible layout changes.
-pub const VERSION: u32 = 1;
-
 const PUBLICATION_WORD_BYTES: usize = size_of::<u32>();
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

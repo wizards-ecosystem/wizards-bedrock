@@ -1,5 +1,7 @@
 use core::hint::spin_loop;
 
+use native_abi::address::TIME;
+use native_abi::timepage::mode;
 use wost::arch::current::cpu;
 use wost::arch::current::paging::{AddressSpace, MapError};
 use wost::sync::SpinLock;
@@ -19,7 +21,7 @@ pub(super) fn the_time_page_and_the_kernel_clock_tell_the_same_time() -> bool {
     let Some(reading) = timepage::read() else {
         return false;
     };
-    if reading.mode != timepage::MODE_COUNTER {
+    if reading.mode != mode::COUNTER {
         return false;
     }
 
@@ -40,7 +42,7 @@ pub(super) fn a_program_sees_the_time_page_and_cannot_write_it() -> bool {
         if timepage::install(space).is_err() {
             return false;
         }
-        let Some((_, flags)) = space.lookup(timepage::TIME) else {
+        let Some((_, flags)) = space.lookup(TIME) else {
             return false;
         };
 
@@ -49,7 +51,7 @@ pub(super) fn a_program_sees_the_time_page_and_cannot_write_it() -> bool {
             && flags.contains(Flags::NO_EXECUTE)
             // The frame is the kernel's, so an unmap must not hand it to the allocator.
             && matches!(
-                space.unmap(timepage::TIME, PAGE_SIZE),
+                space.unmap(TIME, PAGE_SIZE),
                 Err(MapError::NotOwned(_))
             )
     })

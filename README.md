@@ -102,9 +102,10 @@ docs/            architecture, conventions, roadmap and decisions
 | `entropy` | ChaCha20, BLAKE2s and the seeded random generator state |
 | `fat32` | a read-only FAT32 reader over any sector source |
 | `frame-space` | the physical frame bitmap |
-| `handle-space` | handle encoding, rights and quotas |
+| `handle-space` | handle encoding and quotas |
 | `memory-map` | a bounded firmware memory map that refuses rather than truncates |
 | `mmio-range` | checked offsets for repeated MMIO accesses |
+| `native-abi` | every value that crosses ring 3: calls, errors, the entry block, ring layout, rights, the time page and fixed addresses |
 | `nvme` | NVMe registers, queues and commands |
 | `panic-record` | escaped, framed panic records |
 | `path-walk` | paths that cannot name an ancestor |

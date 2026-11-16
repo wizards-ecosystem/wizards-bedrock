@@ -1,6 +1,8 @@
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU32, Ordering, fence};
 
+use native_abi::address::TIME;
+use native_abi::timepage::{CLOCK_AT, VERSION, clock, constants, mode};
 use timebase::{Seq, Timebase};
 use wost::arch::current::paging::{AddressSpace, MapError};
 use wost::mm::{self, SharedBytes, USegment};
@@ -13,38 +15,10 @@ mod selftest;
 #[cfg(feature = "selftest")]
 pub(crate) use selftest::read;
 
-// A fixed address costs KASLR nothing only while no two programs share a table.
-pub(crate) const TIME: u64 = 0x0000_1000_0000_0000;
-
-const VERSION: u32 = 1;
-
-pub(crate) const MODE_NONE: u32 = 0;
-
-pub(crate) const MODE_COUNTER: u32 = 1;
-
-mod constants {
-    pub(super) const VERSION: usize = 0;
-    pub(super) const PAGE_BYTES: usize = 4;
-    pub(super) const COUNTER_HZ: usize = 8;
-}
-
-// Its own cache line: the clock is read constantly and the constants once.
-const CLOCK_AT: usize = 64;
-
-mod clock {
-    pub(super) const SEQ: usize = 0;
-    pub(super) const MODE: usize = 4;
-    pub(super) const BASE_NS: usize = 8;
-    pub(super) const FRACTION: usize = 16;
-    pub(super) const LAST_TICKS: usize = 24;
-    pub(super) const MULTIPLIER: usize = 32;
-    pub(super) const SHIFT: usize = 40;
-}
-
 static PAGE: SpinLock<Option<Arc<SharedBytes>>> = SpinLock::new(None);
 
 // A revocation that finds the page shared is written by the installation that lets go last.
-static DESIRED_MODE: AtomicU32 = AtomicU32::new(MODE_NONE);
+static DESIRED_MODE: AtomicU32 = AtomicU32::new(mode::NONE);
 
 pub(crate) fn init(counter_hz: u64) -> bool {
     let Some(mut run) = mm::allocate_contiguous(1, 1) else {
@@ -118,11 +92,11 @@ pub(crate) fn install(space: &mut AddressSpace) -> Result<(), Error> {
 // The mode is read under the guard, so a revocation either sees this share gone or is seen here.
 fn apply_deferred_revocation() {
     let mut guard = PAGE.lock_leaf();
-    if DESIRED_MODE.load(Ordering::Acquire) != MODE_NONE {
+    if DESIRED_MODE.load(Ordering::Acquire) != mode::NONE {
         return;
     }
     if let Some(page) = guard.as_mut().and_then(Arc::get_mut) {
-        write_clock(page, MODE_NONE, 0, Timebase::UNCALIBRATED);
+        write_clock(page, mode::NONE, 0, Timebase::UNCALIBRATED);
     }
 }
 

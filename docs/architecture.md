@@ -260,18 +260,19 @@ as the TSC rate and measures only the APIC timer against it. Otherwise it measur
 the 8254 PIT over 20 ms windows and accepts a rate when two windows agree to one part in 64; leaf
 0x16 is never used as a rate. When the PIT was the source it also checks live APIC windows as a
 watchdog. Two consecutive conclusive disagreements revoke
-public time: the time page switches to `MODE_NONE` and scheduling continues on a private epoch.
+public time: the time page switches to mode `NONE` and scheduling continues on a private epoch.
 An NVMe or VT-d wait is bounded by the clock, through `timebase::PollLimit` for NVMe, with a spin
 count only when no clock exists.
 
 ## 6. The native ABI
 
 A program's external authority is its handle table. The data path is a submission and completion
-ring, with four synchronous calls beside it. The constants in this section are the ABI.
+ring, with four synchronous calls beside it. The constants in this section are the ABI, and
+`libs/native-abi` defines each of them once for the kernel and for programs.
 
 ### Handles and rights
 
-A handle is a 32-bit value (`libs/handle-space`). Bits 0 and 1 are always set, so zero is never a
+A handle is a 32-bit value (`libs/handle-space`; the rights are `native_abi::Rights`). Bits 0 and 1 are always set, so zero is never a
 handle. Bits 2 to 19 are an arena index and bits 20 to 31 a generation that refuses stale reuse.
 The value is XORed with a mixer derived from the table's identity, so one slot reads differently
 in two tables. The identity, a non-wrapping `u64`, is the authority boundary: a slot owned by
@@ -294,7 +295,7 @@ operation that a held handle authorizes. There is no `Close`; handles live until
 ### The ring
 
 Each program has one ring: three kernel-owned pages mapped at `0x0000200000000000` in its own
-space without ownership (`kernel/src/queue.rs`). The kernel reads ring memory once into a snapshot
+space without ownership (`kernel/src/queue.rs`, layout in `native_abi::ring`). The kernel reads ring memory once into a snapshot
 and acts only on copies.
 
 | Page | Contents |
@@ -338,7 +339,7 @@ can hold a directory handle today, because spawn installs only the bootstrap cha
 
 ### Calls
 
-The `0x80` gate dispatches on `rax` (`kernel/src/user/call.rs`).
+The `0x80` gate dispatches on `rax` (`kernel/src/user/call.rs`, numbers in `native_abi::Call`).
 
 | `rax` | Call | Effect |
 |---:|---|---|
@@ -358,12 +359,12 @@ A program starts at its ELF entry with `RSP` 16-byte aligned on a 24-byte entry 
 16).
 
 The time page is mapped read-only at `0x0000100000000000` in every program
-(`kernel/src/timepage.rs`). Its constants are written once before any mapping exists: version
+(`kernel/src/timepage.rs`, layout in `native_abi::timepage`). Its constants are written once before any mapping exists: version
 (`u32` at 0, value `1`), page size (`u32` at 4) and counter rate in hertz (`u64` at 8). The clock
 region starts at offset 64 under a sequence lock: sequence (`u32` at 64, odd during a write), mode
 (`u32` at 68), base nanoseconds (`u64` at 72), fraction (`u64` at 80), the counter reading for
 that base (`u64` at 88), multiplier (`u64` at 96) and shift (`u32` at 104). Mode `1`
-(`MODE_COUNTER`) lets a program convert `rdtsc` itself; mode `0` (`MODE_NONE`) means it must ask
+(`mode::COUNTER`) lets a program convert `rdtsc` itself; mode `0` (`mode::NONE`) means it must ask
 with `Uptime`. The page is global until Phase 7 replaces ambient time with per-world clock modes.
 
 ## 7. Processes and the loader
