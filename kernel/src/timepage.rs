@@ -159,8 +159,9 @@ fn write_u64(page: &mut SharedBytes, at: usize, value: u64) {
 
 fn read_u32(page: &SharedBytes, at: usize) -> u32 {
     let mut bytes = [0u8; 4];
-    if !page.read_at(at, &mut bytes) {
-        panic!("an internal time-page field was outside the shared page");
-    }
+    assert!(
+        page.read_at(at, &mut bytes),
+        "an internal time-page field was outside the shared page"
+    );
     u32::from_le_bytes(bytes)
 }

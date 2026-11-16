@@ -78,9 +78,11 @@ fn on_trap(frame: &TrapFrame) {
         TrapCause::Fault(fault) if is_the_programs(frame, fault) => {
             #[cfg(feature = "selftest")]
             LAST_USER_FAULT.record(frame);
-            if !crate::thread::retire_from_trap(frame) {
-                panic!("{}", Report { frame, cause });
-            }
+            assert!(
+                crate::thread::retire_from_trap(frame),
+                "{}",
+                Report { frame, cause }
+            );
         }
 
         _ => panic!("{}", Report { frame, cause }),
@@ -98,9 +100,10 @@ fn claim_eoi(frame: &TrapFrame, vector: x86_apic::vector::InterruptVector) -> ap
 }
 
 fn dismiss(token: apic::EoiToken<'_>) {
-    if apic::end_of_interrupt(token).is_err() {
-        panic!("APIC in-service authority changed before dismissal");
-    }
+    assert!(
+        apic::end_of_interrupt(token).is_ok(),
+        "APIC in-service authority changed before dismissal"
+    );
 }
 
 fn is_the_programs(frame: &TrapFrame, fault: trap_cause::Fault) -> bool {

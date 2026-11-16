@@ -42,7 +42,7 @@ impl Heap {
         let slot = self.free[class.index()];
         // SAFETY: `slot` came off this class's free list, so it is an unheld slot of this class in
         // a slab frame this heap owns, and its first word is the link written when it was pushed.
-        self.free[class.index()] = unsafe { core::ptr::read(slot as *const usize) };
+        self.free[class.index()] = unsafe { ptr::read(slot as *const usize) };
         self.live = live;
         slot as *mut u8
     }
@@ -58,7 +58,7 @@ impl Heap {
         let link = slot.cast::<usize>();
         // SAFETY: the caller guarantees a slot of `class` this heap owns, dead once it is freed, so
         // its first word is ours to overwrite with the link.
-        unsafe { core::ptr::write(link, self.free[class.index()]) };
+        unsafe { ptr::write(link, self.free[class.index()]) };
         self.free[class.index()] = slot as usize;
         self.live = live;
         true
@@ -79,7 +79,7 @@ impl Heap {
             let link = address.cast::<usize>();
             // SAFETY: the caller's uniquely owned direct-mapped frame holds `offset_of`'s slot, and
             // writing the link is that slot's first use; forming the pointer proved no coverage.
-            unsafe { core::ptr::write(link, self.free[class.index()]) };
+            unsafe { ptr::write(link, self.free[class.index()]) };
             self.free[class.index()] = address as usize;
         }
         true
@@ -174,7 +174,7 @@ unsafe impl GlobalAlloc for KernelAllocator {
                 core::mem::forget(run);
                 address
             }
-            Err(_) => core::ptr::null_mut(),
+            Err(_) => ptr::null_mut(),
         }
     }
 

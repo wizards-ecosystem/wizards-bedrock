@@ -130,6 +130,8 @@ missing_debug_implementations = "warn"
 unused_must_use = "deny"
 unreachable_pub = "warn"
 redundant_imports = "warn"
+rust_2018_idioms = { level = "deny", priority = -1 }
+unused_qualifications = "deny"
 
 [workspace.lints.clippy]
 # Every unsafe operation is documented, one per block, and every `pub unsafe fn` states its contract.
@@ -149,6 +151,27 @@ std_instead_of_core = "deny"
 alloc_instead_of_core = "deny"
 large_stack_arrays = "deny"
 cast_lossless = "deny"
+# House style: `Self`, `let else`, inline format arguments, assert messages and honest signatures.
+use_self = "deny"
+manual_let_else = "deny"
+explicit_iter_loop = "deny"
+cloned_instead_of_copied = "deny"
+return_self_not_must_use = "deny"
+clone_on_ref_ptr = "deny"
+map_unwrap_or = "deny"
+ref_option = "deny"
+fn_params_excessive_bools = "deny"
+semicolon_if_nothing_returned = "deny"
+redundant_closure_for_method_calls = "deny"
+missing_assert_message = "deny"
+wildcard_imports = "deny"
+items_after_statements = "deny"
+uninlined_format_args = "deny"
+match_same_arms = "deny"
+manual_assert = "deny"
+unused_self = "deny"
+needless_pass_by_ref_mut = "deny"
+trivially_copy_pass_by_ref = "deny"
 
 [profile.release]
 panic = "abort"

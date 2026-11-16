@@ -57,7 +57,7 @@ pub(crate) fn build(
     let bytes = cargo::build_kernel(paths, profile, kernel.features())?;
     println!("[xtask] creating disk image {}", destination.display());
     let partial = destination.with_extension("partial");
-    let assembled = crate::paths::create_read_write(&partial)
+    let assembled = paths::create_read_write(&partial)
         .with_context(|| format!("creating {}", partial.display()))
         .and_then(|mut disk| {
             assemble(paths, kernel, &bytes, &mut disk)?;

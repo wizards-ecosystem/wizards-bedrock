@@ -134,7 +134,7 @@ pub(crate) fn orphan(slot: usize) {
     *room = None;
     drop(launches);
     if stored {
-        crate::queue::request_reap();
+        queue::request_reap();
     }
 }
 

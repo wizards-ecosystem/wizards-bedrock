@@ -192,6 +192,10 @@ impl AddressSpace {
         )
     }
 
+    #[expect(
+        clippy::needless_pass_by_ref_mut,
+        reason = "the leaves are cleared through the direct map in tables this borrow owns"
+    )]
     pub(super) fn undo(&mut self, range: &MappingRange, written: u64, grain: Grain) {
         let mut offset = 0;
         while offset < written {
@@ -550,7 +554,7 @@ impl BootRegion {
         if len == 0 || !base.is_multiple_of(PAGE_SIZE) {
             return None;
         }
-        let cache = crate::mm::map_direct_cache(base, end)?;
+        let cache = mm::map_direct_cache(base, end)?;
         Some(Self {
             base: PhysicalAddress::new(base)?,
             len,

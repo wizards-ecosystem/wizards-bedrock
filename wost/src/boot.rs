@@ -154,9 +154,10 @@ impl Framebuffer {
                     panic!("framebuffer shadow is shorter than its validated mapping");
                 };
                 framebuffer_access(self.region.write_u32_slice(destination, values));
-                if span.copy_within(&mut self.back).is_none() {
-                    panic!("framebuffer shadow is shorter than its validated mapping");
-                }
+                assert!(
+                    span.copy_within(&mut self.back).is_some(),
+                    "framebuffer shadow is shorter than its validated mapping"
+                );
             }
             return;
         }

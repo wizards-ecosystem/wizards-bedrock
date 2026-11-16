@@ -1,6 +1,6 @@
+use core::sync::atomic::{AtomicU64, Ordering};
 use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result};
 

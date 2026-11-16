@@ -126,9 +126,10 @@ fn load_index(shared: &RingPages, at: usize) -> u32 {
 }
 
 pub(super) fn publish_index(shared: &RingPages, at: usize, value: u32) {
-    if !shared.store_release_u32(at, value) {
-        panic!("a ring index was out of bounds or misaligned");
-    }
+    assert!(
+        shared.store_release_u32(at, value),
+        "a ring index was out of bounds or misaligned"
+    );
 }
 
 pub(super) fn read_entry_u32(bytes: &[u8], at: usize) -> u32 {

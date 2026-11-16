@@ -22,6 +22,9 @@ pub const fn base_revision() -> BaseRevision {
 const SUPPORTED_BPP: u16 = 32;
 
 pub fn enter(requests: Requests, kernel_main: fn(BootInfo) -> !) -> ! {
+    // A second caller would mint a second framebuffer over live device memory.
+    static ENTERED: crate::sync::Once = crate::sync::Once::new();
+    assert!(ENTERED.claim(), "the kernel has already been entered");
     let Requests {
         base_revision,
         framebuffer,
@@ -31,9 +34,6 @@ pub fn enter(requests: Requests, kernel_main: fn(BootInfo) -> !) -> ! {
         rsdp,
         modules,
     } = requests;
-    // A second caller would mint a second framebuffer over live device memory.
-    static ENTERED: crate::sync::Once = crate::sync::Once::new();
-    assert!(ENTERED.claim(), "the kernel has already been entered");
 
     kernel_main(BootInfo {
         base_revision_supported: base_revision.is_supported(),

@@ -325,7 +325,7 @@ impl Queue {
                 status: STATUS_OK,
                 value: crate::time::now_ns(),
             },
-            Opcode::Duplicate => self.duplicate(submission, table),
+            Opcode::Duplicate => Self::duplicate(submission, table),
             Opcode::Timer => {
                 if !crate::time::is_calibrated() {
                     return Some(refuse(token, STATUS_UNAVAILABLE));
@@ -342,7 +342,7 @@ impl Queue {
         })
     }
 
-    fn duplicate(&self, submission: Submission, table: &Arc<HandleTable>) -> Completion {
+    fn duplicate(submission: Submission, table: &Arc<HandleTable>) -> Completion {
         let token = submission.token;
         let named = submission.handle;
         let Ok(reservation) = table.reserve_slot() else {

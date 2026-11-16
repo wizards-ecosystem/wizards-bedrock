@@ -384,7 +384,7 @@ fn disable(
 
 // `CFS` ends only an enable wait; a disable waits for `RDY = 0` whatever `CFS` says.
 fn wait_for_ready(
-    registers: &mut MappedBar,
+    registers: &MappedBar,
     capabilities: Capabilities,
     wanted: Readiness,
 ) -> Result<(), BringUpError> {

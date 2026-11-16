@@ -51,7 +51,10 @@ const _: () = {
         CRYSTAL_HZ / 50 <= u16::MAX as u32,
         "the window must fit the counter"
     );
-    assert!(WINDOW_TICKS as u32 + MAX_STEP as u32 <= u16::MAX as u32);
+    assert!(
+        WINDOW_TICKS as u32 + MAX_STEP as u32 <= u16::MAX as u32,
+        "the window plus the largest step must fit the counter"
+    );
 };
 
 // QEMU models a gigahertz and VMware tens of megahertz; far outside is a corrupted reading.
@@ -399,7 +402,7 @@ impl Refusal {
     }
 }
 
-static LAST_REFUSAL: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+static LAST_REFUSAL: AtomicUsize = AtomicUsize::new(0);
 
 static LAST_APIC_HZ: AtomicU64 = AtomicU64::new(0);
 static LAST_TSC_HZ: AtomicU64 = AtomicU64::new(0);

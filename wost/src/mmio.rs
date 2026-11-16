@@ -95,6 +95,10 @@ impl MmioRegion {
         self.write_values(offset, values.iter().copied())
     }
 
+    #[expect(
+        clippy::needless_pass_by_ref_mut,
+        reason = "the write goes through a raw pointer into the device mapping this borrow owns"
+    )]
     fn write_values(
         &mut self,
         offset: usize,

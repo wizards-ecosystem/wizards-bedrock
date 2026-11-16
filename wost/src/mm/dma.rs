@@ -171,6 +171,10 @@ impl IommuTable {
     }
 
     #[must_use = "a refused IOMMU-table write changed no bytes"]
+    #[expect(
+        clippy::needless_pass_by_ref_mut,
+        reason = "the write goes through the direct map into frames this borrow owns"
+    )]
     pub(crate) fn write_u64(&mut self, index: usize, value: u64) -> bool {
         let walks = self.walks;
         let Some(span) = DirectSpan::from_segment(&self.frames) else {

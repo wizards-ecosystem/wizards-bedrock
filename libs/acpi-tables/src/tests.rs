@@ -12,9 +12,9 @@ fn fix_checksum(bytes: &mut [u8], index: usize) {
     bytes[index] = sum.wrapping_neg();
 }
 
-fn table(signature: &[u8; 4], body: &[u8]) -> Vec<u8> {
+fn table(signature: [u8; 4], body: &[u8]) -> Vec<u8> {
     let mut bytes = vec![0u8; Sdt::LEN];
-    bytes[..4].copy_from_slice(signature);
+    bytes[..4].copy_from_slice(&signature);
     bytes.extend_from_slice(body);
     let length = bytes.len() as u32;
     bytes[4..8].copy_from_slice(&length.to_le_bytes());

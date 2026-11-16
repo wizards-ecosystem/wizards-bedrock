@@ -47,11 +47,11 @@ pub(crate) fn survey_the_bus(
     match selection {
         Selection::Selected => mount_the_volume(),
         Selection::Seeking if storage == 0 => {
-            info!("pci: no nvme controller; nothing to claim")
+            info!("pci: no nvme controller; nothing to claim");
         }
         Selection::Seeking => info!("nvme: no usable controller"),
         Selection::Halted => {
-            warn!("nvme: selection stopped because a candidate could not be retired")
+            warn!("nvme: selection stopped because a candidate could not be retired");
         }
     }
     interrupts::PCI_INTERRUPT_BOUNDARY.store(interrupt_boundary, Ordering::Release);

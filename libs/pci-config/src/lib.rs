@@ -347,7 +347,7 @@ impl<const N: usize> CommandLeases<N> {
     }
 
     fn stage_probe(
-        &mut self,
+        &self,
         authority: &FunctionAuthority,
         probe: CommandProbe,
         before: u16,

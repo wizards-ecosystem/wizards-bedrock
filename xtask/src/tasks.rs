@@ -1,4 +1,4 @@
-use std::time::Duration;
+use core::time::Duration;
 
 use anyhow::{Context, Result};
 
@@ -108,6 +108,10 @@ pub(crate) fn degraded_check(paths: &Paths, profile: Profile) -> Result<()> {
     qemu::degraded_check(&run)
 }
 
+#[expect(
+    clippy::std_instead_of_core,
+    reason = "core::io::ErrorKind is unstable"
+)]
 pub(crate) fn clean(paths: &Paths, scope: CleanScope) -> Result<()> {
     if scope == CleanScope::Everything {
         let vm = paths.vm_dir();

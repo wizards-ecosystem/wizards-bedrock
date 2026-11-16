@@ -361,9 +361,7 @@ fn prepare(slot: usize, leaving: State) -> Result<(*mut u64, u64), TaskError> {
 
     // Root, route and privilege stack move together before the target can run.
     let roots = table.slots[slot].page_table;
-    let wanted = roots
-        .map(AddressSpaceRoots::full_root)
-        .unwrap_or_else(paging::active_root);
+    let wanted = roots.map_or_else(paging::active_root, AddressSpaceRoots::full_root);
     let paired = roots.is_some_and(AddressSpaceRoots::is_paired);
     if paired {
         let Some(landing) = table.kernel_stack_top(slot) else {
@@ -578,7 +576,7 @@ pub fn set_thread_base(base: u64) -> bool {
     let Some(base) = CanonicalAddress::new(base) else {
         return false;
     };
-    if !crate::arch::current::paging::is_user_address(base.get()) {
+    if !paging::is_user_address(base.get()) {
         return false;
     }
     write_thread_base(base);

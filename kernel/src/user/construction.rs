@@ -251,7 +251,7 @@ fn admitted_space() -> Result<AddressSpace, SpawnError> {
     if !crate::time::is_calibrated() {
         return Err(SpawnError::NoClock);
     }
-    if !crate::queue::worker_is_ready() {
+    if !queue::worker_is_ready() {
         return Err(SpawnError::NoServiceWorker);
     }
     match isolation {

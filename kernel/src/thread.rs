@@ -229,7 +229,7 @@ impl RunQueue {
 
     // A revoked clock wakes every sleeper: none may stay parked on an unreachable deadline.
     fn wake_due(&mut self, now: u64) {
-        let clock_live = crate::time::is_calibrated();
+        let clock_live = time::is_calibrated();
         for slot in 0..CAPACITY {
             let thread = &self.slots[slot];
             if thread.state != State::Sleeping || (clock_live && thread.wake_at > now) {

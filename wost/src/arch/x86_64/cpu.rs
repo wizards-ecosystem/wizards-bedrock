@@ -569,8 +569,8 @@ pub(crate) fn invalidate_page(address: CanonicalAddress) {
     // SAFETY: constructing `CanonicalAddress` proved the operand canonical, and `invlpg`
     // dereferences no memory and only evicts this CPU's cached translation.
     unsafe {
-        core::arch::asm!("invlpg [{}]", in(reg) address.get(), options(nostack, preserves_flags))
-    };
+        core::arch::asm!("invlpg [{}]", in(reg) address.get(), options(nostack, preserves_flags));
+    }
 }
 
 /// # Safety

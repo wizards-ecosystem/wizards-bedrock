@@ -19,7 +19,10 @@ use crate::sync::Once;
 const CONTEXTS: usize = 32;
 const MAX_EXCLUSIONS: usize = usize::BITS as usize;
 
-const _: () = assert!(CONTEXTS == super::task::MAX_TASKS);
+const _: () = assert!(
+    CONTEXTS == super::task::MAX_TASKS,
+    "every task needs its own exclusion context"
+);
 
 #[derive(Debug)]
 struct ExclusionLedger {
@@ -74,13 +77,34 @@ struct RawTrapFrame {
 }
 
 const _: () = {
-    assert!(core::mem::size_of::<RawTrapFrame>() == 22 * size_of::<u64>());
-    assert!(core::mem::offset_of!(RawTrapFrame, r15) == 0);
-    assert!(core::mem::offset_of!(RawTrapFrame, r8) == 7 * size_of::<u64>());
-    assert!(core::mem::offset_of!(RawTrapFrame, rax) == 14 * size_of::<u64>());
-    assert!(core::mem::offset_of!(RawTrapFrame, vector) == 15 * size_of::<u64>());
-    assert!(core::mem::offset_of!(RawTrapFrame, flags) == 19 * size_of::<u64>());
-    assert!(core::mem::offset_of!(RawTrapFrame, stack_selector) == 21 * size_of::<u64>());
+    assert!(
+        size_of::<RawTrapFrame>() == 22 * size_of::<u64>(),
+        "the trap frame layout must match the entry assembly"
+    );
+    assert!(
+        core::mem::offset_of!(RawTrapFrame, r15) == 0,
+        "the trap frame layout must match the entry assembly"
+    );
+    assert!(
+        core::mem::offset_of!(RawTrapFrame, r8) == 7 * size_of::<u64>(),
+        "the trap frame layout must match the entry assembly"
+    );
+    assert!(
+        core::mem::offset_of!(RawTrapFrame, rax) == 14 * size_of::<u64>(),
+        "the trap frame layout must match the entry assembly"
+    );
+    assert!(
+        core::mem::offset_of!(RawTrapFrame, vector) == 15 * size_of::<u64>(),
+        "the trap frame layout must match the entry assembly"
+    );
+    assert!(
+        core::mem::offset_of!(RawTrapFrame, flags) == 19 * size_of::<u64>(),
+        "the trap frame layout must match the entry assembly"
+    );
+    assert!(
+        core::mem::offset_of!(RawTrapFrame, stack_selector) == 21 * size_of::<u64>(),
+        "the trap frame layout must match the entry assembly"
+    );
 };
 
 #[derive(Debug)]
@@ -654,7 +678,7 @@ pub(super) unsafe fn leave_for_user(entry: u64, stack_top: u64) -> ! {
     unsafe { wost_leave_for_user(entry, stack_top) }
 }
 
-const _: () = assert!(idt::TABLE_LEN <= 256);
+const _: () = assert!(idt::TABLE_LEN <= 256, "the IDT holds at most 256 vectors");
 
 // The stop path's marker, `[error] wost: kpti stop`, goes straight to the first serial port.
 const COM1: u16 = 0x3F8;

@@ -1,4 +1,4 @@
-use super::*;
+use super::{MASK, Ordering, asm, bytes, save, user_state_is_isolated, xstate};
 
 pub fn save_stays_inside_its_area() -> bool {
     const ROOM: usize = 4096;

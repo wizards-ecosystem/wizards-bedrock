@@ -1,5 +1,6 @@
+use core::time::Duration;
 use std::process::Command;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use anyhow::{Context, Result, bail, ensure};
 

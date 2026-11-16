@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use anyhow::{Context, Result, bail, ensure};
 
 pub(crate) fn parse_json(bytes: &[u8], label: &str) -> Result<JsonValue> {
-    let text = std::str::from_utf8(bytes).with_context(|| format!("{label} is not UTF-8"))?;
+    let text = core::str::from_utf8(bytes).with_context(|| format!("{label} is not UTF-8"))?;
     let mut parser = JsonParser::new(text.as_bytes(), label);
     parser.whitespace();
     let value = parser.value(0)?;
@@ -163,14 +163,14 @@ impl<'json> JsonParser<'json> {
             {
                 b'"' => {
                     string.push_str(
-                        std::str::from_utf8(&self.bytes[segment..self.offset - 1])
+                        core::str::from_utf8(&self.bytes[segment..self.offset - 1])
                             .with_context(|| format!("{} string is not UTF-8", self.label))?,
                     );
                     return Ok(string);
                 }
                 b'\\' => {
                     string.push_str(
-                        std::str::from_utf8(&self.bytes[segment..self.offset - 1])
+                        core::str::from_utf8(&self.bytes[segment..self.offset - 1])
                             .with_context(|| format!("{} string is not UTF-8", self.label))?,
                     );
                     match self
@@ -210,14 +210,14 @@ impl<'json> JsonParser<'json> {
                 "{} Unicode surrogate is malformed",
                 self.label
             );
-            0x1_0000 + (((high as u32 - 0xd800) << 10) | (low as u32 - 0xdc00))
+            0x1_0000 + (((u32::from(high) - 0xd800) << 10) | (u32::from(low) - 0xdc00))
         } else {
             ensure!(
                 !(0xdc00..=0xdfff).contains(&high),
                 "{} Unicode surrogate is malformed",
                 self.label
             );
-            high as u32
+            u32::from(high)
         };
         char::from_u32(scalar)
             .with_context(|| format!("{} Unicode escape is not a scalar", self.label))
@@ -290,7 +290,7 @@ impl<'json> JsonParser<'json> {
                 self.take();
             }
         }
-        Ok(std::str::from_utf8(&self.bytes[start..self.offset])
+        Ok(core::str::from_utf8(&self.bytes[start..self.offset])
             .with_context(|| format!("{} number is not UTF-8", self.label))?
             .to_string())
     }

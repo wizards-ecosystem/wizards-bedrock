@@ -5,13 +5,14 @@ pub(crate) mod storage;
 #[cfg(test)]
 mod tests;
 
+use core::time::Duration;
 use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Read};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use anyhow::{Context, Result, ensure};
 
@@ -157,7 +158,7 @@ fn firmware(variable: &str, emulator_directory: &Path, name: &str) -> Result<Pat
     let prefix = emulator_directory
         .parent()
         .filter(|_| emulator_directory.ends_with("bin"));
-    std::iter::once(emulator_directory)
+    core::iter::once(emulator_directory)
         .chain(prefix)
         .flat_map(|root| {
             FIRMWARE_DIRECTORIES

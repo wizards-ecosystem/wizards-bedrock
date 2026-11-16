@@ -1,8 +1,9 @@
-use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
+use core::time::Duration;
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::process::Child;
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
 
@@ -34,6 +35,10 @@ pub(crate) struct Qmp {
 
 impl Qmp {
     // QEMU connects to a listener xtask bound itself, so no other emulator can answer.
+    #[expect(
+        clippy::std_instead_of_core,
+        reason = "core::io::ErrorKind is unstable"
+    )]
     pub(crate) fn accept(
         listener: &TcpListener,
         child: &mut Child,
@@ -45,7 +50,7 @@ impl Qmp {
         let writer = loop {
             match listener.accept() {
                 Ok((stream, _)) => break stream,
-                Err(error) if error.kind() == ErrorKind::WouldBlock => {}
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
                 Err(error) => return Err(error).context("accepting QEMU's QMP connection"),
             }
             if let Some(status) = child.try_wait().context("waiting for QEMU")? {

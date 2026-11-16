@@ -229,7 +229,7 @@ pub(crate) fn read_key(context: &mut ThreadContext) -> Keystroke {
 pub(crate) fn start_poller() {
     match crate::thread::spawn("keyboard-poll", poll_forever) {
         Ok(_) if crate::time::is_calibrated() && interrupt::are_enabled() => {
-            info!("keyboard: polled every {POLL_INTERVAL_MS} ms")
+            info!("keyboard: polled every {POLL_INTERVAL_MS} ms");
         }
         Ok(_) => info!("keyboard: clockless poller yields between bounded drains"),
         Err(reason) => warn!("keyboard: no poller: {reason}; input is lost"),

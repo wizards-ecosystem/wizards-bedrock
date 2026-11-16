@@ -403,6 +403,10 @@ fn dismissal_ownership(vector: InterruptVector) -> DismissalOwnership {
 #[derive(Debug)]
 struct Registers;
 
+#[expect(
+    clippy::unused_self,
+    reason = "the receiver is the proof that x2APIC mode read back"
+)]
 impl Registers {
     fn write(&self, register: Register, value: u64) {
         // SAFETY: the processor is in x2APIC mode (see `Registers`), so `register.msr()` names an

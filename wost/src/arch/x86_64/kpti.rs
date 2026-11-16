@@ -160,13 +160,34 @@ impl RoutingPage {
 }
 
 const _: () = {
-    assert!(offset_of!(RoutingPage, state) == 0);
-    assert!(offset_of!(RoutingPage, full_root) == 8);
-    assert!(offset_of!(RoutingPage, stripped_root) == 16);
-    assert!(offset_of!(RoutingPage, task_stack_top) == 24);
-    assert!(offset_of!(RoutingPage, transition_stack_top) == 32);
-    assert!(offset_of!(RoutingPage, interrupt_stack_top) == 40);
-    assert!(size_of::<RoutingPage>() == 48);
+    assert!(
+        offset_of!(RoutingPage, state) == 0,
+        "the routing page layout must match the entry assembly"
+    );
+    assert!(
+        offset_of!(RoutingPage, full_root) == 8,
+        "the routing page layout must match the entry assembly"
+    );
+    assert!(
+        offset_of!(RoutingPage, stripped_root) == 16,
+        "the routing page layout must match the entry assembly"
+    );
+    assert!(
+        offset_of!(RoutingPage, task_stack_top) == 24,
+        "the routing page layout must match the entry assembly"
+    );
+    assert!(
+        offset_of!(RoutingPage, transition_stack_top) == 32,
+        "the routing page layout must match the entry assembly"
+    );
+    assert!(
+        offset_of!(RoutingPage, interrupt_stack_top) == 40,
+        "the routing page layout must match the entry assembly"
+    );
+    assert!(
+        size_of::<RoutingPage>() == 48,
+        "the routing page layout must match the entry assembly"
+    );
 };
 
 pub(super) mod route {

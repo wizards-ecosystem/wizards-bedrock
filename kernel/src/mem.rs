@@ -196,10 +196,7 @@ enum DeviceUnmapOutcome {
     NoSpace(ReleasableDevice),
 }
 
-fn unmap_device(
-    context: &mut ThreadContext,
-    region: paging::ReleasableDevice,
-) -> DeviceUnmapOutcome {
+fn unmap_device(context: &mut ThreadContext, region: ReleasableDevice) -> DeviceUnmapOutcome {
     let mut active = SPACE.lock(context);
     let Some(space) = active.as_mut() else {
         return DeviceUnmapOutcome::NoSpace(region);
@@ -242,9 +239,10 @@ fn guard_the_fault_stack() -> Result<u64, MapError> {
         .ok_or(MapError::OutOfMemory)??;
 
     let top = stack.top();
-    if !segment::set_double_fault_stack(&stack) {
-        panic!("a newly pinned stack must belong to the active address space");
-    }
+    assert!(
+        segment::set_double_fault_stack(&stack),
+        "a newly pinned stack must belong to the active address space"
+    );
     Ok(top)
 }
 
@@ -380,7 +378,7 @@ fn report_guarded_paging(
         info!("threads: {slots} guarded stacks ready");
     }
 
-    if write_combining.is_some_and(|transition| transition.commit()) {
+    if write_combining.is_some_and(cpu::WriteCombining::commit) {
         info!("framebuffer: write-combining");
     }
 }

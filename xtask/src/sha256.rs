@@ -31,7 +31,7 @@ pub(crate) fn digest(data: &[u8]) -> [u8; 32] {
 
 pub(crate) fn digest_reader(mut reader: impl std::io::Read) -> std::io::Result<(u64, [u8; 32])> {
     let mut hasher = Hasher::new();
-    let mut buffer = [0u8; 64 * 1024];
+    let mut buffer = vec![0u8; 64 * 1024];
     loop {
         let read = std::io::Read::read(&mut reader, &mut buffer)?;
         if read == 0 {
@@ -115,6 +115,10 @@ impl Hasher {
     }
 }
 
+#[expect(
+    clippy::std_instead_of_core,
+    reason = "core::io::ErrorKind is unstable"
+)]
 fn input_too_large() -> std::io::Error {
     std::io::Error::new(
         std::io::ErrorKind::InvalidData,

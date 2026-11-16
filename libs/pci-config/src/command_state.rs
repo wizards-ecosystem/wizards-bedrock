@@ -209,8 +209,8 @@ pub fn fence_bus_master<const N: usize>(
         access,
     );
     match &mut fenced {
-        Ok(state) => state.before &= !command::BUS_MASTER,
-        Err(EnableFailure {
+        Ok(state)
+        | Err(EnableFailure {
             state: Some(state), ..
         }) => state.before &= !command::BUS_MASTER,
         Err(_) => {}
@@ -347,7 +347,7 @@ pub fn admit_bridge_bus_master<const N: usize>(
         return Err(EnableError::ForeignDomain);
     }
     admit_bus_master_with_leases(
-        &mut functions.commands,
+        &functions.commands,
         bridge.lease,
         state,
         command::BUS_MASTER,
@@ -356,7 +356,7 @@ pub fn admit_bridge_bus_master<const N: usize>(
 }
 
 pub(crate) fn admit_bus_master_with_leases<const N: usize>(
-    leases: &mut CommandLeases<N>,
+    leases: &CommandLeases<N>,
     function: FunctionLease,
     state: &mut CommandState,
     enable: u16,
@@ -397,7 +397,7 @@ pub fn disable_bus_master_for_retirement<const N: usize>(
         return Err(EnableError::Stale);
     }
     disable_bus_master_for_retirement_with_leases(
-        &mut functions.commands,
+        &functions.commands,
         authority.lease,
         state,
         access,
@@ -406,7 +406,7 @@ pub fn disable_bus_master_for_retirement<const N: usize>(
 
 // `installed` takes the current word before the write so an interrupted retry names both words.
 pub(crate) fn disable_bus_master_for_retirement_with_leases<const N: usize>(
-    leases: &mut CommandLeases<N>,
+    leases: &CommandLeases<N>,
     function: FunctionLease,
     state: &mut CommandState,
     mut access: impl FnMut(Address, CommandAccess) -> Option<u32>,

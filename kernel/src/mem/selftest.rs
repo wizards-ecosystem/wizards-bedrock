@@ -1,4 +1,4 @@
-use super::*;
+use super::{Flags, MapError, ThreadContext, UserMapError, mm, paging, with_active_space};
 
 const FRAME_SIZE: u64 = 4096;
 

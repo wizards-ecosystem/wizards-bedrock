@@ -5,10 +5,10 @@ use wost::arch::current::paging::{self, ReleasableDevice};
 use wost::sync::SpinLock;
 use x86_apic::io;
 
-use crate::acpi::{self, Interrupts};
+use crate::acpi::Interrupts;
 use crate::arch::current::ioapic::IoApic;
 use crate::mem::{DeviceRetirement, map_device, unmap_device_exact};
-use crate::thread::{self, ThreadContext};
+use crate::thread::ThreadContext;
 use crate::{info, warn};
 
 pub(crate) fn route_keyboard(routing: Option<ExternalControllersMasked>) {
@@ -48,7 +48,7 @@ fn rollback_keyboard_route(mut routing: Routing) -> bool {
         retain(routing);
         return false;
     }
-    let Some(mut context) = thread::ThreadContext::claim() else {
+    let Some(mut context) = ThreadContext::claim() else {
         warn!("keyboard: rollback could not claim thread context");
         retain(routing);
         return false;
@@ -61,13 +61,13 @@ fn rollback_keyboard_route(mut routing: Routing) -> bool {
 }
 
 // Must run before `interrupts::start`, so every controller is masked while delivery is refused.
-pub(crate) fn prepare_keyboard_routing(interrupts: Option<acpi::Interrupts>) -> Preparation {
+pub(crate) fn prepare_keyboard_routing(interrupts: Option<Interrupts>) -> Preparation {
     let Some(interrupts) = interrupts else {
         warn!("ioapic: no complete firmware controller inventory; interrupts stay off");
         return Preparation::unproven();
     };
     let gsi = interrupts.gsi_for(KEYBOARD_IRQ);
-    let Some(mut context) = thread::ThreadContext::claim() else {
+    let Some(mut context) = ThreadContext::claim() else {
         warn!("ioapic: no thread context for mapping; interrupts stay off");
         return Preparation::unproven();
     };

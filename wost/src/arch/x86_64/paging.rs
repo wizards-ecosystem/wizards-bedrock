@@ -131,7 +131,10 @@ enum UserRootKind {
 // A literal because the C header reads this ABI value.
 pub const USER_END: u64 = 0x0000_8000_0000_0000;
 
-const _: () = assert!(USER_END == x86_paging::USER_END);
+const _: () = assert!(
+    USER_END == x86_paging::USER_END,
+    "the ABI user end must match the paging layout"
+);
 
 // This also refuses the canonical hole at any walk width.
 pub(crate) const fn is_user_address(address: u64) -> bool {

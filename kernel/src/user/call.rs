@@ -95,9 +95,10 @@ pub(crate) fn call(frame: &TrapFrame) {
     EXECUTED.store(true, Ordering::Release);
     match Call::decode(frame.rax()) {
         Call::Exit => {
-            if !thread::retire_from_trap(frame) {
-                panic!("a ring 3 thread called in and could not be retired");
-            }
+            assert!(
+                thread::retire_from_trap(frame),
+                "a ring 3 thread called in and could not be retired"
+            );
         }
         Call::RingEnter => {
             let served = serve_ring(slot);

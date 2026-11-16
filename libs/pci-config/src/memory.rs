@@ -129,7 +129,7 @@ pub fn admit_mapped_bus_master<const N: usize>(
         return Err(EnableError::Stale);
     }
     admit_bus_master_with_leases(
-        &mut functions.commands,
+        &functions.commands,
         authority.function,
         state,
         command::MEMORY_SPACE | command::BUS_MASTER,
@@ -261,17 +261,14 @@ pub fn enable_memory_bar<const N: usize>(
         access(at, BarEnableAccess::ReadBar(index))
     })
     .map_err(BarEnableError::Identity)?;
-    admit_memory_space_with_leases(
-        &mut functions.commands,
-        function.lease,
-        state,
-        |at, command| access(at, BarEnableAccess::Command(command)),
-    )
+    admit_memory_space_with_leases(&functions.commands, function.lease, state, |at, command| {
+        access(at, BarEnableAccess::Command(command))
+    })
     .map_err(BarEnableError::Command)
 }
 
 fn admit_memory_space_with_leases<const N: usize>(
-    leases: &mut CommandLeases<N>,
+    leases: &CommandLeases<N>,
     function: FunctionLease,
     state: &mut CommandState,
     mut access: impl FnMut(Address, CommandAccess) -> Option<u32>,

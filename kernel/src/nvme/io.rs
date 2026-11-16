@@ -211,9 +211,10 @@ impl Controller {
         let submission_tail = match self.stage_submission(queue_id, &command) {
             Ok(tail) => tail,
             Err(reason) => {
-                if !self.dma.cancel_unpublished() {
-                    panic!("an unpublished DMA reservation must be cancellable");
-                }
+                assert!(
+                    self.dma.cancel_unpublished(),
+                    "an unpublished DMA reservation must be cancellable"
+                );
                 let _unmapped = unmap_data(isolation, data.as_deref_mut(), mapping);
                 return Err(reason);
             }
@@ -249,9 +250,10 @@ impl Controller {
                 if let Err(reason) = self.accept_completion(queue_id, expected, &entry) {
                     return self.fail_submitted(reason, data.as_deref_mut(), isolation, mapping);
                 }
-                if !self.dma.complete() {
-                    panic!("a matching completion must finish one published command");
-                }
+                assert!(
+                    self.dma.complete(),
+                    "a matching completion must finish one published command"
+                );
                 // The buffer leaves the domain before the completion is acknowledged.
                 if !unmap_data(isolation, data.as_deref_mut(), mapping) {
                     return self.fail_controller(BringUpError::Isolation);
