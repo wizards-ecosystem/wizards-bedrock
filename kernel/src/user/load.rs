@@ -130,7 +130,10 @@ impl Plan<'_> {
             .flatten()
             .try_fold(0u32, |sum, placement| {
                 sum.checked_add(MemoryPool::frames_for(1)?)?
-                    .checked_add(MemoryObject::frames_for(placement.pages)?)
+                    .checked_add(MemoryObject::frames_for(placement.pages)?)?
+                    .checked_add(
+                        u32::try_from(x86_paging::tables_for(u64::from(placement.pages))).ok()?,
+                    )
             })
     }
 
@@ -196,7 +199,14 @@ impl Plan<'_> {
             target: Target::Object { memory, first: 0 },
         };
         space
-            .map(context, world, at, u64::from(placement.pages), mapping)
+            .map(
+                context,
+                world,
+                earmark,
+                at,
+                u64::from(placement.pages),
+                mapping,
+            )
             .map_err(|refusal| match refusal {
                 MapRefusal::Taken => LoadError::Overlapping(at),
                 MapRefusal::Full => LoadError::TooManySegments,

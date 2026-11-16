@@ -1,10 +1,11 @@
 use core::hint::spin_loop;
 
-use wost::arch::current::paging::{AddressSpace, MapError};
+use wost::arch::current::paging::MapError;
 use wost::sync::{Leaf, SpinLock};
 use x86_paging::{Flags, PAGE_SIZE};
 
-use super::address_spaces::in_reclaimed_space;
+use super::address_spaces::{in_reclaimed_space, user_space};
+use crate::thread::ThreadContext;
 use crate::time;
 use crate::timepage::{self, WorldClock};
 
@@ -18,9 +19,11 @@ pub(super) fn spins_until(attempts: u32, done: impl Fn() -> bool) -> bool {
     })
 }
 
-pub(super) fn a_program_reads_served_time_from_a_page_it_cannot_write() -> bool {
+pub(super) fn a_program_reads_served_time_from_a_page_it_cannot_write(
+    context: &mut ThreadContext,
+) -> bool {
     let clock = timepage::root();
-    in_reclaimed_space(AddressSpace::for_user, |space| {
+    in_reclaimed_space(context, user_space, |space| {
         if clock.install(space, TIME).is_err() {
             return false;
         }

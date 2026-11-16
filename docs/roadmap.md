@@ -186,8 +186,9 @@ Phase 7:
 - The root world exists with its arena, record and object pools, and each process's handle table
   and ring live in it (`kernel/src/world.rs`, `kernel/src/handle.rs`, `kernel/src/queue.rs`), but
   processes, threads and address spaces still come from the kernel heap and frames, and every
-  process belongs to the root world. Worlds need process objects in their own arenas, and user page
-  tables taken as arena table frames.
+  process belongs to the root world. Worlds need process objects in their own arenas. User page
+  tables are arena `Table` frames of the world, but the address space's lists of them live on the
+  kernel heap.
 - Frame ownership lives in a page-table software bit, nothing changes a permission or unmaps a
   shared mapping, and spawn takes each segment as one contiguous run with no quota
   (`wost/src/arch/x86_64/paging.rs`, `kernel/src/user/load.rs`). Memory objects own their arena
@@ -204,10 +205,8 @@ Phase 7:
   (`kernel/src/queue.rs`, `kernel/src/timepage.rs`): every process reads the one root world clock.
   Channels need their own transport, and time needs a clock per world, the recorded mode and the raw
   time right.
-- User page tables are kernel frames, not arena `Table` frames, and the ring, buffer 0 and time
-  page are shared mappings kept alive by the address space rather than leaves by reference
-  (`wost/src/arch/x86_64/paging/reclaim.rs`, `kernel/src/queue.rs`, `kernel/src/timepage.rs`).
-  A world's space needs its tables charged to its arena.
+- The ring, buffer 0 and time page are shared mappings kept alive by the address space rather
+  than leaves by reference (`kernel/src/queue.rs`, `kernel/src/timepage.rs`).
 - No space holds a reservation, so a `Map` with `EXECUTE` answers `NO_ADDRESS`, and no program
   holds a code quota handle (`kernel/src/queue/memory.rs`). C9's `Reserve` and bootstrap roles
   need both.

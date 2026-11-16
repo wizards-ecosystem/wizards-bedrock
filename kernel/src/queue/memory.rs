@@ -175,6 +175,13 @@ pub(super) fn map(mut process: Process<'_, '_>, submission: Submission) -> Compl
     }) else {
         return refuse(token, status::BAD_BUFFER);
     };
+    // A refusal here, before any reference or writer is taken, changes nothing.
+    let Some(mut tables) = u32::try_from(x86_paging::tables_for(pages))
+        .ok()
+        .and_then(|frames| pool::earmark(process.context, process.world.arena(), frames).ok())
+    else {
+        return refuse(token, status::NO_MEMORY);
+    };
     match access {
         UserAccess::Read => {}
         UserAccess::Write => match object.acquire_writer() {
@@ -212,7 +219,7 @@ pub(super) fn map(mut process: Process<'_, '_>, submission: Submission) -> Compl
         return refuse(token, status::BAD_HANDLE);
     };
     drop(object);
-    match caller.with_space(|space| space.map(context, world, at, pages, mapping)) {
+    match caller.with_space(|space| space.map(context, world, &mut tables, at, pages, mapping)) {
         Some(Ok(())) => answer(token, at),
         Some(Err(MapRefusal::Full)) => refuse(token, status::LIMIT),
         Some(Err(MapRefusal::Frames(MapError::OutOfMemory))) => refuse(token, status::NO_MEMORY),

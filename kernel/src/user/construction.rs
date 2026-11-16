@@ -129,14 +129,11 @@ pub(crate) fn spawn(
     argument: u64,
     operand: u64,
 ) -> Result<Spawned, SpawnError> {
-    let mut address = admitted_space()?;
+    let isolated = admitted_isolation()?;
     // The one world every process belongs to until worlds are objects.
     let Some((world_ref, world)) =
         world::root().and_then(|root| registry::hold(root).map(|world| (root, world)))
     else {
-        if let Err(reason) = address.reclaim(None) {
-            panic!("an unused space's table cleanup refused: {reason}");
-        }
         return Err(SpawnError::NoWorld);
     };
     let mut construction = ProcessConstruction {
@@ -144,7 +141,7 @@ pub(crate) fn spawn(
         authority: thread::SpaceAuthority::None,
     };
     // Siblings, not nested: the placement and record work in `lay_out` never runs under `build`.
-    let spawned = lay_out(context, world_ref, &world, &mut construction, address).and_then(
+    let spawned = lay_out(context, world_ref, &world, &mut construction, isolated).and_then(
         |(earmark, layout)| {
             build(
                 context,
@@ -287,21 +284,16 @@ fn lay_out(
     world_ref: NodeRef,
     world: &World,
     construction: &mut ProcessConstruction,
-    address: AddressSpace,
+    isolated: bool,
 ) -> Result<(Earmark, Layout), SpawnError> {
-    let prepared = load::plan()
-        .map_err(SpawnError::Load)
-        .and_then(|plan| Ok((earmark(context, world, &plan)?, plan)));
-    let (mut earmark, plan) = match prepared {
-        Ok(prepared) => prepared,
-        Err(reason) => {
-            let mut address = address;
-            if let Err(cleanup) = address.reclaim(None) {
-                panic!("an unused space's table cleanup refused: {cleanup}");
-            }
-            return Err(reason);
-        }
-    };
+    let plan = load::plan().map_err(SpawnError::Load)?;
+    let mut earmark = earmark(context, world, &plan, isolated)?;
+    let address = if isolated {
+        AddressSpace::for_user_isolated(&mut earmark)
+    } else {
+        AddressSpace::for_user(&mut earmark)
+    }
+    .map_err(SpawnError::NoSpace)?;
     let seed = world.placement_seed();
     construction.space = Some(space::Space::new(address, seed, &mut earmark));
     let space = construction.space()?;
@@ -340,13 +332,16 @@ fn earmark(
     context: &mut thread::ThreadContext,
     world: &World,
     plan: &Plan<'_>,
+    isolated: bool,
 ) -> Result<Earmark, SpawnError> {
     let records = world::ProcessPool::frames_for(1)
         .zip(world::ObservationPool::frames_for(1))
         .and_then(|(process, observation)| process.checked_add(observation));
+    let stack_tables = u32::try_from(x86_paging::tables_for(u64::from(STACK_PAGES))).ok();
     let stack = world::MemoryPool::frames_for(1)
         .zip(MemoryObject::frames_for(STACK_PAGES))
-        .and_then(|(record, contents)| record.checked_add(contents));
+        .zip(stack_tables)
+        .and_then(|((record, contents), tables)| record.checked_add(contents)?.checked_add(tables));
     let frames = world::TablePool::frames_for(1)
         .zip(QueueRef::frames_for())
         .zip(world::ChannelPool::frames_for(1))
@@ -360,13 +355,14 @@ fn earmark(
                 .checked_add(records)?
                 .checked_add(stack)?
                 .checked_add(image)?
-                .checked_add(space::Space::frames_for())
+                .checked_add(space::Space::frames_for())?
+                .checked_add(AddressSpace::user_root_tables(isolated)?)
         })
         .ok_or(SpawnError::NoMemory(Refused::NoMemory))?;
     frames::earmark(context, world.arena(), frames).map_err(SpawnError::NoMemory)
 }
 
-fn admitted_space() -> Result<AddressSpace, SpawnError> {
+fn admitted_isolation() -> Result<bool, SpawnError> {
     if !crate::interrupts::maskable_interrupts_are_ready() {
         return Err(SpawnError::NoInterruptAdmission);
     }
@@ -393,11 +389,10 @@ fn admitted_space() -> Result<AddressSpace, SpawnError> {
         return Err(SpawnError::NoServiceWorker);
     }
     match isolation {
-        crate::interrupts::UserIsolation::Closed => return Err(SpawnError::NoUserIsolation),
-        crate::interrupts::UserIsolation::Shared => AddressSpace::for_user(),
-        crate::interrupts::UserIsolation::Paired => AddressSpace::for_user_isolated(),
+        crate::interrupts::UserIsolation::Closed => Err(SpawnError::NoUserIsolation),
+        crate::interrupts::UserIsolation::Shared => Ok(false),
+        crate::interrupts::UserIsolation::Paired => Ok(true),
     }
-    .map_err(SpawnError::NoSpace)
 }
 
 const STACK_PAGES: u32 = (STACK_BYTES / PAGE_SIZE) as u32;
@@ -423,7 +418,7 @@ fn place_stack(
         .place(world, u64::from(STACK_PAGES), 1, mapping)
         .ok_or(SpawnError::NoAddress)?;
     space
-        .fill(context, world, at)
+        .fill(context, world, earmark, at)
         .map_err(SpawnError::NoSpace)?;
     Ok(at)
 }

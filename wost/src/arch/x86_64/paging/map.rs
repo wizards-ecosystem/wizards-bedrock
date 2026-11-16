@@ -11,6 +11,7 @@ use super::{
     UserMapError, clear_mapping_slot, entry_slot, is_active, is_user_address, leaf_in,
     protected_stack_overlap, ram_cache_policy,
 };
+use crate::mm::pool::Earmark;
 use crate::mm::{
     self, PhysicalAddress, SealedSegment, Segment, SharedBytes, SharedKeepalive, SharedRing,
     USegment,
@@ -90,6 +91,7 @@ impl AddressSpace {
         len: u64,
         flags: Flags,
         grain: Grain,
+        mut supply: Option<&mut Earmark>,
     ) -> Result<(), MapError> {
         let range = MappingRange::new(virtual_base, physical_base, len)?;
         let flags = flags.union(Flags::PRESENT);
@@ -115,14 +117,26 @@ impl AddressSpace {
         let mut offset = 0;
         while offset < range.len() {
             let (virtual_address, _, level) = Self::step(&range, offset, grain);
-            self.table_for(TableRoot::Full, virtual_address, flags, level)?;
+            self.table_for(
+                TableRoot::Full,
+                virtual_address,
+                flags,
+                level,
+                supply.as_deref_mut(),
+            )?;
             offset += level.span();
         }
         offset = 0;
         while offset < range.len() {
             let (virtual_address, physical, level) = Self::step(&range, offset, grain);
-            if let Err(reason) = self.set(TableRoot::Full, virtual_address, physical, flags, level)
-            {
+            if let Err(reason) = self.set(
+                TableRoot::Full,
+                virtual_address,
+                physical,
+                flags,
+                level,
+                supply.as_deref_mut(),
+            ) {
                 panic!("a preflighted mapping with its tables in place refused a leaf: {reason}");
             }
             offset += level.span();
@@ -267,6 +281,7 @@ impl AddressSpace {
             region.len,
             flags.difference(NOT_THE_CALLERS),
             grain,
+            None,
         )
     }
 
@@ -408,6 +423,7 @@ impl AddressSpace {
                 .union(Flags::USER)
                 .union(Flags::NO_EXECUTE),
             Grain::Pages,
+            None,
         )?;
         self.shared.push(keepalive);
         Ok(())
@@ -434,6 +450,7 @@ impl AddressSpace {
             len,
             flags.difference(NOT_THE_CALLERS).union(Flags::OWNED),
             Grain::Pages,
+            None,
         )?;
         Ok(owned_pages)
     }
@@ -445,8 +462,9 @@ impl AddressSpace {
         physical: u64,
         flags: Flags,
         target: Level,
+        supply: Option<&mut Earmark>,
     ) -> Result<(), MapError> {
-        let slot = self.table_for(root, virtual_address, flags, target)?;
+        let slot = self.table_for(root, virtual_address, flags, target, supply)?;
         let entry = Entry::page(target, physical, flags).map_err(MapError::Encoding)?;
         if slot.read().is_present() {
             return Err(MapError::Conflict(virtual_address));
@@ -462,6 +480,7 @@ impl AddressSpace {
         virtual_address: u64,
         flags: Flags,
         target: Level,
+        mut supply: Option<&mut Earmark>,
     ) -> Result<EntrySlot, MapError> {
         let mut table = match root {
             TableRoot::Full => self.root(),
@@ -503,8 +522,13 @@ impl AddressSpace {
                 } else {
                     TablePrivilege::Supervisor
                 };
-                let (frame, link) =
-                    self.take_owned_table(root, virtual_address, level, privilege)?;
+                let (frame, link) = self.take_owned_table(
+                    root,
+                    virtual_address,
+                    level,
+                    privilege,
+                    supply.as_deref_mut(),
+                )?;
                 slot.write(link);
                 if let Some(paired) = paired.as_ref() {
                     paired.write(link);

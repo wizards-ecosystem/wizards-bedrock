@@ -131,12 +131,13 @@ impl Space {
         Some(extent.first() * PAGE_SIZE)
     }
 
-    // Records the mapping at `at` and maps its pages. It takes over the references the mapping
-    // carries; a refusal leaves no record and no leaf and lets them go.
+    // Records the mapping at `at` and maps its pages, its tables taken from `tables`. It takes over
+    // the references the mapping carries; a refusal leaves no record and no leaf and lets them go.
     pub(crate) fn map(
         &mut self,
         context: &mut ThreadContext,
         world: &World,
+        tables: &mut Earmark,
         at: u64,
         pages: u64,
         mapping: Mapping,
@@ -159,7 +160,7 @@ impl Space {
                 return Err(refusal);
             }
         };
-        self.fill(context, world, at).map_err(|reason| {
+        self.fill(context, world, tables, at).map_err(|reason| {
             let removed = self.records().remove(extent);
             assert!(removed.is_ok(), "a refused mapping lost its record");
             release(world, mapping);
@@ -172,6 +173,7 @@ impl Space {
         &mut self,
         context: &mut ThreadContext,
         world: &World,
+        tables: &mut Earmark,
         at: u64,
     ) -> Result<(), MapError> {
         let Some((extent, access, memory, first)) = self.object_record(at) else {
@@ -183,7 +185,7 @@ impl Space {
         let mut mapped = 0;
         let filled = object.frames(context, first, extent.pages(), |page, frame| {
             self.address
-                .map_frame(at + page * PAGE_SIZE, frame, access)?;
+                .map_frame(at + page * PAGE_SIZE, frame, access, tables)?;
             mapped += 1;
             Ok(())
         });

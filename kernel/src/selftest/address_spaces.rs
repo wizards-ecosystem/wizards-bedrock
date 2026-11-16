@@ -3,11 +3,13 @@ use wost::arch::current::task;
 use wost::arch::current::usercopy::{self, UserCopyError};
 use wost::boot;
 use wost::mm;
+use wost::mm::pool;
 use x86_paging::{Flags, PAGE_SIZE};
 
 use super::processes::AllocatorSnapshot;
 use super::runs_until;
 use crate::thread::ThreadContext;
+use crate::world::{self, registry};
 use crate::{mem, user};
 
 // These self-tests build their own spaces, so any user address serves as their base.
@@ -71,11 +73,12 @@ pub(super) fn the_image_obeys_write_xor_execute() -> bool {
 }
 
 pub(super) fn in_reclaimed_space(
-    constructor: impl FnOnce() -> Result<AddressSpace, MapError>,
+    context: &mut ThreadContext,
+    make: impl FnOnce(&mut ThreadContext) -> Option<AddressSpace>,
     check: impl FnOnce(&mut AddressSpace) -> bool,
 ) -> bool {
     let allocator_before = AllocatorSnapshot::capture();
-    let Ok(mut space) = constructor() else {
+    let Some(mut space) = make(context) else {
         return false;
     };
     let checked = check(&mut space);
@@ -84,13 +87,19 @@ pub(super) fn in_reclaimed_space(
     checked && reclaimed && AllocatorSnapshot::capture().has_same_ownership(&allocator_before)
 }
 
-pub(super) fn two_spaces_map_one_address_to_different_memory() -> bool {
+// A user space whose root is a frame of the root world, as a spawned program's is.
+pub(super) fn user_space(context: &mut ThreadContext) -> Option<AddressSpace> {
+    let world = registry::hold(world::root()?)?;
+    let mut tables = pool::earmark(context, world.arena(), 1).ok()?;
+    AddressSpace::for_user(&mut tables).ok()
+}
+
+pub(super) fn two_spaces_map_one_address_to_different_memory(context: &mut ThreadContext) -> bool {
     if !runs_until(2000, crate::reaper::is_idle) {
         return false;
     }
     let allocator_before = AllocatorSnapshot::capture();
-    let (Ok(mut first), Ok(mut second)) = (AddressSpace::for_user(), AddressSpace::for_user())
-    else {
+    let (Some(mut first), Some(mut second)) = (user_space(context), user_space(context)) else {
         return false;
     };
     let checked = first.root() != second.root() && one_address_maps_apart(&mut first, &mut second);
@@ -141,11 +150,11 @@ fn marked_page(marker: u8) -> Option<(mm::USegment, mm::PhysicalAddress)> {
     Some((run, address))
 }
 
-pub(super) fn a_user_page_comes_back_cleared() -> bool {
+pub(super) fn a_user_page_comes_back_cleared(context: &mut ThreadContext) -> bool {
     const AT: u64 = SCRATCH + 0xA0_0000;
     const OUTSIDE_USER_HALF: u64 = 0xffff_8000_0010_0000;
 
-    let unmapped = in_reclaimed_space(AddressSpace::for_user, |space| {
+    let unmapped = in_reclaimed_space(context, user_space, |space| {
         let Some((run, address)) = marked_page(0xde) else {
             return false;
         };
@@ -172,7 +181,7 @@ pub(super) fn a_user_page_comes_back_cleared() -> bool {
         mm::is_freed_run_zero(address, 1)
     });
 
-    let refused = in_reclaimed_space(AddressSpace::for_user, |space| {
+    let refused = in_reclaimed_space(context, user_space, |space| {
         let Some((run, address)) = marked_page(0xc3) else {
             return false;
         };
@@ -259,9 +268,9 @@ pub(super) fn an_active_unmap_exposes_only_its_replacement(context: &mut ThreadC
         && second_removed
 }
 
-pub(super) fn a_bound_space_is_not_reclaimed() -> bool {
+pub(super) fn a_bound_space_is_not_reclaimed(context: &mut ThreadContext) -> bool {
     let free_before = mm::free_frames();
-    let Ok(mut space) = AddressSpace::for_user() else {
+    let Some(mut space) = user_space(context) else {
         return false;
     };
     let root = space.root();
@@ -305,11 +314,11 @@ pub(super) fn a_bound_space_is_not_reclaimed() -> bool {
 }
 
 // The blocker sits on the second page, so a refusal that kept the first page would show.
-pub(super) fn a_refused_mapping_leaves_no_trace() -> bool {
+pub(super) fn a_refused_mapping_leaves_no_trace(context: &mut ThreadContext) -> bool {
     const BASE: u64 = SCRATCH + 0xC0_0000;
     const BLOCKER: u64 = BASE + PAGE_SIZE;
 
-    in_reclaimed_space(AddressSpace::for_user, |space| {
+    in_reclaimed_space(context, user_space, |space| {
         let wanted = Flags::WRITABLE.union(Flags::NO_EXECUTE);
         let (Some(blocker), Some(run)) =
             (mm::allocate_contiguous(1, 1), mm::allocate_contiguous(2, 1))
@@ -331,9 +340,9 @@ pub(super) fn a_refused_mapping_leaves_no_trace() -> bool {
     })
 }
 
-pub(super) fn a_shared_mapping_keeps_its_frame() -> bool {
+pub(super) fn a_shared_mapping_keeps_its_frame(context: &mut ThreadContext) -> bool {
     const PROBE: u64 = 0x0000_3500_0000_0000;
-    in_reclaimed_space(AddressSpace::for_user, |space| {
+    in_reclaimed_space(context, user_space, |space| {
         let Some(run) = user_page() else {
             return false;
         };
@@ -358,7 +367,7 @@ pub(super) fn a_shared_mapping_keeps_its_frame() -> bool {
 }
 
 // The loader refuses write-and-execute first; only the doors a program image reaches are tried.
-pub(super) fn a_user_space_cannot_reach_the_kernel_half() -> bool {
+pub(super) fn a_user_space_cannot_reach_the_kernel_half(context: &mut ThreadContext) -> bool {
     const KERNEL: u64 = 0xffff_8000_0010_0000;
     const TOP: u64 = native_abi::limits::USER_MAPPING_END;
     const LAST_USER: u64 = TOP - PAGE_SIZE;
@@ -368,7 +377,7 @@ pub(super) fn a_user_space_cannot_reach_the_kernel_half() -> bool {
     const WRITE_EXECUTE_USER: u64 = 0x0000_0700_0000_0000;
     const WRITE_EXECUTE_SHARED: u64 = 0x0000_0800_0000_0000;
 
-    in_reclaimed_space(AddressSpace::for_user, |space| {
+    in_reclaimed_space(context, user_space, |space| {
         let page = || mm::allocate_contiguous(1, 1);
         let no_execute = Flags::NO_EXECUTE;
 
@@ -440,15 +449,19 @@ pub(super) fn a_user_space_cannot_reach_the_kernel_half() -> bool {
     })
 }
 
-pub(super) fn device_mappings_refuse_allocatable_ram() -> bool {
-    in_reclaimed_space(AddressSpace::new, |space| {
-        let Some(frame) = mm::allocate() else {
-            return false;
-        };
-        let address = frame.address().get();
-        matches!(
-            paging::admit_device_range(address, 4).and_then(|range| space.map_device(range)),
-            Err(MapError::NotDeviceMemory(found)) if found == address
-        )
-    })
+pub(super) fn device_mappings_refuse_allocatable_ram(context: &mut ThreadContext) -> bool {
+    in_reclaimed_space(
+        context,
+        |_| AddressSpace::new().ok(),
+        |space| {
+            let Some(frame) = mm::allocate() else {
+                return false;
+            };
+            let address = frame.address().get();
+            matches!(
+                paging::admit_device_range(address, 4).and_then(|range| space.map_device(range)),
+                Err(MapError::NotDeviceMemory(found)) if found == address
+            )
+        },
+    )
 }

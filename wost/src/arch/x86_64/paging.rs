@@ -37,6 +37,7 @@ use super::cpu;
 use super::kpti;
 use super::percpu;
 use super::task::Released;
+use crate::mm::pool::{ArenaFrame, Earmark, FrameKind};
 use crate::mm::{self, PhysicalAddress, SharedKeepalive};
 use crate::sync::{Leaf, SpinLock};
 use device::{DEVICE_WINDOW_END, DEVICE_WINDOW_START, DeviceExtent};
@@ -52,6 +53,8 @@ pub struct AddressSpace {
     roots: Option<AddressSpaceRoots>,
     devices: Vec<Option<DeviceExtent>>,
     tables: Vec<PhysicalAddress>,
+    // A user space's roots and every table a mapped frame needed, charged to its world.
+    arena_tables: Vec<ArenaFrame>,
     reach: Reach,
     bound: bool,
     entry_enclave_ready: bool,
@@ -162,6 +165,7 @@ impl AddressSpace {
             roots: Some(AddressSpaceRoots::shared(root)),
             devices: Vec::new(),
             tables: Vec::new(),
+            arena_tables: Vec::new(),
             bound: false,
             entry_enclave_ready: true,
             reach: Reach::Everywhere,
@@ -179,7 +183,11 @@ impl AddressSpace {
     }
 
     pub fn table_frames(&self) -> usize {
-        self.roots.map_or(0, AddressSpaceRoots::frames) + self.tables.len()
+        let roots = match self.reach {
+            Reach::Everywhere => self.roots.map_or(0, AddressSpaceRoots::frames),
+            Reach::UserHalfOnly => 0,
+        };
+        roots + self.tables.len() + self.arena_tables.len()
     }
 
     const fn roots(&self) -> AddressSpaceRoots {
@@ -198,14 +206,14 @@ impl AddressSpace {
     }
 
     // Activation freezes higher-half top-level entries, so kernel maps reach every user root.
-    pub fn for_user() -> Result<Self, MapError> {
-        Self::for_user_roots(UserRootKind::Shared)
+    pub fn for_user(tables: &mut Earmark) -> Result<Self, MapError> {
+        Self::for_user_roots(UserRootKind::Shared, tables)
     }
 
-    pub fn for_user_isolated() -> Result<Self, MapError> {
+    pub fn for_user_isolated(tables: &mut Earmark) -> Result<Self, MapError> {
         let enclave = kpti::entry_enclave().ok_or(MapError::EntryEnclaveUnavailable)?;
-        let mut space = Self::for_user_roots(UserRootKind::Paired)?;
-        if let Err(reason) = space.install_entry_enclave(enclave) {
+        let mut space = Self::for_user_roots(UserRootKind::Paired, tables)?;
+        if let Err(reason) = space.install_entry_enclave(enclave, tables) {
             if let Err(failure) = space.reclaim(None) {
                 panic!("unpublished paired-root cleanup refused: {failure}");
             }
@@ -215,17 +223,36 @@ impl AddressSpace {
         Ok(space)
     }
 
-    fn for_user_roots(kind: UserRootKind) -> Result<Self, MapError> {
+    // The arena frames `for_user` or `for_user_isolated` takes: roots and entry enclave tables.
+    pub fn user_root_tables(isolated: bool) -> Option<u32> {
+        if !isolated {
+            return Some(1);
+        }
+        kpti::entry_enclave()?
+            .mappings()
+            .try_fold(2u32, |sum, mapping| {
+                let pages = mapping.section().mapped_len() / x86_paging::PAGE_SIZE;
+                sum.checked_add(u32::try_from(x86_paging::tables_for(pages)).ok()?)
+            })
+    }
+
+    fn for_user_roots(kind: UserRootKind, tables: &mut Earmark) -> Result<Self, MapError> {
         if !is_active() {
             return Err(MapError::OutOfMemory);
         }
         // The first user root closes the processor set, so a stop NMI reaches every processor.
         let _ = percpu::freeze_areas();
         let kernel = active_root();
-        let full = mm::allocate_table().ok_or(MapError::OutOfMemory)?;
+        let mut arena_tables = Vec::new();
+        arena_tables
+            .try_reserve(2)
+            .map_err(|_| MapError::OutOfMemory)?;
+        let full = tables.take(FrameKind::Table).ok_or(MapError::OutOfMemory)?;
         let stripped = match kind {
             UserRootKind::Shared => None,
-            UserRootKind::Paired => Some(mm::allocate_table().ok_or(MapError::OutOfMemory)?),
+            UserRootKind::Paired => {
+                Some(tables.take(FrameKind::Table).ok_or(MapError::OutOfMemory)?)
+            }
         };
         let full_root = full.address();
 
@@ -240,12 +267,13 @@ impl AddressSpace {
             Some(stripped) => AddressSpaceRoots::paired(full_root, stripped.address()),
             None => AddressSpaceRoots::shared(full_root),
         };
-        core::mem::forget(full);
-        core::mem::forget(stripped);
+        arena_tables.push(full);
+        arena_tables.extend(stripped);
         Ok(Self {
             roots: Some(roots),
             devices: Vec::new(),
             tables: Vec::new(),
+            arena_tables,
             reach: Reach::UserHalfOnly,
             bound: false,
             entry_enclave_ready: kind == UserRootKind::Shared,
@@ -306,6 +334,10 @@ impl Drop for AddressSpace {
         {
             let keepalives = core::mem::take(&mut self.shared);
             core::mem::forget(keepalives);
+        }
+        // Unreclaimed tables may still be walked, so they stay charged until the arena dissolves.
+        for table in self.arena_tables.drain(..) {
+            table.surrender();
         }
     }
 }

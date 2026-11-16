@@ -32,6 +32,20 @@ pub const fn user_mapping_fits(at: u64, length: u64) -> bool {
     }
 }
 
+// The page tables below a root that a run of `pages` pages can need, wherever it starts.
+pub const fn tables_for(pages: u64) -> u64 {
+    let entries = ENTRIES as u64;
+    let mut tables = 0;
+    let mut span = entries;
+    let mut level = 0;
+    while level < 3 {
+        tables += pages.div_ceil(span) + 1;
+        span *= entries;
+        level += 1;
+    }
+    tables
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub struct Flags(u64);
 

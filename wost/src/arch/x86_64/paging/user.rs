@@ -6,7 +6,7 @@ use super::{
     protected_stack_overlap,
 };
 use crate::mm::PhysicalAddress;
-use crate::mm::pool::{ArenaFrame, FrameKind, Mappings, SealedFrame};
+use crate::mm::pool::{ArenaFrame, Earmark, FrameKind, Mappings, SealedFrame};
 
 #[derive(Clone, Copy, Debug)]
 pub enum FrameRef<'frame> {
@@ -52,6 +52,7 @@ impl AddressSpace {
         at: u64,
         frame: FrameRef<'_>,
         access: UserAccess,
+        tables: &mut Earmark,
     ) -> Result<(), MapError> {
         let flags = match (frame, access) {
             (FrameRef::Writable(_), UserAccess::Execute)
@@ -85,6 +86,7 @@ impl AddressSpace {
             PAGE_SIZE,
             flags.difference(NOT_THE_CALLERS),
             Grain::Pages,
+            Some(tables),
         ) {
             frame.mappings().remove(writable);
             return Err(reason);

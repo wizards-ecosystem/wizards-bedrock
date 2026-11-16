@@ -600,6 +600,12 @@ number and is added here, as one entry or as an amending id on the entry it chan
   refused spawn and a process teardown both clear by record and then reclaim, so there is no
   region ledger and no rollback. A memory opcode holds a strong reference for its length, so a
   close racing it leaves the last release to the opcode.
+- **D-538** A user space's roots and every table `map_frame` links are arena `Table` frames taken
+  from the caller's earmark, sized by a bound for the run (`x86_paging::tables_for`: one more than
+  the spans at each of the three levels below the root) rather than by a walk, so a spawn or a `Map`
+  that cannot pay is refused before any table or record changes. The space holds the tokens and
+  returns them at reclaim; one dropped unreclaimed surrenders them to its arena's dissolve rather
+  than freeing tables a processor may still walk.
 - **D-481** The ring 3 witness is a cargo-built static `ET_EXEC` linked at `0x400000`, and the
   loader maps each segment at its `p_vaddr` with no per-program shift, because a position-dependent
   image holds absolute addresses that a shift breaks and the in-kernel loader takes no `ET_DYN`;

@@ -69,9 +69,10 @@ const CHECKS: &[Check] = &[
         "memory refusals name their rule",
         processes::memory_refusals_name_their_rule,
     ),
-    ("two spaces map one address to different memory", |_| {
-        address_spaces::two_spaces_map_one_address_to_different_memory()
-    }),
+    (
+        "two spaces map one address to different memory",
+        address_spaces::two_spaces_map_one_address_to_different_memory,
+    ),
     ("every enabled state component survives a switch", |_| {
         threads::every_enabled_state_component_survives_a_switch()
     }),
@@ -92,7 +93,7 @@ const CHECKS: &[Check] = &[
     }),
     (
         "a program reads served time from a page it cannot write",
-        |_| clocks::a_program_reads_served_time_from_a_page_it_cannot_write(),
+        clocks::a_program_reads_served_time_from_a_page_it_cannot_write,
     ),
     (
         "a completion cannot widen what was offered",
@@ -113,12 +114,14 @@ const CHECKS: &[Check] = &[
     ("thread local storage follows the thread", |_| {
         threads::thread_local_storage_follows_the_thread()
     }),
-    ("a bound space is not reclaimed", |_| {
-        address_spaces::a_bound_space_is_not_reclaimed()
-    }),
-    ("a user page comes back cleared", |_| {
-        address_spaces::a_user_page_comes_back_cleared()
-    }),
+    (
+        "a bound space is not reclaimed",
+        address_spaces::a_bound_space_is_not_reclaimed,
+    ),
+    (
+        "a user page comes back cleared",
+        address_spaces::a_user_page_comes_back_cleared,
+    ),
     (
         "a dead program gives its memory back",
         processes::a_dead_program_gives_its_memory_back,
@@ -135,18 +138,22 @@ const CHECKS: &[Check] = &[
         "a handle reveals no foreign occupancy",
         handles::a_handle_reveals_no_foreign_occupancy,
     ),
-    ("a refused mapping leaves no trace", |_| {
-        address_spaces::a_refused_mapping_leaves_no_trace()
-    }),
-    ("a shared mapping keeps its frame", |_| {
-        address_spaces::a_shared_mapping_keeps_its_frame()
-    }),
-    ("a user space cannot reach the kernel half", |_| {
-        address_spaces::a_user_space_cannot_reach_the_kernel_half()
-    }),
-    ("device mappings refuse allocatable ram", |_| {
-        address_spaces::device_mappings_refuse_allocatable_ram()
-    }),
+    (
+        "a refused mapping leaves no trace",
+        address_spaces::a_refused_mapping_leaves_no_trace,
+    ),
+    (
+        "a shared mapping keeps its frame",
+        address_spaces::a_shared_mapping_keeps_its_frame,
+    ),
+    (
+        "a user space cannot reach the kernel half",
+        address_spaces::a_user_space_cannot_reach_the_kernel_half,
+    ),
+    (
+        "device mappings refuse allocatable ram",
+        address_spaces::device_mappings_refuse_allocatable_ram,
+    ),
     (
         "callee-saved registers survive a switch",
         threads::registers_survive_a_switch,

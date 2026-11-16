@@ -8,12 +8,14 @@ use super::{
     current_mapping_root, entry_slot, translate_in, visit_present_leaves, walk,
 };
 use crate::boot::Section;
+use crate::mm::pool::Earmark;
 use crate::mm::{self, PhysicalAddress};
 
 impl AddressSpace {
     pub(super) fn install_entry_enclave(
         &mut self,
         enclave: super::kpti::EntryEnclave,
+        tables: &mut Earmark,
     ) -> Result<(), MapError> {
         let pages = enclave_pages(enclave)?;
         let expected_stripped = self.expected_enclave(enclave, pages)?;
@@ -32,6 +34,7 @@ impl AddressSpace {
                 page.physical_address(),
                 page.permission().flags(),
                 Level::Pt,
+                Some(&mut *tables),
             )?;
         }
         if let Some(address) = mapped_guard(stripped, enclave)? {
@@ -122,6 +125,7 @@ impl AddressSpace {
                 start,
                 Level::Pml4,
                 TablePrivilege::Supervisor,
+                None,
             )?;
             slot.write(link);
         }
@@ -150,6 +154,7 @@ impl AddressSpace {
                 physical + offset,
                 access.flags(),
                 Level::Pt,
+                None,
             )?;
             offset += PAGE_SIZE;
         }

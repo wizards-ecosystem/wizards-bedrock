@@ -2,9 +2,10 @@ use x86_paging::{Entry, Level, TablePrivilege};
 
 use super::super::{cpu, task::Released};
 use super::{
-    AddressSpace, AddressSpaceRoots, MapError, ReclaimError, ReclaimFailure, TableRoot,
+    AddressSpace, AddressSpaceRoots, MapError, Reach, ReclaimError, ReclaimFailure, TableRoot,
     active_root, is_active, is_user_address,
 };
+use crate::mm::pool::{Earmark, FrameKind};
 use crate::mm::{self, PhysicalAddress};
 
 impl AddressSpace {
@@ -14,6 +15,7 @@ impl AddressSpace {
         virtual_address: u64,
         level: Level,
         privilege: TablePrivilege,
+        supply: Option<&mut Earmark>,
     ) -> Result<(PhysicalAddress, Entry), MapError> {
         if level == Level::Pml4
             && !is_user_address(virtual_address)
@@ -22,6 +24,16 @@ impl AddressSpace {
             && self.root() == active_root()
         {
             return Err(MapError::KernelTopologyFrozen(virtual_address));
+        }
+        if let Some(tables) = supply {
+            self.arena_tables
+                .try_reserve(1)
+                .map_err(|_| MapError::OutOfMemory)?;
+            let frame = tables.take(FrameKind::Table).ok_or(MapError::OutOfMemory)?;
+            let address = frame.address();
+            let link = Entry::table(address.get(), privilege).map_err(MapError::Encoding)?;
+            self.arena_tables.push(frame);
+            return Ok((address, link));
         }
         self.tables
             .try_reserve(1)
@@ -48,11 +60,18 @@ impl AddressSpace {
             return Err(ReclaimFailure { reason, released });
         }
 
-        let returned = self.tables.len() + roots.frames();
+        let returned = self.table_frames();
         for table in self.tables.drain(..) {
             // SAFETY: `take_owned_table` allocated and forgot each for this space, so this rebuilds
             // its one handle as the space empties for good; the refusals prove nothing walks it.
             drop(unsafe { mm::Frame::from_raw(table) });
+        }
+        // The refusals prove nothing walks them, so each returns zeroed to its arena.
+        self.arena_tables.clear();
+        if self.reach == Reach::UserHalfOnly {
+            self.roots = None;
+            self.shared.clear();
+            return Ok(returned);
         }
         if let Some(stripped) = roots.stripped_root() {
             // SAFETY: paired construction allocated and forgot this distinct
