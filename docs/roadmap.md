@@ -197,9 +197,6 @@ Phase 7:
   a shared unmap, accounting that cannot starve a sibling, and a conversion that zeroes.
 - The direct map aliases kernel text as executable, so W^X holds per mapping and not per frame
   (`kernel/src/mem.rs`). Write-then-seal needs W^X per frame.
-- `mm::init` and `EarlyFirmwareMemory::new` are safe functions over a `MemoryMap` that any safe
-  caller can build (`wost/src/mm.rs`, `wost/src/mm/firmware.rs`, `libs/memory-map`). Only a map the
-  bootloader handed over may reach them.
 - The kernel parses ELF and loads one borrowed Limine module (`kernel/src/user/load.rs`,
   `wost/src/boot/limine_glue.rs`). The user-space loader replaces it and needs every module as owned
   frames; the kernel keeps its mapper checks.

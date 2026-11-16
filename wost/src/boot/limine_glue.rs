@@ -9,7 +9,7 @@ use limine::request::{
 use pixel::{Channel, FramebufferLayout, PixelFormat};
 
 use crate::boot::{
-    BootInfo, DirectMap, Framebuffer, FramebufferError, FramebufferInfo, HandoffError,
+    BootInfo, BootMemory, DirectMap, Framebuffer, FramebufferError, FramebufferInfo, HandoffError,
     ImageAddress, MemoryKind, MemoryMap, MemoryRegion, record_framebuffer,
 };
 use crate::mmio::MmioRegion;
@@ -40,8 +40,7 @@ pub fn enter(requests: Requests, kernel_main: fn(BootInfo, ThreadContext) -> !) 
         BootInfo {
             base_revision_supported: base_revision.is_supported(),
             framebuffer: take_framebuffer(framebuffer),
-            memory_map: take_memory_map(memory_map),
-            direct_map: take_direct_map(direct_map),
+            memory: take_memory(memory_map, direct_map),
             image: take_image(image),
             rsdp: take_rsdp(rsdp),
             module: take_module(modules),
@@ -100,6 +99,16 @@ pub struct Requests {
     pub image: &'static ExecutableAddressRequest,
     pub rsdp: &'static RsdpRequest,
     pub modules: &'static ModuleRequest,
+}
+
+fn take_memory(
+    map: &'static MemoryMapRequest,
+    direct: &'static HhdmRequest,
+) -> Result<BootMemory, HandoffError> {
+    Ok(BootMemory::new(
+        take_memory_map(map)?,
+        take_direct_map(direct)?,
+    ))
 }
 
 fn take_memory_map(request: &'static MemoryMapRequest) -> Result<MemoryMap, HandoffError> {

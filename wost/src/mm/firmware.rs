@@ -1,23 +1,22 @@
 use core::sync::atomic::Ordering;
 
 use super::{DIRECT_MAP_OFFSET, MAP, PhysicalAddress, direct_pointer};
-use crate::boot::{DirectMap, MemoryMap, MemoryRegion};
+use crate::boot::{BootMemory, MemoryMap, MemoryRegion};
 
-// Reads only bytes the given map describes exclusively as ACPI table storage.
+// Reads only bytes the bootloader's map describes exclusively as ACPI table storage.
 #[derive(Clone, Copy, Debug)]
-pub struct EarlyFirmwareMemory<'map> {
-    map: &'map MemoryMap,
-    direct: DirectMap,
+pub struct EarlyFirmwareMemory<'boot> {
+    memory: &'boot BootMemory,
 }
 
-impl<'map> EarlyFirmwareMemory<'map> {
-    pub const fn new(map: &'map MemoryMap, direct: DirectMap) -> Self {
-        Self { map, direct }
+impl<'boot> EarlyFirmwareMemory<'boot> {
+    pub const fn new(memory: &'boot BootMemory) -> Self {
+        Self { memory }
     }
 
     #[must_use = "a refused early firmware read copied no bytes"]
     pub fn read(&self, address: u64, into: &mut [u8]) -> bool {
-        if !firmware_contains(self.map, address, into.len()) {
+        if !firmware_contains(self.memory.map(), address, into.len()) {
             return false;
         }
         let Ok(len) = u64::try_from(into.len()) else {
@@ -26,10 +25,11 @@ impl<'map> EarlyFirmwareMemory<'map> {
         let Some(end) = address.checked_add(len) else {
             return false;
         };
-        if self.direct.virtual_address(end).is_none() {
+        let direct = self.memory.direct();
+        if direct.virtual_address(end).is_none() {
             return false;
         }
-        let Some(base) = self.direct.virtual_address(address) else {
+        let Some(base) = direct.virtual_address(address) else {
             return false;
         };
         read_firmware_bytes(base as *const u8, into);

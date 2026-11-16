@@ -101,19 +101,15 @@ pub(crate) fn secure_handoff(boot: &BootInfo) -> Result<EarlyDmaBoundary, EarlyD
     if !boot.base_revision_supported {
         return Err(EarlyDmaError::BaseRevision);
     }
-    let map = boot
-        .memory_map
+    let memory = boot
+        .memory
         .as_ref()
-        .map_err(|_| EarlyDmaError::MissingEvidence("complete memory map"))?;
-    let direct = *boot
-        .direct_map
-        .as_ref()
-        .map_err(|_| EarlyDmaError::MissingEvidence("direct map"))?;
+        .map_err(|_| EarlyDmaError::MissingEvidence("complete memory map and direct map"))?;
     let rsdp = *boot
         .rsdp
         .as_ref()
         .map_err(|_| EarlyDmaError::MissingEvidence("ACPI root pointer"))?;
-    let table = acpi::find_unique_early::<{ DmaHandoff::LEN }>(map, direct, rsdp, Sdt::DMA_HANDOFF)
+    let table = acpi::find_unique_early::<{ DmaHandoff::LEN }>(memory, rsdp, Sdt::DMA_HANDOFF)
         .map_err(EarlyDmaError::Table)?;
     let contract = DmaHandoff::new(&table).map_err(EarlyDmaError::Contract)?;
     if contract.segment() != SEGMENT {

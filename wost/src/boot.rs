@@ -391,12 +391,32 @@ pub fn sections() -> Sections {
     }
 }
 
+// Minted once from the bootloader's answer; neither `Copy` nor `Clone`, so it is the only authority.
+#[derive(Debug)]
+pub struct BootMemory {
+    map: MemoryMap,
+    direct: DirectMap,
+}
+
+impl BootMemory {
+    pub(crate) const fn new(map: MemoryMap, direct: DirectMap) -> Self {
+        Self { map, direct }
+    }
+
+    pub const fn map(&self) -> &MemoryMap {
+        &self.map
+    }
+
+    pub const fn direct(&self) -> DirectMap {
+        self.direct
+    }
+}
+
 #[derive(Debug)]
 pub struct BootInfo {
     pub base_revision_supported: bool,
     pub framebuffer: Result<Framebuffer, FramebufferError>,
-    pub memory_map: Result<MemoryMap, HandoffError>,
-    pub direct_map: Result<DirectMap, HandoffError>,
+    pub memory: Result<BootMemory, HandoffError>,
     pub image: Result<ImageAddress, HandoffError>,
     // Virtual from base revision 4.
     pub rsdp: Result<u64, HandoffError>,

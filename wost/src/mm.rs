@@ -23,9 +23,9 @@ pub use selftest::{free_frames, is_freed_run_zero};
 pub(crate) use shared::SharedKeepalive;
 pub use shared::{Shared, SharedBytes, SharedRing, USegment};
 
-use crate::boot::{DirectMap, MemoryKind, MemoryMap};
+use crate::boot::{BootMemory, DirectMap, MemoryKind, MemoryMap};
 use crate::panic::PanicToken;
-use crate::sync::{Once, SpinLock};
+use crate::sync::SpinLock;
 
 // Two zeroed `.bss` bits per frame, so 16 GiB costs one megabyte the image does not carry.
 pub(crate) const CEILING: u64 = 16 << 30;
@@ -36,8 +36,6 @@ static FRAMES: SpinLock<Frames> = SpinLock::new(Frames::new());
 
 // Zero until `init`; the validated higher-half offset is never zero and never changes.
 static DIRECT_MAP_OFFSET: AtomicU64 = AtomicU64::new(0);
-
-static INIT: Once = Once::new();
 
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub struct Report {
@@ -65,10 +63,9 @@ impl fmt::Display for Report {
     }
 }
 
-pub fn init(map: &MemoryMap, direct: DirectMap) -> Report {
-    assert!(INIT.claim(), "physical memory initialized twice");
-
-    DIRECT_MAP_OFFSET.store(direct.offset(), Ordering::Release);
+pub fn init(memory: BootMemory) -> Report {
+    let map = memory.map();
+    DIRECT_MAP_OFFSET.store(memory.direct().offset(), Ordering::Release);
     *MAP.lock_leaf() = Some(*map);
 
     let mut frames = FRAMES.lock_leaf();

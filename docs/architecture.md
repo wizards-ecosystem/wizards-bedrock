@@ -48,9 +48,13 @@ system partition from LBA 2048. It holds `/EFI/BOOT/BOOTX64.EFI` (the vendored L
 which Limine hands the kernel as its one module.
 
 The kernel requests Limine base revision 4 and refuses to continue without it. `BootInfo`
-carries the memory map, the direct map offset, the framebuffer, the image's physical address, the
-RSDP and the module, each as a `Result`, so a missing answer is a typed refusal. The direct map
-offset must be a page-aligned base in the canonical higher half.
+carries the boot memory, the framebuffer, the image's physical address, the RSDP and the module,
+each as a `Result`, so a missing answer is a typed refusal. The direct map offset must be a
+page-aligned base in the canonical higher half.
+The boot memory is one `wost::boot::BootMemory` holding the memory map and the direct map offset.
+`wost::boot` builds it once from the bootloader's answer, and it is neither `Copy` nor `Clone`.
+Only it opens `EarlyFirmwareMemory`, and `mm::init` consumes it, so a `MemoryMap` or `DirectMap`
+built anywhere else starts no allocator and reads no firmware memory.
 `libs/memory-map` accepts 1 to 128 regions and refuses a larger map whole. An unknown region kind
 is treated like a reserved one: never allocated and never direct-mapped.
 

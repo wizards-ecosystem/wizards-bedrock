@@ -2,7 +2,7 @@ use alloc::vec::Vec;
 use core::fmt;
 
 use acpi_tables::{MadtInterrupts, Rsdp, Sdt, SdtPointers};
-use wost::boot::{DirectMap, MemoryMap};
+use wost::boot::BootMemory;
 use wost::mm::{self, EarlyFirmwareMemory};
 
 use crate::{debug, warn};
@@ -52,14 +52,13 @@ enum Multiplicity {
 }
 
 pub(crate) fn find_unique_early<const N: usize>(
-    map: &MemoryMap,
-    direct: DirectMap,
+    memory: &BootMemory,
     rsdp: u64,
     signature: [u8; 4],
 ) -> Result<[u8; N], TableError> {
-    let firmware = EarlyFirmwareMemory::new(map, direct);
+    let firmware = EarlyFirmwareMemory::new(memory);
     let rsdp = rsdp
-        .checked_sub(direct.offset())
+        .checked_sub(memory.direct().offset())
         .ok_or(TableError::RootPointer)?;
     find(
         |address, into| firmware.read(address, into),

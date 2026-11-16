@@ -11,7 +11,7 @@ use wost::arch::current::paging::{
 use wost::arch::current::pci as platform_pci;
 use wost::arch::current::segment;
 use wost::boot::{
-    self, DirectMap, DirectMapCache, HandoffError, ImageAddress, MemoryKind, MemoryMap,
+    self, BootMemory, DirectMap, DirectMapCache, HandoffError, ImageAddress, MemoryKind, MemoryMap,
 };
 use wost::mm;
 use wost::sync::SpinLock;
@@ -27,30 +27,19 @@ mod selftest;
 #[cfg(feature = "selftest")]
 pub(crate) use selftest::{map_user_page_for_test, unmap_for_test};
 
-pub(crate) fn init(
-    map: Result<MemoryMap, HandoffError>,
-    direct: Result<DirectMap, HandoffError>,
-    _dma: EarlyDmaBoundary,
-) {
-    let map = match map {
-        Ok(map) => map,
+pub(crate) fn init(memory: Result<BootMemory, HandoffError>, _dma: EarlyDmaBoundary) {
+    let memory = match memory {
+        Ok(memory) => memory,
         Err(reason) => {
-            warn!("memory map: {reason}; no frame allocator");
-            return;
-        }
-    };
-    let direct = match direct {
-        Ok(direct) => direct,
-        Err(reason) => {
-            warn!("direct map: {reason}; no frame allocator");
+            warn!("boot memory: {reason}; no frame allocator");
             return;
         }
     };
 
-    describe(&map);
-    info!("memory: direct map at {:#x}", direct.offset());
+    describe(memory.map());
+    info!("memory: direct map at {:#x}", memory.direct().offset());
 
-    let report = mm::init(&map, direct);
+    let report = mm::init(memory);
     if report.managed == 0 {
         warn!("memory: no usable frames; no frame allocator");
         return;
@@ -284,12 +273,11 @@ fn unrecognised(kind: &MemoryKind) -> bool {
 
 pub(crate) fn init_paging(
     context: &mut ThreadContext,
-    map: Result<MemoryMap, HandoffError>,
-    direct: Result<DirectMap, HandoffError>,
+    layout: Result<(MemoryMap, DirectMap), HandoffError>,
     image: Result<ImageAddress, HandoffError>,
     rsdp: Result<u64, HandoffError>,
 ) -> Option<Interrupts> {
-    let (Ok(map), Ok(direct), Ok(image)) = (map, direct, image) else {
+    let (Ok((map, direct)), Ok(image)) = (layout, image) else {
         warn!("paging: incomplete handoff; staying on the bootloader's tables");
         return None;
     };

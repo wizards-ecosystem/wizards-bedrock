@@ -133,14 +133,13 @@ fn kernel_main(boot: BootInfo, mut context: ThreadContext) -> ! {
     let dma_quiesced = early_dma.take_quiesced_requester();
 
     // The first write through an address the bootloader chose, so after the fault path.
-    mem::init(boot.memory_map, boot.direct_map, early_dma);
-    let interrupts = mem::init_paging(
-        &mut context,
-        boot.memory_map,
-        boot.direct_map,
-        boot.image,
-        boot.rsdp,
-    );
+    let layout = boot
+        .memory
+        .as_ref()
+        .map(|memory| (*memory.map(), memory.direct()))
+        .map_err(|reason| *reason);
+    mem::init(boot.memory, early_dma);
+    let interrupts = mem::init_paging(&mut context, layout, boot.image, boot.rsdp);
     if let Ok(rsdp) = boot.rsdp {
         iommu::discover(rsdp);
     }

@@ -60,6 +60,10 @@ number and is added here, as one entry or as an amending id on the entry it chan
   allocator and page tables are never built from a truncated map. A query consults every region
   holding the cursor and refuses wherever an unadmitted kind overlaps, so an overlapping or unsorted
   firmware map cannot change a verdict by its order (D-241).
+- **D-468** The bootloader's memory map and direct-map offset reach the kernel as one `BootMemory`,
+  minted once by `wost::boot` and neither `Copy` nor `Clone`. `EarlyFirmwareMemory` borrows it and
+  `mm::init` consumes it, so a `MemoryMap` a safe caller builds starts no allocator and opens no
+  firmware memory (D-64, D-251).
 
 ## CPU, traps and protections
 
