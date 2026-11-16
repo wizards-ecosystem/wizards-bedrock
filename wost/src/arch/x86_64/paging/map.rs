@@ -215,7 +215,10 @@ impl AddressSpace {
         )
     }
 
-    fn stripped_lower_slot(&self, virtual_address: u64) -> Result<Option<EntrySlot>, MapError> {
+    pub(super) fn stripped_lower_slot(
+        &self,
+        virtual_address: u64,
+    ) -> Result<Option<EntrySlot>, MapError> {
         if !is_user_address(virtual_address) {
             return Ok(None);
         }

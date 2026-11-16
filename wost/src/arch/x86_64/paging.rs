@@ -23,7 +23,7 @@ pub(crate) use flush::answer as answer_shootdown;
 pub use map::{BootRegion, Unmapped};
 pub(crate) use stack::{KernelStackTop, TaskStackPin};
 pub use stack::{MappedStack, PinnedStack, StackArena};
-pub use user::{FrameRef, UserAccess};
+pub use user::{FrameRef, Pruned, UserAccess};
 pub use walk::stale_kernel_write;
 pub use walk::translate;
 

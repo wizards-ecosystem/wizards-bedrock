@@ -311,7 +311,11 @@ writable one never executable and a sealed one never writable, counted in the fr
 made by `for_user` or `for_user_isolated` from an earmark of its world, and `map_frame` takes every
 table it links from an earmark too: each is an arena frame of kind `Table`, held by the space and
 returned zeroed to that arena when `reclaim` empties it, so a shortage is a refusal of the earmark
-before anything changes. `user_root_tables` and `x86_paging::tables_for` bound what each needs. A
+before anything changes. An `Unmap`, and a refused fill's undo, end with `prune`: every table under
+the range that no entry uses any more is unlinked in the same flush as the leaves, and the
+`Pruned` token returns those frames to the arena only after that flush is waited for (a token
+dropped unwaited surrenders them), so mapping and unmapping at fresh addresses never grows a
+space's tables. `user_root_tables` and `x86_paging::tables_for` bound what each needs. A
 space dropped unreclaimed surrenders its table tokens, and their frames stay charged until the arena
 dissolves. Every path ends in
 `map_range`, which refuses a writable and executable flag set and preflights the whole range,

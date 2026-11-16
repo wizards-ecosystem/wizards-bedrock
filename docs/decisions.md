@@ -613,6 +613,11 @@ number and is added here, as one entry or as an amending id on the entry it chan
   spawn alike, and `libs/world-tree`'s proven step order stays as it is. The shared mapping doors
   and their keepalives are deleted. The time page is an arena frame of the root world, made when
   the root world starts, since no arena exists when the clock starts.
+- **D-540** An `Unmap` returns the tables it emptied to the arena at once, after the flush that
+  removed their leaves, rather than only at teardown: a world is then charged for the tables its
+  live records need, not for every address it ever touched, so a program that maps and unmaps at
+  fresh addresses neither drains its world nor reaches a refusal. Kernel placements also stop
+  below the last user page, which no mapping may hold.
 - **D-481** The ring 3 witness is a cargo-built static `ET_EXEC` linked at `0x400000`, and the
   loader maps each segment at its `p_vaddr` with no per-program shift, because a position-dependent
   image holds absolute addresses that a shift breaks and the in-kernel loader takes no `ET_DYN`;

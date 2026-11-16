@@ -60,6 +60,9 @@ pub mod witness {
     // Far above any call the kernel serves, so adding a call cannot make this one real.
     pub const UNSERVED_CALL: u64 = 0x0BAD_0BAD;
 
+    // The memory-refusals behaviour maps and unmaps one page at this many fresh table spans.
+    pub const FRESH_MAPS: u64 = 64;
+
     // VMware's backdoor magic, which a refused probe leaves in `rax` for the fault record.
     pub const BACKDOOR_MAGIC: u64 = 0x564D_5868;
 

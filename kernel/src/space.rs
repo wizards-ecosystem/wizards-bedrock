@@ -1,9 +1,9 @@
 use memory_object::{Extent, PLACEMENT_SAMPLES, Record, RecordRefusal, Records, place};
-use native_abi::limits::PLACEMENT_START;
+use native_abi::limits::{PLACEMENT_START, USER_MAPPING_END};
 use wost::arch::current::paging::{AddressSpace, Flush, MapError, UserAccess};
 use wost::mm::SharedFrame;
 use wost::mm::pool::Earmark;
-use x86_paging::{PAGE_SIZE, USER_END};
+use x86_paging::PAGE_SIZE;
 
 use crate::arena::{Local, Pages};
 use crate::memory::MemoryObject;
@@ -110,7 +110,7 @@ impl Space {
     fn record_placed(&mut self, pages: u64, guard: u64, mapping: Mapping) -> Option<u64> {
         let range = Extent::new(
             PLACEMENT_START / PAGE_SIZE,
-            (USER_END - PLACEMENT_START) / PAGE_SIZE,
+            (USER_MAPPING_END - PLACEMENT_START) / PAGE_SIZE,
         )?;
         let total = pages.checked_add(guard)?;
         let mut samples = [0u64; PLACEMENT_SAMPLES as usize];
@@ -210,7 +210,9 @@ impl Space {
                 panic!("a mapping written a moment ago refused to clear: {reason}");
             }
             drop(object);
-            flush.wait(context);
+            self.address
+                .prune(at, extent.pages() * PAGE_SIZE, flush)
+                .wait(context);
         }
         filled
     }
@@ -264,7 +266,9 @@ impl Space {
         let removed = self.records().remove(extent);
         assert!(removed.is_ok(), "an unmapped record vanished");
         let flush = self.clear_record(context, world, extent, mapping);
-        flush.wait(context);
+        self.address
+            .prune(at, pages * PAGE_SIZE, flush)
+            .wait(context);
         release(world, mapping);
         Ok(())
     }

@@ -239,8 +239,11 @@ pub(super) fn memory_refusals_name_their_rule(context: &mut ThreadContext) -> bo
     let Ok(spawned) = user::spawn_refusing_memory(context) else {
         return false;
     };
-    last_rites_for(&spawned, 2_000)
-        .is_some_and(|rites| agreed(&rites) && rites.served == 16 && rites.handles == 5)
+    last_rites_for(&spawned, 10_000).is_some_and(|rites| {
+        agreed(&rites)
+            && rites.served == 16 + 2 * witness::FRESH_MAPS as usize
+            && rites.handles == 5
+    })
 }
 
 // A user base is read back through `fs`, and a kernel-half or noncanonical one is refused.
