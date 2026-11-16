@@ -449,8 +449,10 @@ The kernel's random generator (`kernel/src/random.rs`) is a `libs/entropy` `Base
 behind a leaf lock: a BLAKE2s pool and ChaCha20 keys with fast key erasure. `random::seed` credits
 64-bit `RDSEED` words, or `RDRAND` words on a processor without `RDSEED`, through `cpu::SeedReader`,
 which exists only where CPUID enumerates its instruction and retries a clear carry a bounded number
-of times. A word of zero, all ones or a repeat of the last is discarded uncredited. The generator is
-ready after 256 credited bits, and the boot log names the source that seeded it. `random::fill`
+of times. A word of zero, all ones or one equal to a word credited since the last reseed is
+discarded uncredited, so a source stuck in a cycle of up to four words cannot seed the generator.
+The generator is ready after 256 credited bits, and the boot log names the source that seeded it.
+`random::fill`
 refuses with `NotReady` before then, and every draw replaces the key that produced it before it
 returns. The ring's `Random` draws from it in 256-byte rounds.
 

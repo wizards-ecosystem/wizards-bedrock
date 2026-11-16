@@ -12,6 +12,7 @@ use core::mem;
 
 const READY_BITS: u32 = 256;
 const SEED_WORD_BITS: u32 = 64;
+const RECENT_WORDS: usize = (READY_BITS / SEED_WORD_BITS) as usize;
 const RESEED_INTERVAL_NS: u64 = 60_000_000_000;
 const ZERO_NONCE: [u8; 12] = [0; 12];
 // Keeps one keystream far below the 2^32 block counter limit.
@@ -72,7 +73,9 @@ impl core::error::Error for NotReady {}
 pub struct Base {
     key: Secret<32>,
     pool: Pool,
-    previous_word: Option<u64>,
+    // Words credited since the last reseed; zero, which is never credited, marks a free slot.
+    recent: Secret<{ RECENT_WORDS * 8 }>,
+    next_recent: usize,
     generation: u64,
     reseeded_at_ns: u64,
 }
@@ -92,7 +95,8 @@ impl Base {
                 hash: Blake2s::new(wipe),
                 credited: 0,
             },
-            previous_word: None,
+            recent: Secret::zero(wipe),
+            next_recent: 0,
             generation: 0,
             reseeded_at_ns: 0,
         }
@@ -100,12 +104,15 @@ impl Base {
 
     #[must_use]
     pub fn add_seed_word(&mut self, word: u64) -> bool {
-        let repeated = self.previous_word == Some(word);
-        self.previous_word = Some(word);
+        let bytes = word.to_le_bytes();
+        let repeated = self.recent.bytes.chunks_exact(8).any(|seen| seen == bytes);
         if repeated || word == 0 || word == u64::MAX {
             return false;
         }
-        self.pool.absorb(&word.to_le_bytes(), SEED_WORD_BITS);
+        let at = self.next_recent * 8;
+        self.recent.bytes[at..at + 8].copy_from_slice(&bytes);
+        self.next_recent = (self.next_recent + 1) % RECENT_WORDS;
+        self.pool.absorb(&bytes, SEED_WORD_BITS);
         true
     }
 
@@ -124,6 +131,8 @@ impl Base {
         next.update(&self.key.bytes);
         next.update(&digest.bytes);
         next.finalize_into(&mut self.key.bytes);
+        (self.recent.wipe)(&mut self.recent.bytes);
+        self.next_recent = 0;
         self.generation += 1;
         self.reseeded_at_ns = now_ns;
         true

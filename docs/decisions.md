@@ -451,6 +451,9 @@ number and is added here, as one entry or as an amending id on the entry it chan
   and calls when it drops, rather than a trait parameter on every type, because the kernel has
   one wipe and the host tests another. BLAKE2s keeps its chaining value as bytes so the same wipe
   clears it.
+- **D-592** A seed word is credited only if it differs from every word credited since the last
+  reseed, at most four, and the reseed wipes that record. Remembering the last four across reseeds
+  would keep seed material that, with the guessable counter sample, rebuilds an earlier key.
 - **D-240** An NVMe or VT-d wait is bounded by the clock, through `timebase::PollLimit` for NVMe,
   with a spin count only where no clock exists yet or the clock has stopped, because an iteration
   bound depends on processor speed.
