@@ -195,9 +195,9 @@ fn memory(entry: &Entry) -> Result<(), Failure> {
         ..Submission::about(Opcode::Unmap, TOKEN, 0, MAPPED_AT)
     };
     ring.expect(unmap, status::OK)?;
-    // Each fresh address needs its own table, which only an unmap that returns it keeps bounded.
+    // Each fresh address needs its own tables, which only an unmap that returns them keeps bounded.
     for step in 1..=witness::FRESH_MAPS {
-        let at = MAPPED_AT + step * TABLE_SPAN;
+        let at = MAPPED_AT + step * FRESH_STRIDE;
         ring.expect(
             Submission {
                 argument: at,
@@ -220,7 +220,12 @@ fn memory(entry: &Entry) -> Result<(), Failure> {
 // Below the kernel's placements and far above the image.
 const MAPPED_AT: u64 = limits::PLACEMENT_START / 4;
 
-const TABLE_SPAN: u64 = 2 << 20;
+// Odd in table spans and below the placements, so the pairs cross directory boundaries too.
+const FRESH_STRIDE: u64 = 23 * (2 << 20);
+const _: () = assert!(
+    MAPPED_AT + (witness::FRESH_MAPS + 1) * FRESH_STRIDE <= limits::PLACEMENT_START,
+    "the fresh maps stay below the kernel's placements"
+);
 
 const fn map(object: u64, flags: u64) -> Submission {
     Submission {

@@ -43,6 +43,7 @@ pub(super) fn a_faulting_program_dies_alone(context: &mut ThreadContext) -> bool
         let fault = trap::last_user_fault();
         fault.count > before.count && fault.slot == spawned.slot
     }) {
+        let _ = last_rites_for(&spawned, 0);
         return false;
     }
     let fault = trap::last_user_fault();
@@ -89,6 +90,7 @@ fn retired_by_protection_fault(
         let fault = trap::last_user_fault();
         fault.count > before.count && fault.slot == spawned.slot
     }) {
+        let _ = last_rites_for(&spawned, 0);
         return false;
     }
     let fault = trap::last_user_fault();
@@ -144,6 +146,7 @@ fn invalid_return_is_refused(
         let refused = trap::last_invalid_user_return();
         refused.count > before.count && refused.slot == spawned.slot
     }) {
+        let _ = last_rites_for(&spawned, 0);
         return false;
     }
     names_the_fault(&trap::last_invalid_user_return()) && last_rites_for(&spawned, 2_000).is_some()
@@ -161,6 +164,7 @@ pub(super) fn a_program_cannot_aim_at_the_copy_window(context: &mut ThreadContex
         let fault = trap::last_user_fault();
         fault.count > before.count && fault.slot == spawned.slot
     }) {
+        let _ = last_rites_for(&spawned, 0);
         return false;
     }
 
@@ -367,11 +371,13 @@ pub(super) fn a_dead_program_gives_its_memory_back(context: &mut ThreadContext) 
     ran == 40 && settled && AllocatorSnapshot::capture().has_same_ownership(&before)
 }
 
+// A late program would run beside the next check, so this returns only once it retired.
 pub(super) fn last_rites_for(spawned: &user::Spawned, ms: u64) -> Option<Rites> {
-    if !runs_until(ms, || spawned.observation.rites().is_some()) {
-        return None;
+    let in_time = runs_until(ms, || spawned.observation.rites().is_some());
+    while spawned.observation.rites().is_none() {
+        core::hint::spin_loop();
     }
-    spawned.observation.rites()
+    in_time.then(|| spawned.observation.rites()).flatten()
 }
 
 // Written by the teardown once, and refused for good after that.
