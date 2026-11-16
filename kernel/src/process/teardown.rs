@@ -36,13 +36,19 @@ pub(crate) fn step(here: ProcessRef) -> Progress {
     if !finished {
         return Progress::Pending;
     }
+    #[cfg(feature = "selftest")]
+    let rites = (process.observation, process.life.lock_leaf().rites);
     drop(process);
-    drop(world);
-    if here.destroy() {
-        Progress::Done
-    } else {
-        Progress::Pending
+    if !here.destroy() {
+        return Progress::Pending;
     }
+    #[cfg(feature = "selftest")]
+    if let (observation, Some(rites)) = rites
+        && let Some(observation) = world.observations.hold(observation)
+    {
+        observation.keep_rites(rites);
+    }
+    Progress::Done
 }
 
 // P0: the status is fixed once, then written where the spawner observes it.
@@ -99,13 +105,7 @@ fn drain(process: &Process) -> Progress {
 
 #[cfg(feature = "selftest")]
 fn keep_rites(process: &Process) {
-    let Some((world, _)) = process.objects.table.hold() else {
-        return;
-    };
-    let Some(observation) = world.observations.hold(process.observation) else {
-        return;
-    };
-    if observation.rites().is_some() {
+    if process.life.lock_leaf().rites.is_some() {
         return;
     }
     let handles = process
@@ -118,12 +118,11 @@ fn keep_rites(process: &Process) {
         .ring
         .hold()
         .map_or(0, |ring| ring.served_count());
-    // Read first: the life guard must be gone before the rites leaf is taken.
-    let ending = process.life.lock_leaf().ending;
-    observation.keep_rites(super::Rites {
+    let mut life = process.life.lock_leaf();
+    life.rites = Some(super::Rites {
         handles,
         served,
-        ending,
+        ending: life.ending,
     });
 }
 

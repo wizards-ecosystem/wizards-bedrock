@@ -68,6 +68,9 @@ struct Life {
     // Set by the thread just before it retires; the teardown turns it into the status.
     ending: Option<Record>,
     slot: Option<usize>,
+    // Taken while the table and ring still live; observable only once the record is gone.
+    #[cfg(feature = "selftest")]
+    rites: Option<Rites>,
 }
 
 #[derive(Debug)]
@@ -90,6 +93,8 @@ impl Process {
                 step: ProcessStep::Exit,
                 ending: None,
                 slot: None,
+                #[cfg(feature = "selftest")]
+                rites: None,
             }),
             space: SpinLock::new(None),
         }
