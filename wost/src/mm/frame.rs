@@ -157,8 +157,8 @@ impl Drop for Segment {
     }
 }
 
-pub(crate) fn is_sealed(segment: &Segment) -> bool {
-    table::read(segment.first).access() == Access::Sealed
+pub(crate) fn is_sealed(frame: PhysicalAddress) -> bool {
+    table::read((frame.get() / FRAME_SIZE) as usize).access() == Access::Sealed
 }
 
 // Seals each frame's record, then drops its direct-map leaf to read-only.

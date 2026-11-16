@@ -41,6 +41,7 @@ impl AddressSpace {
         // Preflight the whole range before clearing anything, so a refusal changes nothing.
         let mut first = None;
         let mut was_user = false;
+        let mut sealed = None;
         for page in 0..pages {
             let address = virtual_base
                 .checked_add(page * PAGE_SIZE)
@@ -52,8 +53,14 @@ impl AddressSpace {
             }
             // One user-reachable page makes the whole run user bytes.
             was_user |= entry.flags().contains(Flags::USER);
+            let frame = PhysicalAddress::from_entry(entry);
+            // A run returns through one release, sealed or writable, so its frames must agree.
+            let frame_sealed = mm::is_sealed(frame);
+            if *sealed.get_or_insert(frame_sealed) != frame_sealed {
+                return Err(MapError::Discontiguous(address));
+            }
             match first {
-                None => first = Some(PhysicalAddress::from_entry(entry)),
+                None => first = Some(frame),
                 Some(base) if entry.address() == base.get() + page * PAGE_SIZE => {}
                 Some(_) => return Err(MapError::Discontiguous(address)),
             }
@@ -74,6 +81,7 @@ impl AddressSpace {
             // each is allocated, its handle was forgotten when it was mapped, and no other handle
             // names it now that its leaf is cleared.
             frames: ManuallyDrop::new(unsafe { Segment::from_raw(base, pages as usize) }),
+            sealed: sealed == Some(true),
             was_user,
             flush,
         })
@@ -639,6 +647,7 @@ impl BootRegion {
 pub struct Unmapped {
     pages: u64,
     frames: ManuallyDrop<Segment>,
+    sealed: bool,
     was_user: bool,
     flush: Flush,
 }
@@ -653,7 +662,7 @@ impl Drop for Unmapped {
     fn drop(&mut self) {
         // No frame returns to its pool while a processor may still reach it.
         core::mem::replace(&mut self.flush, Flush::none()).settle();
-        if mm::is_sealed(&self.frames) {
+        if self.sealed {
             // SAFETY: this is the one move out of `frames`, and nothing reads the field after it.
             let frames = unsafe { ManuallyDrop::take(&mut self.frames) };
             let mut flush = Flush::none();
