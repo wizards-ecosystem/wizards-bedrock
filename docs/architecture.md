@@ -318,12 +318,14 @@ stays at the last trusted value and scheduling continues on a private epoch. An 
 bounded by the clock, through `timebase::PollLimit` for NVMe, with a spin count only when no clock
 exists.
 
-The kernel's random generator (`kernel/src/random.rs`) is a `libs/entropy` `Base` behind a leaf
-lock: a BLAKE2s pool and a ChaCha20 key with fast key erasure. `random::seed` credits 64-bit
-`RDSEED` words, or `RDRAND` words on a processor without `RDSEED`, through `cpu::SeedReader`,
+The kernel's random generator (`kernel/src/random.rs`) is a `libs/entropy` `Base` and one `Local`
+behind a leaf lock: a BLAKE2s pool and ChaCha20 keys with fast key erasure. `random::seed` credits
+64-bit `RDSEED` words, or `RDRAND` words on a processor without `RDSEED`, through `cpu::SeedReader`,
 which exists only where CPUID enumerates its instruction and retries a clear carry a bounded number
-of times. A word of zero, all ones or a repeat of the last is discarded uncredited. The generator
-is ready after 256 credited bits, and the boot log names the source that seeded it.
+of times. A word of zero, all ones or a repeat of the last is discarded uncredited. The generator is
+ready after 256 credited bits, and the boot log names the source that seeded it. `random::fill`
+refuses with `NotReady` before then, and every draw replaces the key that produced it before it
+returns. The ring's `Random` draws from it in 256-byte rounds.
 
 ## 6. The native ABI
 
@@ -386,6 +388,7 @@ kernel narrows it with `try_from` and refuses or saturates.
 | 5 | `Cancel` | ends the oldest operation whose token is `argument`; the target still completes once, with `CANCELLED` |
 | 6 | `OpenAt` | resolves a path in the data page from a directory handle; completes with a new handle. A path naming the directory itself is `BAD_PATH` |
 | 7 | `Read` | reads file `handle` from `offset` into the data page |
+| 8 | `Random` | fills `length` bytes of the data page from `offset` with generator output; completes with the byte count, or `UNAVAILABLE` before the generator is seeded |
 
 The statuses are `OK` (0), `UNKNOWN_OPCODE` (1), `NO_HANDLE_SLOT` (2), `BAD_HANDLE` (3), `DENIED`
 (4), `CANCELLED` (5), `NOT_FOUND` (6, a cancel that named nothing in flight), `NO_ROOM` (7),

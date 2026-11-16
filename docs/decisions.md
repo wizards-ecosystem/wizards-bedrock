@@ -340,6 +340,9 @@ number and is added here, as one entry or as an amending id on the entry it chan
   max(precision, 1 ms), and the page is refreshed before every return to ring 3 (amends D-57).
   A program that never enters the kernel still sees time move, and a processor that runs no such
   thread arms nothing new, so an idle kernel still takes no timer interrupts.
+- **D-503** Ring opcode 8 `Random` fills a range of the data page from the kernel generator and
+  refuses `UNAVAILABLE` before it is seeded. It draws from the one kernel `Local` until a world
+  key gives each world its own stream; a program never adds entropy, and no draw blocks.
 - **D-240** An NVMe or VT-d wait is bounded by the clock, through `timebase::PollLimit` for NVMe,
   with a spin count only where no clock exists yet or the clock has stopped, because an iteration
   bound depends on processor speed.

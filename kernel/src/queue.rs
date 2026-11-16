@@ -139,6 +139,9 @@ pub(crate) struct Queue {
     clock: &'static WorldClock,
 }
 
+// The largest `Random` draw held on the stack at once.
+const RANDOM_CHUNK: usize = 256;
+
 impl Queue {
     pub(crate) fn new(clock: &'static WorldClock) -> Option<Arc<Self>> {
         let run = mm::allocate_contiguous(native_abi::ring::BYTES / PAGE_SIZE as usize, 1)?;
@@ -239,6 +242,7 @@ impl Queue {
             Opcode::Cancel => self.cancel(submission),
             Opcode::OpenAt => return Self::open_at(self, submission, table),
             Opcode::Read => return Self::read(self, submission, table),
+            Opcode::Random => self.random(submission),
             Opcode::Unknown(_) => refuse(token, status::UNKNOWN_OPCODE),
         })
     }
@@ -272,6 +276,31 @@ impl Queue {
                 value: u64::from(handle),
             },
             Err(_) => refuse(token, status::DENIED),
+        }
+    }
+
+    // Filled in rounds, so a refused write or an unseeded generator stops before the next one.
+    fn random(&self, submission: Submission) -> Completion {
+        let token = submission.token;
+        let Some((at, len)) = ring::data_bounds(submission.offset, submission.length) else {
+            return refuse(token, status::BAD_BUFFER);
+        };
+        let mut chunk = [0u8; RANDOM_CHUNK];
+        let mut written = 0;
+        while written < len {
+            let round = &mut chunk[..RANDOM_CHUNK.min(len - written)];
+            if crate::random::fill(round).is_err() {
+                return refuse(token, status::UNAVAILABLE);
+            }
+            if !self.write_data(at + written, round) {
+                return refuse(token, status::BAD_BUFFER);
+            }
+            written += round.len();
+        }
+        Completion {
+            token,
+            status: status::OK,
+            value: len as u64,
         }
     }
 

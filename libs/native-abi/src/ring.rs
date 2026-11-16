@@ -71,6 +71,7 @@ pub enum Opcode {
     Cancel,
     OpenAt,
     Read,
+    Random,
     Unknown(u32),
 }
 
@@ -84,6 +85,7 @@ impl Opcode {
             5 => Self::Cancel,
             6 => Self::OpenAt,
             7 => Self::Read,
+            8 => Self::Random,
             other => Self::Unknown(other),
         }
     }
@@ -97,6 +99,7 @@ impl Opcode {
             Self::Cancel => 5,
             Self::OpenAt => 6,
             Self::Read => 7,
+            Self::Random => 8,
             Self::Unknown(other) => other,
         }
     }
