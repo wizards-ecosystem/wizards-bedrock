@@ -130,6 +130,9 @@ dependencies = [
 [[package]]
 name = "handle-space"
 version = "0.3.1"
+dependencies = [
+ "vstd",
+]
 
 [[package]]
 name = "hashbrown"
