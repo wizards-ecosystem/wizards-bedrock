@@ -117,8 +117,8 @@ Kernel and `wost`:
 - Malformed external input (ring entries, images, firmware tables, filesystem and device data)
   ends in a typed error, never a panic.
 - `assert!` is for an internal contradiction that breaks ownership or an unsafe precondition, and
-  its message says what was violated. `debug_assert!` is not used, so no production invariant is
-  debug-only. An operation that can refuse is `#[must_use]`.
+  its message says what was violated. `wost` and `kernel` refuse `debug_assert!` through
+  `disallowed-macros` in their `clippy.toml`, so no production invariant is debug-only. An operation that can refuse is `#[must_use]`.
 - Make total what can be made total. Glyph lookup falls back rather than unwrapping; a pixel
   outside the visible area is clipped.
 - Error types are enums, never strings, and are well-behaved (C-GOOD-ERR): `Debug`, `Display` and
