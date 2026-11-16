@@ -4,33 +4,21 @@
 #![deny(unsafe_code)]
 
 use native_abi::ring::{Completion, Opcode, Submission, flags, status};
+use native_abi::witness::behaviour::{
+    DUPLICATE, ECHO, FAULT, INVALID_RETURN_FLAGS, INVALID_RETURN_STACK, MEMORY, PROBE,
+    READ_COUNTER, READ_KERNEL, RING_WAIT, SYSCALL, THREAD_BASE,
+};
+use native_abi::witness::{self, AGREED};
 use native_abi::{Call, Rights, error};
 use witness_rt::{Entry, Ring, fault_with};
 
 witness_rt::entry!(behave);
 
-// The arguments the kernel's self-tests pass to choose a behaviour.
-const ECHO: u64 = 0;
-const FAULT: u64 = 1;
-const PROBE: u64 = 2;
-const DUPLICATE: u64 = 3;
-const INVALID_RETURN_STACK: u64 = 6;
-const INVALID_RETURN_FLAGS: u64 = 7;
-const READ_COUNTER: u64 = 8;
-const READ_KERNEL: u64 = 9;
-const RING_WAIT: u64 = 10;
-const THREAD_BASE: u64 = 11;
-const SYSCALL: u64 = 12;
-const MEMORY: u64 = 13;
-
-// Far above any call the kernel serves, so adding a call cannot make this one real.
-const UNSERVED: Call = Call::Unknown(0x0BAD_0BAD);
+const UNSERVED: Call = Call::Unknown(witness::UNSERVED_CALL);
 
 const TOKEN: u32 = 0x1234;
 
 const ECHOED: u64 = 0x00C0_FFEE;
-
-const AGREED: u64 = 0;
 
 const TIMER_NS: u64 = 1_000_000;
 

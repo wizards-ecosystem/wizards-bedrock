@@ -1,4 +1,5 @@
 use boot_record::Record;
+use native_abi::witness::behaviour;
 use wost::arch::current::paging::{AddressSpace, MapError};
 use wost::mm::PhysicalAddress;
 use x86_paging::PAGE_SIZE;
@@ -116,7 +117,5 @@ pub(crate) fn record_ending(ending: Record) {
 }
 
 pub(crate) fn run(context: &mut thread::ThreadContext) -> Result<Spawned, SpawnError> {
-    spawn(context, "user", 0, BEHAVE, 0)
+    spawn(context, "user", 0, behaviour::ECHO, 0)
 }
-
-const BEHAVE: u64 = 0;

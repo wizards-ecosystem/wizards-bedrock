@@ -2,6 +2,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 
 use boot_record::{Exit, Fault, Record};
+use native_abi::witness::{self, AGREED, behaviour};
 use world_tree::Status;
 use wost::arch::current::interrupt;
 use wost::arch::current::paging::AddressSpace;
@@ -16,8 +17,6 @@ use crate::process::Rites;
 use crate::thread::ThreadContext;
 use crate::{thread, time, user};
 
-const UNSERVED_CALL: usize = 0x0BAD_0BAD;
-
 pub(super) fn an_unserved_call_is_refused_without_stopping_the_machine(
     context: &mut ThreadContext,
 ) -> bool {
@@ -31,7 +30,7 @@ pub(super) fn an_unserved_call_is_refused_without_stopping_the_machine(
 
     exited
         && refused == refused_before + 1
-        && number == UNSERVED_CALL
+        && number as u64 == witness::UNSERVED_CALL
         && trap::last_user_fault().count == faults_before
 }
 
@@ -50,7 +49,7 @@ pub(super) fn a_faulting_program_dies_alone(context: &mut ThreadContext) -> bool
     let fault = trap::last_user_fault();
 
     // `rax` still holds the FAULT argument (1), which survives the dispatch to the `ud2`.
-    let this_child = fault.slot == spawned.slot && fault.rax == 1;
+    let this_child = fault.slot == spawned.slot && fault.rax == behaviour::FAULT;
     let it_was_the_ud2 = fault.vector == u64::from(exception::INVALID_OPCODE);
     let in_user_memory = fault.stack_pointer < usercopy::USER_END;
     let retired = last_rites_for(&spawned, 2_000).is_some();
@@ -61,8 +60,6 @@ pub(super) fn a_faulting_program_dies_alone(context: &mut ThreadContext) -> bool
 
 // `rax` still holds the argument only if the trapped `rdtsc` never retired.
 pub(super) fn a_direct_clock_read_retires_its_program(context: &mut ThreadContext) -> bool {
-    const READ_COUNTER: u64 = 8;
-
     let before = trap::last_user_fault();
     let Ok(spawned) = user::spawn_reading_the_counter(context) else {
         return false;
@@ -76,7 +73,7 @@ pub(super) fn a_direct_clock_read_retires_its_program(context: &mut ThreadContex
     }
     let fault = trap::last_user_fault();
 
-    let this_child = fault.slot == spawned.slot && fault.rax == READ_COUNTER;
+    let this_child = fault.slot == spawned.slot && fault.rax == behaviour::READ_COUNTER;
     let trapped = fault.vector == u64::from(exception::GENERAL_PROTECTION);
     let retired = last_rites_for(&spawned, 2_000).is_some();
 
@@ -190,8 +187,6 @@ pub(super) fn a_program_cannot_read_the_kernel(context: &mut ThreadContext) -> b
 
 // `syscall` is a closed door: it faults where it stands and the kernel is never entered.
 pub(super) fn a_syscall_instruction_never_enters_the_kernel(context: &mut ThreadContext) -> bool {
-    const SYSCALL: u64 = 12;
-
     let calls_before = trap::last_syscall().count;
     let faults_before = trap::last_user_fault().count;
     let Ok(spawned) = user::spawn_executing_syscall(context) else {
@@ -207,7 +202,7 @@ pub(super) fn a_syscall_instruction_never_enters_the_kernel(context: &mut Thread
     ended
         && fault.count > faults_before
         && fault.slot == spawned.slot
-        && fault.rax == SYSCALL
+        && fault.rax == behaviour::SYSCALL
         && trap::last_syscall().count == calls_before
 }
 
@@ -366,7 +361,7 @@ fn observed_once(spawned: &user::Spawned, status: Status) -> bool {
 
 // The witness exits 0 only when every answer it checked agreed.
 fn agreed(rites: &Rites) -> bool {
-    rites.ending == Some(Record::Exit(Exit { status: 0 }))
+    rites.ending == Some(Record::Exit(Exit { status: AGREED }))
 }
 
 pub(super) fn a_program_drives_its_own_ring(context: &mut ThreadContext) -> bool {

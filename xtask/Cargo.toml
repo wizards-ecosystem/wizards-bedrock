@@ -18,4 +18,5 @@ boot-record.workspace = true
 elf64.workspace = true
 fatfs.workspace = true
 fscommon.workspace = true
+native-abi.workspace = true
 panic-record.workspace = true

@@ -175,7 +175,8 @@ below `USER_END`, and `RFLAGS` with `IF` set and only user flags (no `NT`, `VM`,
 reserved bits). The flag stays clear until `iretq`, so ring 3 resumes exactly the image checked.
 A refused return calls `on_invalid_return`, which retires the program.
 
-Ring 3 enters the kernel only through vector `0x80`, the one DPL-3 gate.
+Ring 3 enters the kernel only through vector `0x80` (`native_abi::GATE_VECTOR`), the one DPL-3
+gate.
 `cpu::enable_protections` clears `EFER.SCE` and `IA32_SYSENTER_CS`, so `syscall` and `sysenter`
 fault, and `task::enter_user` refuses while either is set. The calls are in section 6.
 
@@ -584,8 +585,8 @@ is sampled up to eight times from the seed and a stored counter above 4 GiB and 
 end, then placed first fit, with no overlap; the stack keeps one unmapped page below it. No fixed
 user address remains in the ABI.
 
-The time page is mapped read-only at its placed address (`kernel/src/timepage.rs`, layout in
-`native_abi::timepage`). Version 2 holds constants written
+The time page is mapped read-only at its placed address (`kernel/src/timepage.rs`, layout and
+field widths in `native_abi::timepage`, whose `Constants::encode` writes the constants). Version 2 holds constants written
 before any mapping exists: version (`u32` at 0, value `2`), page size (`u32` at 4), mode (`u32` at
 8: `0` none, `1` normal), precision in nanoseconds (`u64` at 16) and generation (`u64` at 24, never
 0). One aligned `u64` at 64 holds world time in nanoseconds. Ring 3 cannot execute `rdtsc`, so the
@@ -638,7 +639,9 @@ behaviour: an `Echo` or a `Duplicate` through the ring, an unserved call, a faul
 kernel half, a direct counter read, an invalid return stack or flags, a read of the kernel-half
 address in the entry block's operand, `RingWait` idle and after a `Timer`, `ThreadBase` with a user
 base and with refused ones, or `syscall`, which faults with `#UD` because `EFER.SCE` is clear.
-Self-tests in `kernel/src/selftest/processes.rs` attribute each ending to its program. It checks
+The selectors, the unserved call number `0x0BAD_0BAD` and the agreement status are
+`native_abi::witness`, named by the witness, the self-tests and the gate. Self-tests in
+`kernel/src/selftest/processes.rs` attribute each ending to its program. It checks
 the entry block
 and ring versions, and it reports by how it ends: exit status 0 is agreement, a nonzero status
 names the first wrong answer, and a behaviour built to fault ends in that fault. It is a boundary

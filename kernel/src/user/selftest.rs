@@ -1,27 +1,18 @@
+use native_abi::witness::behaviour::{
+    DUPLICATE, ECHO, FAULT, INVALID_RETURN_FLAGS, INVALID_RETURN_STACK, MEMORY, PROBE,
+    READ_COUNTER, READ_KERNEL, RING_WAIT, SYSCALL, THREAD_BASE,
+};
 use wost::arch::current::usercopy;
 
-use super::{BEHAVE, SpawnError, Spawned, spawn};
+use super::{SpawnError, Spawned, spawn};
 use crate::thread::ThreadContext;
-
-// Arguments that select a behaviour of the witness `witness/ring3`.
-const FAULT: u64 = 1;
-const PROBE: u64 = 2;
-const DUPLICATE: u64 = 3;
-const INVALID_RETURN_STACK: u64 = 6;
-const INVALID_RETURN_FLAGS: u64 = 7;
-const READ_COUNTER: u64 = 8;
-const READ_KERNEL: u64 = 9;
-const RING_WAIT: u64 = 10;
-const THREAD_BASE: u64 = 11;
-const SYSCALL: u64 = 12;
-const MEMORY: u64 = 13;
 
 pub(crate) fn spawn_faulting(context: &mut ThreadContext) -> Result<Spawned, SpawnError> {
     spawn(context, "user-fault", 2, FAULT, 0)
 }
 
 pub(crate) fn spawn_for_bootstrap(context: &mut ThreadContext) -> Result<Spawned, SpawnError> {
-    spawn(context, "user-bootstrap", 3, BEHAVE, 0)
+    spawn(context, "user-bootstrap", 3, ECHO, 0)
 }
 
 pub(crate) fn spawn_probing(context: &mut ThreadContext) -> Result<Spawned, SpawnError> {

@@ -13,7 +13,7 @@ use native_abi::ring::{
     COMPLETION_BYTES, COMPLETIONS, COMPLETIONS_AT, Completion, ENTRIES_AT, SUBMISSION_BYTES,
     SUBMISSIONS, Submission, header,
 };
-use native_abi::{Call, entry};
+use native_abi::{Call, GATE_VECTOR, entry};
 
 const ALIGNMENT_CHECK: u64 = 1 << 18;
 
@@ -132,17 +132,18 @@ pub fn set_thread_base(word: &'static u64) -> u64 {
 // under alignment checking.
 fn gate(call: Call, argument: u64) -> u64 {
     let answer;
-    // SAFETY: `int 0x80` enters the kernel, which preserves every register but `rax` and writes
+    // SAFETY: the gate enters the kernel, which preserves every register but `rax` and writes
     // only memory it shares with the program; the flags are restored around it.
     unsafe {
         asm!(
             "pushfq",
             "or qword ptr [rsp], {set}",
             "popfq",
-            "int 0x80",
+            "int {gate}",
             "pushfq",
             "and qword ptr [rsp], {clear}",
             "popfq",
+            gate = const GATE_VECTOR,
             set = const ALIGNMENT_CHECK,
             clear = const !ALIGNMENT_CHECK.cast_signed(),
             inout("rax") call.number() => answer,
@@ -234,8 +235,9 @@ pub fn enter_with_noncanonical_stack(call: Call) -> ! {
     unsafe {
         asm!(
             "mov rsp, {stack}",
-            "int 0x80",
+            "int {gate}",
             "ud2",
+            gate = const GATE_VECTOR,
             stack = in(reg) NONCANONICAL,
             in("rax") call.number(),
             options(noreturn),
@@ -251,8 +253,9 @@ pub fn enter_with_nested_task(call: Call) -> ! {
             "pushfq",
             "or qword ptr [rsp], {nested}",
             "popfq",
-            "int 0x80",
+            "int {gate}",
             "ud2",
+            gate = const GATE_VECTOR,
             nested = const NESTED_TASK,
             in("rax") call.number(),
             options(noreturn),

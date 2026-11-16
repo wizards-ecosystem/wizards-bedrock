@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use native_abi::timepage::{NOW_NS, VERSION, constants, mode};
+use native_abi::timepage::{Constants, NOW_NS, mode};
 use ring_proto::SharedLayout;
 use wost::arch::current::paging::{AddressSpace, MapError};
 use wost::mm::{self, SharedRing, USegment};
@@ -58,23 +58,13 @@ impl WorldClock {
         } else {
             mode::NONE
         };
-        write(&mut page, constants::VERSION, &VERSION.to_le_bytes());
-        write(
-            &mut page,
-            constants::PAGE_BYTES,
-            &(PAGE_SIZE as u32).to_le_bytes(),
-        );
-        write(&mut page, constants::MODE, &mode.to_le_bytes());
-        write(
-            &mut page,
-            constants::PRECISION_NS,
-            &self.precision_ns.to_le_bytes(),
-        );
-        write(
-            &mut page,
-            constants::GENERATION,
-            &FIRST_GENERATION.to_le_bytes(),
-        );
+        let constants = Constants {
+            page_bytes: PAGE_SIZE as u32,
+            mode,
+            precision_ns: self.precision_ns,
+            generation: FIRST_GENERATION,
+        };
+        write(&mut page, 0, &constants.encode());
 
         self.origin_ns.store(time::now_ns(), Ordering::Release);
         *self.page.lock_leaf() = Some(Arc::new(page));

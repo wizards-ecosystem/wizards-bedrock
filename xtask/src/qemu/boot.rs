@@ -4,6 +4,7 @@ use std::time::Instant;
 
 use anyhow::{Context, Result, bail, ensure};
 use boot_record::{Exit, Fact, Processors as Online, Protections, Record};
+use native_abi::witness;
 
 use super::serial::{FULL_PROTECTIONS, Records, read_record, require_no_panic};
 use super::{Control, Event, Installation, Machine, Processors, Remapping};
@@ -30,7 +31,9 @@ const SHIPPED_REQUIRED: &[Record] = &[
     Record::Fact(Fact::KeyboardLinesMasked),
     Record::Fact(Fact::KeyboardPolled),
     // The boot witness is the shipped kernel's only program, and status 0 is its agreement.
-    Record::Exit(Exit { status: 0 }),
+    Record::Exit(Exit {
+        status: witness::AGREED,
+    }),
     Record::Processors(Online {
         online: Processors::Two.count(),
     }),

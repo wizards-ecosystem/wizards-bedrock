@@ -694,6 +694,7 @@ dependencies = [
  "elf64",
  "fatfs",
  "fscommon",
+ "native-abi",
  "panic-record",
 ]
 

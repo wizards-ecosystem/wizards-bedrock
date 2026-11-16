@@ -1,8 +1,9 @@
+use native_abi::GATE_VECTOR;
 use wost::arch::current::apic::Vectors;
 use x86_apic::vector::{Assignment, InterruptVector};
 
 // The timer sits clear of the legacy 0x20 to 0x2F range, so a leaked PIC line cannot pass for it.
-const SOURCES: [InterruptVector; 5] = match Assignment::new([0xff, 0xfe, 0x41, 0x80, 0x42]) {
+const SOURCES: [InterruptVector; 5] = match Assignment::new([0xff, 0xfe, 0x41, GATE_VECTOR, 0x42]) {
     Some(assignment) => assignment.into_array(),
     None => panic!("kernel interrupt-vector assignment is invalid"),
 };

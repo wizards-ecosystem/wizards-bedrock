@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail, ensure};
 use boot_record::{Exit, Fact, Record};
+use native_abi::witness;
 use panic_record::OPEN_PREFIX;
 
 use crate::cargo::Profile;
@@ -140,7 +141,9 @@ pub(crate) fn qualify(paths: &Paths, kernel: Kernel) -> Result<()> {
         Kernel::Shipped => {
             for record in [
                 Record::Fact(Fact::Settled),
-                Record::Exit(Exit { status: 0 }),
+                Record::Exit(Exit {
+                    status: witness::AGREED,
+                }),
             ] {
                 ensure!(
                     records.contains(&record),

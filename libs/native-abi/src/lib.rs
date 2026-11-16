@@ -13,6 +13,9 @@ pub use rights::Rights;
 
 const PAGE_BYTES: usize = 4096;
 
+// The interrupt vector of the call gate, ring 3's one way into the kernel.
+pub const GATE_VECTOR: u8 = 0x80;
+
 pub mod limits {
     // Registered buffers per process; index 0 is the data page.
     pub const BUFFERS: u32 = 16;
@@ -32,6 +35,30 @@ pub mod entry {
         pub const RING: usize = 32;
         pub const BUFFER: usize = 40;
         pub const TIME: usize = 48;
+    }
+}
+
+// The witness program's contract with the kernel that launches it and the gate that reads its exit.
+pub mod witness {
+    pub const AGREED: u64 = 0;
+
+    // Far above any call the kernel serves, so adding a call cannot make this one real.
+    pub const UNSERVED_CALL: u64 = 0x0BAD_0BAD;
+
+    // Entry-block arguments that pick a behaviour.
+    pub mod behaviour {
+        pub const ECHO: u64 = 0;
+        pub const FAULT: u64 = 1;
+        pub const PROBE: u64 = 2;
+        pub const DUPLICATE: u64 = 3;
+        pub const INVALID_RETURN_STACK: u64 = 6;
+        pub const INVALID_RETURN_FLAGS: u64 = 7;
+        pub const READ_COUNTER: u64 = 8;
+        pub const READ_KERNEL: u64 = 9;
+        pub const RING_WAIT: u64 = 10;
+        pub const THREAD_BASE: u64 = 11;
+        pub const SYSCALL: u64 = 12;
+        pub const MEMORY: u64 = 13;
     }
 }
 
