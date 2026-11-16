@@ -228,11 +228,8 @@ impl Entry {
         ensures
             match r {
                 Some((next, issued)) => self == Entry::Live(generation)
-                    && issued == generation + 1
-                    && issued < GENERATIONS
-                    && next == Entry::Live(issued)
-                    && next != Entry::Live(generation),
-                None => self != Entry::Live(generation) || generation + 1 >= GENERATIONS,
+                    && proof::renews(generation, issued, next),
+                None => self != Entry::Live(generation) || !proof::renewable(generation),
             },
     )]
     pub const fn renew(self, generation: u64) -> Option<(Self, u64)> {

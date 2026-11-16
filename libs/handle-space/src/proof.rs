@@ -76,6 +76,18 @@ pub open spec fn retires_rather_than_repeats(generation: u64, next: Entry) -> bo
     }
 }
 
+// Memory objects, Seal: the renewed entry is live under the next generation, never the old one.
+pub open spec fn renewable(generation: u64) -> bool {
+    generation + 1 < 0x1000_0000_0000
+}
+
+pub open spec fn renews(generation: u64, issued: u64, next: Entry) -> bool {
+    &&& renewable(generation)
+    &&& issued == generation + 1
+    &&& next == Entry::Live(issued)
+    &&& next != Entry::Live(generation)
+}
+
 pub open spec fn quota_live(bits: u64) -> u32 {
     (bits % 0x1_0000_0000) as u32
 }
