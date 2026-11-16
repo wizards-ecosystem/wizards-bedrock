@@ -238,9 +238,12 @@ number and is added here, as one entry or as an amending id on the entry it chan
 - **D-586** A started processor turns interrupts on only after it sees its own admission, and one
   never admitted waits with them off and no deadline, so it is never half in the online set.
 - **D-587** The `ran` boot record counts the processors that ran a thread other than their idle
-  one, reported by an idle thread because a switch cannot log, and again before the self-test verdict
-  and the settled fact; the gate requires every processor of
-  the two-processor self-test and shipped boots to have run one (amends D-575).
+  one, reported by the service worker because a switch cannot log (D-588), and again before the
+  self-test verdict and the settled fact; the gate requires every processor of the two-processor
+  self-test and shipped boots to have run one (amends D-575).
+- **D-588** The idle thread takes no thread lock and never logs: it runs only when nothing else
+  can, so a lock it held while preempted would wait for good while its waiters spin. It wakes the
+  service worker, which logs the reports calls and switches leave behind.
 
 ## Memory
 

@@ -14,7 +14,7 @@ mod selftest;
 
 #[cfg(feature = "selftest")]
 pub(crate) use call::refusals;
-pub(crate) use call::{call, report_execution, report_refusals};
+pub(crate) use call::{call, report, reports_pending};
 pub(crate) use construction::{SpawnError, spawn};
 pub(crate) use load::keep;
 #[cfg(feature = "selftest")]
