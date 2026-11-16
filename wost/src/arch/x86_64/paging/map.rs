@@ -358,6 +358,10 @@ impl AddressSpace {
         if flags.contains(Flags::USER) {
             return Err(MapError::NotYours(virtual_base));
         }
+        // The run stays writable through the direct map, so no alias of it may execute.
+        if !flags.contains(Flags::NO_EXECUTE) {
+            return Err(MapError::WriteExecute(virtual_base));
+        }
         self.owned_pages =
             self.map_owned_frames(virtual_base, run.address(), run.len(), run.frames(), flags)?;
         core::mem::forget(run);

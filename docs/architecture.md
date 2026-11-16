@@ -289,7 +289,8 @@ only zeros and the bytes the kernel writes afterwards. A `USegment` is zeroed ag
 frames return to the pool, and a run whose clear fails is withheld.
 
 `wost/src/arch/x86_64/paging.rs` owns every table write, over the encoding in `libs/x86-paging`.
-No mapping call takes a bare physical address: `map_owned` consumes allocator frames, `map_boot`
+No mapping call takes a bare physical address: `map_owned` consumes allocator frames and refuses
+to map them executable, `map_boot`
 takes a `BootRegion` the boot map covers, `map_device` takes an admitted device range and
 `map_user` takes a `USegment`, which it refuses to map executable. Executable user bytes come
 only as a `SealedSegment` through `map_user_sealed`, which refuses `WRITABLE`. Every path ends in
