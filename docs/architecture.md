@@ -185,6 +185,27 @@ owns the bitmap search, two bits per frame. Only memory the bootloader marks usa
 to a 16 GiB ceiling (`wost::mm::CEILING`); RAM above it is reported and ignored. Releasing a
 foreign or free frame is a visible refusal.
 
+Every managed frame has one 8-byte record (`libs/frame-space` `Record`, `wost/src/mm/table.rs`),
+carved at `mm::init` from the first contiguous run large enough. It names the owner (free, kernel,
+page table, device, or one arena with the frame's kind: object, data or table) and whether the
+frame is writable or sealed. Every allocation sets the record and every release checks and clears
+it, so a frame freed by the wrong path stops the kernel.
+
+A frame's cache colour is its frame number modulo the colour count, read once at `mm::init` from
+`CPUID` leaf 4 (leaf `0x8000_001D` on AMD) by `libs/x86-cpuid`. The allocator keeps free counts per
+colour and searches the bitmap under a colour mask. One leaf lock covers the bitmap, the pool and
+the arena nodes, so the counts always agree.
+
+Arenas (`wost/src/mm/pool.rs`) hold per-colour reservations, not frames. `pool::reserve_root`
+reserves all but a margin of each colour once, `pool::donate` moves reservation from a live parent
+to a new child whose mask lies within the parent's, and a refusal changes nothing. For each colour
+the unused reservations never exceed the free frames, so the kernel's own allocations take only
+unreserved frames and a reserved frame can always be taken. An operation calls `pool::earmark`
+first and then takes `ArenaFrame`s that cannot fail; each is zeroed when taken and when released.
+`pool::dissolve` walks the records in bounded steps, zeroes and frees the arena's frames, and
+returns its reservation to the heir. There are 256 nodes; a node's generation is in every
+`ArenaId`, and a node whose generation reaches the maximum is retired.
+
 The heap (`wost/src/mm/heap.rs`) addresses frames through the direct map. Requests up to 2048
 bytes go to eight slab classes from 16 bytes (`libs/slab-layout`); larger ones take whole frames.
 Slab frames are never returned. Nothing may allocate before `mem::init`, and the heap refuses to
@@ -200,9 +221,10 @@ frames return to the pool, and a run whose clear fails is withheld.
 `wost/src/arch/x86_64/paging.rs` owns every table write, over the encoding in `libs/x86-paging`.
 No mapping call takes a bare physical address: `map_owned` consumes allocator frames, `map_boot`
 takes a `BootRegion` the boot map covers, `map_device` takes an admitted device range and
-`map_user` takes a `USegment`. Every path ends in `map_range`, which refuses a writable and
-executable flag set and preflights the whole range, refusing it before any write unless every
-target is absent. `map_user` and the shared doors also refuse a range outside the user half in
+`map_user` takes a `USegment`, which it refuses to map executable. Executable user bytes come
+only as a `SealedSegment` through `map_user_sealed`, which refuses `WRITABLE`. Every path ends in
+`map_range`, which refuses a writable and executable flag set and preflights the whole range,
+refusing it before any write unless every target is absent. `map_user` and the shared doors also refuse a range outside the user half in
 every space. RAM mappings keep the direct map's
 write-back type.
 
@@ -218,9 +240,17 @@ afterwards, so every user root shares one kernel topology.
 
 The image is mapped by linker-symbol class, the entry enclave included. The direct map, at the
 bootloader's offset, covers usable memory, bootloader and module memory, and the framebuffer and
-ACPI memory in whole pages, and never reserved ranges or device holes. It uses 2 MiB pages
-wherever alignment allows,
-and the image's frames keep their class there, so no alias is writable and executable.
+ACPI memory in whole pages, and never reserved ranges or device holes. Usable memory is mapped
+with one 4 KiB leaf per frame and the rest with 2 MiB pages wherever alignment allows. Every
+direct-map leaf is non-executable, the image's frames included, and `activate` refuses a usable
+frame without its own 4 KiB writable leaf.
+
+W^X holds per frame. Sealing a frame (`USegment::seal`, `ArenaFrame::seal`) consumes its only
+handle, marks its record sealed and rewrites its direct-map leaf read-only, the one present entry
+that ever changes in place (`paging/direct.rs`). A sealed frame becomes writable again only when it
+is released: the record goes free first, then the leaf turns writable, then the frame is zeroed.
+Each change returns a `paging::Flush`; on one processor the change is invalidated locally before
+the token is made, so every token starts complete.
 
 | Address | What |
 |---|---|
@@ -232,8 +262,8 @@ and the image's frames keep their class there, so no alias is writable and execu
 
 Kernel stacks are 32 KiB above an unmapped 4 KiB guard, laid out by `libs/stack-layout` in an
 arena of sixteen slots (`kernel/src/thread.rs`); the boot thread and the double-fault stack use
-the same geometry. A stack inside the 2 MiB direct map cannot be guarded, which is why the boot
-thread leaves the bootloader's stack. Each `TSS` or switch write of a stack top re-walks that
+the same geometry. A stack inside the bootloader's 2 MiB direct map cannot be guarded, which is
+why the boot thread leaves the bootloader's stack. Each `TSS` or switch write of a stack top re-walks that
 stack's leaves in the loaded `CR3`. The entry enclave's two guard pages are protected the same
 way once the kernel's tables are live.
 

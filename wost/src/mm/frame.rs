@@ -206,6 +206,17 @@ pub(crate) fn release_sealed_run(segment: Segment, flush: &mut Flush) {
     );
 }
 
+/// # Safety
+///
+/// The caller must hold the only handle to frame `index`, and its direct-map leaf must be writable.
+pub(super) unsafe fn zero_frame(index: usize) {
+    let Some(base) = direct_map_pointer(frame_address(index)) else {
+        panic!("managed frame {index} has no direct-map address");
+    };
+    // SAFETY: the caller's sole handle makes this the only access, and its leaf is writable.
+    unsafe { core::ptr::write_bytes(base, 0, FRAME_SIZE as usize) };
+}
+
 fn allocate_owned(owner: Owner) -> Option<Frame> {
     let colours = colours();
     let mut frames = FRAMES.lock_leaf();

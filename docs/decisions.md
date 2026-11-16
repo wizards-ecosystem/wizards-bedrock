@@ -194,6 +194,24 @@ number and is added here, as one entry or as an amending id on the entry it chan
   covers memory only, in whole pages for framebuffer and firmware regions, at the bootloader's
   offset with 2 MiB pages, and the image is mapped by linker-symbol
   class so no page is writable and executable.
+- **D-476** Every managed frame has one 8-byte record naming its owner (free, kernel, page table,
+  device, or one arena with the frame's kind) and whether it is writable or sealed, in one table
+  carved from managed memory at `mm::init`. The record carries no reference count or owner list:
+  an arena's frames are exactly those whose record names it, so the invariant stays per frame and
+  teardown finds them by a bounded scan (amends D-43).
+- **D-477** Usable memory is direct-mapped with one 4 KiB leaf per frame and every direct-map leaf
+  is non-executable, so sealing a frame rewrites one leaf that every root shares and the image has
+  no executable alias. The page-table cost is one table frame per 2 MiB of usable memory (amends
+  D-45).
+- **D-478** A sealed frame is read-only in every mapping, the direct map included, and has no
+  unseal: it becomes writable only by being released, record first, then leaf, then zeroing.
+  Executable user memory is mapped only from a `SealedSegment`. Each direct-map change returns a
+  `paging::Flush`, the one token Phase 8's shootdown completes (amends D-12).
+- **D-479** An arena is a per-colour reservation, not a set of donated frames. The unused
+  reservations of each colour never exceed that colour's free frames, kernel allocations take only
+  unreserved frames, and an operation earmarks before it takes, so a reserved frame can always be
+  taken and a refused request changes nothing. Huge-page and contiguous needs are reserved
+  physically when they arrive.
 - **D-47** The kernel heap takes frames from the frame allocator and addresses them through the
   direct map: a slab allocator in `libs/slab-layout` with eight classes from 16 to 2048 bytes, whole
   frames above that, and slab frames never returned.

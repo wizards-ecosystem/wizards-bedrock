@@ -3,6 +3,7 @@ mod dma;
 mod firmware;
 mod frame;
 pub mod heap;
+pub mod pool;
 #[cfg(feature = "selftest")]
 mod selftest;
 mod shared;
@@ -35,15 +36,17 @@ pub(crate) const CEILING: u64 = 16 << 30;
 
 type Space = FrameSpace<{ words_for(CEILING) }>;
 
-// One leaf lock (rank `lock_order::LEAF`) keeps the bitmap and the reservations agreed.
+// One leaf lock (rank `lock_order::LEAF`) keeps the bitmap, the reservations and the nodes agreed.
 struct Frames {
     space: Space,
     pool: Pool,
+    nodes: pool::Nodes,
 }
 
 static FRAMES: SpinLock<Frames> = SpinLock::new(Frames {
     space: Space::new(),
     pool: Pool::new(),
+    nodes: pool::Nodes::new(),
 });
 
 // Zero until `init`, which reads the cache geometry once; every later call sees one count.

@@ -182,11 +182,10 @@ Phase 7:
 - A process is a thread slot in global by-slot arrays (`kernel/src/user.rs`,
   `kernel/src/user/reap.rs`, `kernel/src/user/construction.rs`), with no parent, exit status or
   child observation. Phase 7 needs a counted process object owned by its world.
-- Kernel memory comes from one frame bitmap with no owner or colour, one heap that never shrinks and
-  one handle arena behind one lock (`wost/src/mm.rs`, `wost/src/mm/heap.rs`,
-  `kernel/src/handle.rs`), so handle values reveal the shared arena's allocation order across
-  processes. Per-world arenas need frames that name their pool and colour, and a handle table per
-  process carved from its world's arena.
+- Kernel memory comes from one heap that never shrinks and one handle arena behind one lock
+  (`wost/src/mm/heap.rs`, `kernel/src/handle.rs`), so handle values reveal the shared arena's
+  allocation order across processes. Worlds need a handle table per process carved from their
+  arena (`wost/src/mm/pool.rs`), and user page tables taken as arena table frames.
 - Frame ownership lives in a page-table software bit, nothing changes a permission or unmaps a
   shared mapping, and spawn takes each segment as one contiguous run with no quota
   (`wost/src/arch/x86_64/paging.rs`, `kernel/src/user/load.rs`). Memory objects need objects that
@@ -194,8 +193,6 @@ Phase 7:
   sibling.
 - `DmaSegment::from` wraps a `Segment` without zeroing it, and each caller zeroes first
   (`wost/src/mm/dma.rs`). Memory a device reaches needs the same zeroing conversion as a `USegment`.
-- The direct map aliases kernel text as executable, so W^X holds per mapping and not per frame
-  (`kernel/src/mem.rs`). Write-then-seal needs W^X per frame.
 - The kernel parses ELF and loads one borrowed Limine module (`kernel/src/user/load.rs`,
   `wost/src/boot/limine_glue.rs`). The user-space loader replaces it and needs every module as owned
   frames; the kernel keeps its mapper checks.
