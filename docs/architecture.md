@@ -130,8 +130,9 @@ which copies the boot processor's PAT, loads the kernel root, its area and the I
 stack. There the processor sets its control state, enables the boot processor's protections,
 extended-state components and speculation controls, refusing any difference, puts its local APIC
 in x2APIC mode software-disabled, and runs the clock check (section 5). Only then does the boot
-processor admit it to the online set with `percpu::admit`. An admitted processor halts with
-interrupts off: it runs no thread, takes no part in scheduling and answers only the stop NMI. The
+processor admit it to the online set with `percpu::admit`. An admitted processor configures its
+own local APIC with the boot vectors, timer masked, and halts with interrupts on: it runs no thread,
+takes no part in scheduling and answers only the shootdown vector and the stop NMI. The
 online set is the boot processor and every admitted processor; building the first user root
 closes it. Its size is the `processors` boot record.
 
@@ -295,9 +296,12 @@ refusing it before any write unless every target is absent. `map_user` and the s
 every space. RAM mappings keep the direct map's
 write-back type.
 
-`unmap` returns a token that owns the frames until the TLB is flushed. Ownership of a mapped frame
-is page-table software bit 9 (`Flags::OWNED`), and large pages are never split. A clear executes
-`invlpg` only when a walk of the current `CR3` reaches that slot. `activate` walks the candidate
+`unmap` returns a token that owns the frames until the TLB is flushed everywhere. Ownership of a
+mapped frame is page-table software bit 9 (`Flags::OWNED`), and large pages are never split. Every
+entry is read and written as one atomic word, so a walk on one processor, the hardware walker and
+an update on another never tear. A clear executes `invlpg` when a walk of the current `CR3` reaches
+that slot, and then asks the other processors that may hold the translation through a shootdown
+(below). `activate` walks the candidate
 tables for its own code, stack, direct map and every framebuffer and firmware byte handed out at
 boot before writing `CR3`, and refuses while NX is off or a higher-half top-level entry is
 user-accessible. The kernel space is private to
@@ -316,8 +320,22 @@ W^X holds per frame. Sealing a frame (`USegment::seal`, `ArenaFrame::seal`) cons
 handle, marks its record sealed and rewrites its direct-map leaf read-only, the one present entry
 that ever changes in place (`paging/direct.rs`). A sealed frame becomes writable again only when it
 is released: the record goes free first, then the leaf turns writable, then the frame is zeroed.
-Each change returns a `paging::Flush`; on one processor the change is invalidated locally before
-the token is made, so every token starts complete.
+Each change returns a `paging::Flush`. A downgrade to read-only reaches every other online
+processor. A release back to writable needs none: a write through a stale read-only entry faults,
+and `paging::stale_kernel_write` finds the live leaf writable and resumes.
+
+A shootdown (`paging/flush.rs`) takes the next generation of one counter and sends the shootdown
+vector to its targets by APIC ID. A kernel-half change targets every other online processor. A
+user-half change targets the processors whose published loaded root is that space's. A processor
+publishes its root with a sequentially consistent store before the `CR3` load, and a clear fences
+before it reads the roots, so a processor that loads after the read walks the cleared entry. The
+handler in `wost` reloads `CR3`, a whole flush with PCID off, and records the newest generation
+through `libs/tlb-generation`'s `catch_up`. A `Flush` is complete once each target has recorded its
+generation. `Flush::wait` and the drop of an `Unmapped` wait only with interrupts on and no spin lock
+held; anywhere else they refuse by panic rather than release a frame or table early. With PCID off,
+a processor that loaded another root holds none of the space's translations, so leaving the space
+needs no record. Parked processors never load a user root, so they are never a user-half target;
+they take every kernel-half shootdown.
 
 | Address | What |
 |---|---|

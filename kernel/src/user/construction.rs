@@ -150,7 +150,7 @@ pub(crate) fn spawn(
     let mut place = |pages, guard| placer.place(pages, guard).ok_or(SpawnError::NoAddress);
     let stack_at = place(STACK_BYTES / PAGE_SIZE, 1)?;
     let (ring, data, time) = (place(1, 0)?, place(1, 0)?, place(1, 0)?);
-    let (entry, stack) = map_program(&mut construction, stack_at)?;
+    let (entry, stack) = map_program(context, &mut construction, stack_at)?;
     clock
         .install(construction.space()?, time)
         .map_err(SpawnError::NoTimePage)?;
@@ -288,10 +288,11 @@ fn admitted_space() -> Result<AddressSpace, SpawnError> {
 }
 
 fn map_program(
+    context: &mut thread::ThreadContext,
     construction: &mut ProcessConstruction,
     stack_at: u64,
 ) -> Result<(u64, u64), SpawnError> {
-    let image = load(construction.space()?).map_err(SpawnError::Load)?;
+    let image = load(context, construction.space()?).map_err(SpawnError::Load)?;
     construction.regions = image.regions;
 
     let stack = place_stack(construction.space()?, stack_at).ok_or(SpawnError::NoStack)?;

@@ -102,9 +102,10 @@ const CHECKS: &[Check] = &[
         "every submission gets exactly one completion",
         rings::every_submission_gets_exactly_one_completion,
     ),
-    ("the loader refuses what it may not map", |_| {
-        processes::the_loader_refuses_what_it_may_not_map()
-    }),
+    (
+        "the loader refuses what it may not map",
+        processes::the_loader_refuses_what_it_may_not_map,
+    ),
     ("thread local storage follows the thread", |_| {
         threads::thread_local_storage_follows_the_thread()
     }),

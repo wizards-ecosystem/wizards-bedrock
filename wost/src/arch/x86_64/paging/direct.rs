@@ -1,7 +1,7 @@
 use x86_paging::{CanonicalAddress, Entry, Flags, Level};
 
 use super::super::{cpu, interrupt};
-use super::{Flush, active_root, is_active, leaf_in};
+use super::{Flush, active_root, flush, is_active, leaf_in};
 use crate::mm::{self, PhysicalAddress};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -11,6 +11,8 @@ pub(crate) enum DirectAccess {
 }
 
 // Rewrites a managed frame's 4 KiB direct-map leaf, the one present entry that may change in place.
+// Only a downgrade needs other processors: a stale read-only entry faults and `stale_kernel_write`
+// resumes the write.
 pub(crate) fn set_direct_access(physical: PhysicalAddress, access: DirectAccess) -> Flush {
     assert!(
         is_active(),
@@ -40,5 +42,8 @@ pub(crate) fn set_direct_access(physical: PhysicalAddress, access: DirectAccess)
     slot.write(entry);
     cpu::invalidate_page(address);
     disabled.restore();
-    Flush::none()
+    match access {
+        DirectAccess::Writable => Flush::none(),
+        DirectAccess::ReadOnly => flush::shoot(flush::everywhere_else()),
+    }
 }

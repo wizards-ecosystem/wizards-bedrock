@@ -649,6 +649,7 @@ dependencies = [
  "ring-proto",
  "slab-layout",
  "stack-layout",
+ "tlb-generation",
  "trap-cause",
  "vtd",
  "x86-apic",

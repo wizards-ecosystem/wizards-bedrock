@@ -254,15 +254,15 @@ fn relocated(original: &[u8], address: u64) -> Vec<u8> {
     copy
 }
 
-fn refusal(bytes: &[u8]) -> Option<user::LoadError> {
+fn refusal(context: &mut ThreadContext, bytes: &[u8]) -> Option<user::LoadError> {
     let mut space = AddressSpace::for_user().ok()?;
-    let refused = user::load_image(&mut space, bytes).err();
+    let refused = user::load_image(context, &mut space, bytes).err();
     space.reclaim(None).ok()?;
     refused
 }
 
 // Code on the topmost user page could trap with a non-canonical return address.
-pub(super) fn the_loader_refuses_what_it_may_not_map() -> bool {
+pub(super) fn the_loader_refuses_what_it_may_not_map(context: &mut ThreadContext) -> bool {
     let Some(original) = user::image() else {
         return false;
     };
@@ -270,19 +270,19 @@ pub(super) fn the_loader_refuses_what_it_may_not_map() -> bool {
     write_execute[SEGMENT_FLAGS..SEGMENT_FLAGS + 4].copy_from_slice(&0b111u32.to_le_bytes());
 
     let write_execute_refused = matches!(
-        refusal(&write_execute),
+        refusal(context, &write_execute),
         Some(user::LoadError::WriteExecute(_))
     );
     let kernel_half_refused = matches!(
-        refusal(&relocated(original, 0xffff_8000_0000_0000)),
+        refusal(context, &relocated(original, 0xffff_8000_0000_0000)),
         Some(user::LoadError::NotUserMemory(_))
     );
     let topmost_refused = matches!(
-        refusal(&relocated(original, x86_paging::USER_MAPPING_END)),
+        refusal(context, &relocated(original, x86_paging::USER_MAPPING_END)),
         Some(user::LoadError::NotUserMemory(_))
     );
     let entry_refused = matches!(
-        refusal(&doctored(original, ELF_ENTRY, 0)),
+        refusal(context, &doctored(original, ELF_ENTRY, 0)),
         Some(user::LoadError::InvalidEntry(0))
     );
 

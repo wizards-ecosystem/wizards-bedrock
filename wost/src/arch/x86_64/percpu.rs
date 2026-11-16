@@ -1,6 +1,8 @@
 use core::arch::asm;
 use core::mem::offset_of;
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{
+    AtomicBool, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering,
+};
 
 use alloc::boxed::Box;
 use limine::mp::Cpu;
@@ -128,6 +130,11 @@ pub const NO_THREAD: usize = usize::MAX;
 #[derive(Debug)]
 pub(crate) struct PerCpu {
     pub(super) ledger: ExclusionLedger,
+    pub(super) apic_state: AtomicU8,
+    pub(super) eoi_claimed: AtomicBool,
+    index: usize,
+    flushed: AtomicU64,
+    loaded_root: AtomicU64,
     apic_id: AtomicU32,
     stopped: AtomicBool,
     next_online: AtomicPtr<Self>,
@@ -140,9 +147,14 @@ pub(crate) struct PerCpu {
 }
 
 impl PerCpu {
-    const fn new(task: usize, apic_id: u32) -> Self {
+    const fn new(task: usize, apic_id: u32, index: usize) -> Self {
         Self {
             ledger: ExclusionLedger::new(),
+            apic_state: AtomicU8::new(apic::COLD),
+            eoi_claimed: AtomicBool::new(false),
+            index,
+            flushed: AtomicU64::new(0),
+            loaded_root: AtomicU64::new(0),
             apic_id: AtomicU32::new(apic_id),
             stopped: AtomicBool::new(false),
             next_online: AtomicPtr::new(core::ptr::null_mut()),
@@ -170,6 +182,20 @@ impl PerCpu {
         );
     }
 
+    pub(super) fn flushed(&self) -> u64 {
+        self.flushed.load(Ordering::Acquire)
+    }
+
+    pub(super) fn record_flush(&self, generation: u64) {
+        self.flushed.fetch_max(generation, Ordering::AcqRel);
+    }
+
+    // Published before the root load, so an unmap that misses it is ordered before this walk.
+    pub(super) fn load_root(&self, user: Option<PhysicalAddress>) {
+        self.loaded_root
+            .store(user.map_or(0, PhysicalAddress::get), Ordering::SeqCst);
+    }
+
     pub(crate) fn held_ranks(&self) -> HeldRanks {
         HeldRanks::from_bits(self.held_ranks.load(Ordering::Relaxed))
     }
@@ -180,7 +206,7 @@ impl PerCpu {
 }
 
 // The boot processor runs before memory exists, so its block and first entry page are static.
-static BOOT_BLOCK: PerCpu = PerCpu::new(task::BOOT, 0);
+static BOOT_BLOCK: PerCpu = PerCpu::new(task::BOOT, 0, 0);
 
 // Every online processor's block, newest first; a block joins once and never leaves.
 static ONLINE: AtomicPtr<PerCpu> = AtomicPtr::new(core::ptr::null_mut());
@@ -399,6 +425,38 @@ pub fn online_count() -> usize {
     online().count()
 }
 
+fn bit(block: &PerCpu) -> u64 {
+    1 << block.index
+}
+
+fn others_where(keep: impl Fn(&PerCpu) -> bool) -> u64 {
+    let me = core::ptr::from_ref(current());
+    online()
+        .filter(|block| !core::ptr::eq(*block, me) && keep(block))
+        .fold(0, |set, block| set | bit(block))
+}
+
+pub(super) fn others() -> u64 {
+    others_where(|_| true)
+}
+
+pub(super) fn others_running(root: PhysicalAddress) -> u64 {
+    others_where(|block| block.loaded_root.load(Ordering::SeqCst) == root.get())
+}
+
+// The processors in `set` that have not yet flushed for `generation`.
+pub(super) fn behind(set: u64, generation: u64) -> u64 {
+    online()
+        .filter(|block| set & bit(block) != 0 && block.flushed() < generation)
+        .fold(0, |lagging, block| lagging | bit(block))
+}
+
+pub(super) fn send_shootdown(set: u64) {
+    for block in online().filter(|block| set & bit(block) != 0) {
+        apic::send_shootdown(block.apic_id.load(Ordering::Relaxed));
+    }
+}
+
 pub type ApplicationEntry = fn(usize) -> !;
 
 // Read by the started processor only, after the bootloader hands it `extra`.
@@ -435,7 +493,12 @@ pub fn start_processor(
         return Err(MapError::Inactive(cpu::page_table_base()));
     }
     let index = CLAIMED.load(Ordering::Acquire) & !FROZEN;
-    let block: &'static PerCpu = Box::leak(Box::new(PerCpu::new(NO_THREAD, waiting.apic_id())));
+    // Flush tokens name processors by one bit of a word each.
+    if index >= u64::BITS as usize {
+        return Err(MapError::Conflict(area_base(index)));
+    }
+    let block: &'static PerCpu =
+        Box::leak(Box::new(PerCpu::new(NO_THREAD, waiting.apic_id(), index)));
     let area = map_area(space, index, block)?;
     let stack = stack.retain()?;
     let launch = Box::leak(Box::new(Launch {

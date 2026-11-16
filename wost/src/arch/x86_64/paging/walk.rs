@@ -1,9 +1,10 @@
 use core::ptr::NonNull;
+use core::sync::atomic::{AtomicU64, Ordering, fence};
 
 use x86_paging::{CanonicalAddress, ENTRIES, Entry, Flags, Level, PAGE_SIZE};
 
 use super::super::{cpu, interrupt};
-use super::{AddressSpaceRoots, MapError, is_active};
+use super::{AddressSpaceRoots, Flush, MapError, flush, is_active, is_user_address};
 use crate::mm::{self, PhysicalAddress};
 
 #[derive(PartialEq, Eq, Debug)]
@@ -11,17 +12,21 @@ pub(super) struct EntrySlot {
     pointer: NonNull<Entry>,
 }
 
+// Atomic, so a walk on one processor never tears against an update on another or the walker.
 impl EntrySlot {
-    pub(super) fn read(&self) -> Entry {
+    fn word(&self) -> &AtomicU64 {
         // SAFETY: only tables this crate built, or the bootloader's while its root is loaded, are
-        // walked, and construction proves this aligned pointer names one entry of that frame.
-        unsafe { self.pointer.as_ptr().read_volatile() }
+        // walked; construction proves this pointer names one aligned entry of that live frame, and
+        // every software access to an entry goes through this atomic, as the walker's are locked.
+        unsafe { AtomicU64::from_ptr(self.pointer.as_ptr().cast()) }
+    }
+
+    pub(super) fn read(&self) -> Entry {
+        Entry::from_bits(self.word().load(Ordering::Relaxed))
     }
 
     pub(super) fn write(&self, entry: Entry) {
-        // SAFETY: as `read`, and every writer holds the owning `AddressSpace` mutably or the frame
-        // before any root links it, so no other write races this one.
-        unsafe { self.pointer.as_ptr().write_volatile(entry) };
+        self.word().store(entry.bits(), Ordering::Relaxed);
     }
 }
 
@@ -64,7 +69,14 @@ pub(super) fn leaf_in(root: PhysicalAddress, address: u64) -> Result<EntrySlot, 
         .ok_or(MapError::NotMapped(address))
 }
 
-pub(super) fn clear_mapping_slot(slot: EntrySlot, address: u64, level: Level) {
+// A user-half clear reaches the processors running `roots`; a kernel-half one every other one.
+#[must_use = "a translation of the cleared entry may survive until the flush completes"]
+pub(super) fn clear_mapping_slot(
+    slot: EntrySlot,
+    address: u64,
+    level: Level,
+    roots: AddressSpaceRoots,
+) -> Flush {
     let Some(address) = CanonicalAddress::new(address) else {
         panic!("a validated mapping produced a noncanonical invalidation address");
     };
@@ -75,6 +87,13 @@ pub(super) fn clear_mapping_slot(slot: EntrySlot, address: u64, level: Level) {
         cpu::invalidate_page(address);
     }
     disabled.restore();
+    // Ordered against a root load's published identity, so a joining processor is seen or walks after.
+    fence(Ordering::SeqCst);
+    flush::shoot(if is_user_address(address.get()) {
+        flush::running(roots.full_root())
+    } else {
+        flush::everywhere_else()
+    })
 }
 
 pub(super) fn current_mapping_root(recorded: AddressSpaceRoots) -> Option<PhysicalAddress> {
@@ -407,4 +426,31 @@ pub(super) fn visit_present_leaves(
         }
     }
     Ok(())
+}
+
+// A write fault through a read-only entry another processor already upgraded: drop it and resume.
+#[must_use = "a refused fault is a real one"]
+pub fn stale_kernel_write(frame: &interrupt::TrapFrame) -> bool {
+    const PRESENT: u64 = 1 << 0;
+    const WRITE: u64 = 1 << 1;
+    const USER: u64 = 1 << 2;
+
+    let address = cpu::faulting_address();
+    if frame.is_from_user()
+        || frame.error_code() & (PRESENT | WRITE | USER) != PRESENT | WRITE
+        || is_user_address(address)
+        || !is_active()
+    {
+        return false;
+    }
+    let Some(canonical) = CanonicalAddress::new(address) else {
+        return false;
+    };
+    match translate_in(cpu::page_table_base(), address) {
+        Some((_, flags)) if flags.contains(Flags::WRITABLE) => {
+            cpu::invalidate_page(canonical);
+            true
+        }
+        _ => false,
+    }
 }

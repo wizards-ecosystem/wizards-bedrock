@@ -200,7 +200,8 @@ impl AddressSpace {
             let Ok(slot) = leaf_in(self.root(), address) else {
                 panic!("a preflighted device leaf disappeared");
             };
-            clear_mapping_slot(slot, address, Level::Pt);
+            // Under the kernel's space lock this refuses rather than wait (see `Flush::settle`).
+            clear_mapping_slot(slot, address, Level::Pt, self.roots()).settle();
         }
         let Some(slot) = self.devices.get_mut(mapping.device_slot) else {
             panic!("a preflighted device ledger slot disappeared");

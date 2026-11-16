@@ -7,6 +7,7 @@ use trap_cause::TrapCause;
 use wost::arch::current::apic;
 use wost::arch::current::cpu;
 use wost::arch::current::interrupt::{self, TrapFrame, UserEntry, UserRegisters};
+use wost::arch::current::paging;
 use wost::arch::current::usercopy;
 
 use super::vector;
@@ -88,6 +89,8 @@ fn on_trap(frame: &TrapFrame) {
             apic::error_status(),
             frame.instruction_pointer()
         ),
+
+        TrapCause::Fault(trap_cause::Fault::PageFault(_)) if paging::stale_kernel_write(frame) => {}
 
         TrapCause::Fault(trap_cause::Fault::PageFault(fault))
             if usercopy::recover(frame, fault) =>

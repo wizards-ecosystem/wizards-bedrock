@@ -60,10 +60,11 @@ impl AddressSpace {
         }
         let base = first.ok_or(MapError::NotMapped(virtual_base))?;
 
+        let mut flush = Flush::none();
         for page in 0..pages {
             let address = virtual_base + page * PAGE_SIZE;
             let slot = leaf_in(self.root(), address)?;
-            clear_mapping_slot(slot, address, Level::Pt);
+            flush.merge(clear_mapping_slot(slot, address, Level::Pt, self.roots()));
         }
         self.owned_pages = remaining_owned;
 
@@ -74,6 +75,7 @@ impl AddressSpace {
             // names it now that its leaf is cleared.
             frames: ManuallyDrop::new(unsafe { Segment::from_raw(base, pages as usize) }),
             was_user,
+            flush,
         })
     }
 
@@ -204,7 +206,7 @@ impl AddressSpace {
             let slot = self
                 .slot_at(virtual_address, level)
                 .unwrap_or_else(|reason| panic!("mapping rollback lost a written leaf: {reason}"));
-            clear_mapping_slot(slot, virtual_address, level);
+            clear_mapping_slot(slot, virtual_address, level, self.roots()).settle();
             offset += level.span();
         }
     }
@@ -257,10 +259,18 @@ impl AddressSpace {
                     "mapping rollback found a divergent paired table link"
                 );
             }
-            clear_mapping_slot(parent, owned.virtual_address, owned.level);
+            let mut flush =
+                clear_mapping_slot(parent, owned.virtual_address, owned.level, self.roots());
             if let Some(paired) = paired {
-                clear_mapping_slot(paired, owned.virtual_address, owned.level);
+                flush.merge(clear_mapping_slot(
+                    paired,
+                    owned.virtual_address,
+                    owned.level,
+                    self.roots(),
+                ));
             }
+            // A walk cached on another processor could still reach the table being freed.
+            flush.settle();
             // SAFETY: `take_owned_table` forgot exactly this allocation, and
             // the only page-table link to it is now absent.
             drop(unsafe { mm::Frame::from_raw(owned.frame) });
@@ -614,6 +624,7 @@ pub struct Unmapped {
     pages: u64,
     frames: ManuallyDrop<Segment>,
     was_user: bool,
+    flush: Flush,
 }
 
 impl Unmapped {
@@ -624,6 +635,8 @@ impl Unmapped {
 
 impl Drop for Unmapped {
     fn drop(&mut self) {
+        // No frame returns to its pool while a processor may still reach it.
+        core::mem::replace(&mut self.flush, Flush::none()).settle();
         if mm::is_sealed(&self.frames) {
             // SAFETY: this is the one move out of `frames`, and nothing reads the field after it.
             let frames = unsafe { ManuallyDrop::take(&mut self.frames) };

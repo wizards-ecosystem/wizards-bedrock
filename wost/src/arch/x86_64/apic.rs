@@ -16,14 +16,25 @@ use x86_apic::version::Version;
 use super::cpu;
 use super::interrupt::{self, TrapFrame};
 use super::msr;
+use super::percpu;
 
-static STATE: AtomicU8 = AtomicU8::new(Lifecycle::Cold.bits());
+pub(super) const COLD: u8 = Lifecycle::Cold.bits();
+
+fn state() -> &'static AtomicU8 {
+    &percpu::current().apic_state
+}
+
+fn eoi_claimed() -> &'static AtomicBool {
+    &percpu::current().eoi_claimed
+}
+
+static ERROR_VECTOR: AtomicU8 = AtomicU8::new(0);
+
+static SHOOTDOWN_VECTOR: AtomicU8 = AtomicU8::new(0);
 
 static TIMER_VECTOR: AtomicU8 = AtomicU8::new(0);
 
 static SPURIOUS_VECTOR: AtomicU8 = AtomicU8::new(0);
-
-static EOI_CLAIMED: AtomicBool = AtomicBool::new(false);
 
 const ACCEPT_EVERYTHING: u64 = 0;
 
@@ -92,6 +103,7 @@ pub struct Vectors {
     pub spurious: InterruptVector,
     pub error: InterruptVector,
     pub timer: InterruptVector,
+    pub shootdown: InterruptVector,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -136,7 +148,7 @@ impl fmt::Debug for EoiToken<'_> {
 
 impl Drop for EoiToken<'_> {
     fn drop(&mut self) {
-        EOI_CLAIMED.store(false, Ordering::Release);
+        eoi_claimed().store(false, Ordering::Release);
         if let Some(interrupts) = self.interrupts.take() {
             interrupts.restore();
         }
@@ -176,7 +188,7 @@ pub fn init(vectors: Vectors) -> Result<Local, InitError> {
         return Err(InitError::NoExtendedMode);
     }
     let interrupts = interrupt::disable();
-    if let Err(state) = STATE.compare_exchange(
+    if let Err(state) = state().compare_exchange(
         Lifecycle::Cold.bits(),
         Lifecycle::Initializing.bits(),
         Ordering::AcqRel,
@@ -191,7 +203,7 @@ pub fn init(vectors: Vectors) -> Result<Local, InitError> {
     } else {
         Lifecycle::Poisoned
     };
-    STATE.store(settled.bits(), Ordering::Release);
+    state().store(settled.bits(), Ordering::Release);
     interrupts.restore();
     outcome
 }
@@ -231,6 +243,8 @@ fn configure(vectors: Vectors, error: Entry, spurious: Spurious) -> Result<Local
 
     TIMER_VECTOR.store(vectors.timer.get(), Ordering::Relaxed);
     SPURIOUS_VECTOR.store(vectors.spurious.get(), Ordering::Relaxed);
+    ERROR_VECTOR.store(vectors.error.get(), Ordering::Relaxed);
+    SHOOTDOWN_VECTOR.store(vectors.shootdown.get(), Ordering::Release);
 
     Ok(Local {
         id: low_u32(registers.read(register::ID)),
@@ -280,7 +294,7 @@ pub fn claim_eoi(frame: &TrapFrame, vector: InterruptVector) -> Option<EoiToken<
         return None;
     }
     let interrupts = interrupt::disable();
-    if EOI_CLAIMED
+    if eoi_claimed()
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
     {
@@ -288,7 +302,7 @@ pub fn claim_eoi(frame: &TrapFrame, vector: InterruptVector) -> Option<EoiToken<
         return None;
     }
     if interrupt::are_enabled() || !interrupt::is_live_frame(frame) || !owns_in_service(vector) {
-        EOI_CLAIMED.store(false, Ordering::Release);
+        eoi_claimed().store(false, Ordering::Release);
         interrupts.restore();
         return None;
     }
@@ -363,29 +377,46 @@ pub fn error_status() -> u32 {
     low_u32(read(register::ERROR_STATUS))
 }
 
-// A parked processor: x2APIC mode, software-disabled, so every local source stays masked while
-// an NMI from another processor still arrives.
-pub fn join() -> Result<u32, InitError> {
-    if !cpu::has_local_apic() {
-        return Err(InitError::Absent);
-    }
-    if !cpu::has_x2apic() {
-        return Err(InitError::NoExtendedMode);
-    }
-    let (_, registers) = enter_extended_mode()?;
-    registers.write(register::SPURIOUS_INTERRUPT_VECTOR, 0);
-    if Spurious::from_bits(low_u32(registers.read(register::SPURIOUS_INTERRUPT_VECTOR)))
-        .is_enabled()
-    {
-        return Err(InitError::NotResponding);
-    }
-    Ok(low_u32(registers.read(register::ID)))
+// Another processor configures its own APIC with the boot processor's vectors; its timer stays masked.
+pub fn join() -> Result<Local, InitError> {
+    let vector = |source: &AtomicU8| {
+        InterruptVector::new(source.load(Ordering::Acquire)).ok_or(InitError::NotResponding)
+    };
+    init(Vectors {
+        spurious: vector(&SPURIOUS_VECTOR)?,
+        error: vector(&ERROR_VECTOR)?,
+        timer: vector(&TIMER_VECTOR)?,
+        shootdown: vector(&SHOOTDOWN_VECTOR)?,
+    })
 }
 
-// Every processor that can send this entered x2APIC mode: the boot one in `init`, the rest in `join`.
+// A sender's own lifecycle is the proof that its APIC is in x2APIC mode.
 pub(crate) fn send_stop(destination: u32) {
     if let Some(registers) = ready_registers() {
         registers.write(register::INTERRUPT_COMMAND, ipi::non_maskable(destination));
+    }
+}
+
+pub(super) fn send_shootdown(destination: u32) {
+    let Some(vector) = InterruptVector::new(SHOOTDOWN_VECTOR.load(Ordering::Acquire)) else {
+        return;
+    };
+    if let Some(registers) = ready_registers() {
+        registers.write(register::INTERRUPT_COMMAND, ipi::fixed(destination, vector));
+    }
+}
+
+pub(super) fn is_shootdown(vector: u8) -> bool {
+    vector != 0 && vector == SHOOTDOWN_VECTOR.load(Ordering::Acquire)
+}
+
+// The handler ran with interrupts off, so its in-service bit is still the highest one set.
+pub(super) fn end_shootdown() {
+    let Some(vector) = InterruptVector::new(SHOOTDOWN_VECTOR.load(Ordering::Acquire)) else {
+        return;
+    };
+    if owns_in_service(vector) {
+        write(register::END_OF_INTERRUPT, 0);
     }
 }
 
@@ -451,7 +482,7 @@ impl Registers {
 }
 
 fn ready_registers() -> Option<Registers> {
-    lifecycle_from(STATE.load(Ordering::Acquire))
+    lifecycle_from(state().load(Ordering::Acquire))
         .is_ready()
         .then_some(Registers)
 }

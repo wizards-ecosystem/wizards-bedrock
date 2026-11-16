@@ -6,6 +6,7 @@ use wost::sync::{Leaf, SpinLock};
 use x86_paging::{Flags, PAGE_SIZE};
 
 use super::{Regions, STACK_BYTES};
+use crate::thread::ThreadContext;
 use crate::{info, warn};
 
 pub(super) fn place_stack(space: &mut AddressSpace, at: u64) -> Option<u64> {
@@ -103,9 +104,12 @@ impl core::fmt::Display for LoadError {
 
 impl core::error::Error for LoadError {}
 
-pub(super) fn load(space: &mut AddressSpace) -> Result<LoadedImage, LoadError> {
+pub(super) fn load(
+    context: &mut ThreadContext,
+    space: &mut AddressSpace,
+) -> Result<LoadedImage, LoadError> {
     let bytes = (*IMAGE.lock_leaf()).ok_or(LoadError::Missing)?;
-    load_image(space, bytes)
+    load_image(context, space, bytes)
 }
 
 #[derive(Debug)]
@@ -115,7 +119,12 @@ pub(crate) struct LoadedImage {
 }
 
 // Written, then sealed if executable, then mapped, so no frame is ever writable and executable.
-fn place(space: &mut AddressSpace, bytes: &[u8], placement: &Placement) -> Result<(), LoadError> {
+fn place(
+    context: &mut ThreadContext,
+    space: &mut AddressSpace,
+    bytes: &[u8],
+    placement: &Placement,
+) -> Result<(), LoadError> {
     let run = mm::allocate_contiguous(placement.pages, 1).ok_or(LoadError::OutOfMemory)?;
     let mut run = USegment::zeroed(run).ok_or(LoadError::OutOfMemory)?;
     let Some(contents) = bytes.get(placement.from..placement.from + placement.len) else {
@@ -131,10 +140,8 @@ fn place(space: &mut AddressSpace, bytes: &[u8], placement: &Placement) -> Resul
     }
     let mut flush = Flush::none();
     let sealed = run.seal(&mut flush);
-    assert!(
-        flush.is_complete(),
-        "sealing a program's code left a writable translation"
-    );
+    // No processor may keep a writable translation of code it could later run.
+    flush.wait(context);
     space
         .map_user_sealed(placement.at, sealed, placement.flags)
         .map_err(LoadError::NotMapped)
@@ -157,7 +164,11 @@ struct Placement {
     flags: Flags,
 }
 
-pub(crate) fn load_image(space: &mut AddressSpace, bytes: &[u8]) -> Result<LoadedImage, LoadError> {
+pub(crate) fn load_image(
+    context: &mut ThreadContext,
+    space: &mut AddressSpace,
+    bytes: &[u8],
+) -> Result<LoadedImage, LoadError> {
     let elf = Elf::parse(bytes).map_err(LoadError::NotAnElf)?;
 
     let mut placements = [None; MAX_SEGMENTS];
@@ -249,7 +260,7 @@ pub(crate) fn load_image(space: &mut AddressSpace, bytes: &[u8]) -> Result<Loade
 
     let mut regions = Regions::new();
     for placement in placements.iter().flatten() {
-        if let Err(reason) = place(space, bytes, placement) {
+        if let Err(reason) = place(context, space, bytes, placement) {
             // Validation cannot rule out a frame shortage or a collision: undo what was mapped.
             if let Err(refusal) = regions.unmap(space) {
                 return Err(LoadError::Rollback {

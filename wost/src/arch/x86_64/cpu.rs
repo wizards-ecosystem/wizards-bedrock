@@ -694,7 +694,7 @@ pub fn smt_bits() -> u32 {
     }
 }
 
-fn reload_page_table() {
+pub(super) fn reload_page_table() {
     let root = page_table_base();
     // SAFETY: `root` is the table the processor is executing through now, so reloading it keeps
     // the live mappings and flushes their non-global translations.

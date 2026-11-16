@@ -713,6 +713,11 @@ extern "C" fn dispatch(raw: *mut RawTrapFrame) {
 }
 
 fn trap(handlers: &Handlers, frame: &TrapFrame) {
+    if super::apic::is_shootdown(frame.vector()) {
+        super::paging::answer_shootdown();
+        super::apic::end_shootdown();
+        return;
+    }
     let here = percpu::current();
     here.trap_depth.fetch_add(1, Ordering::Relaxed);
     // Swapped so a nested trap restores its outer frame on the way out.

@@ -193,6 +193,19 @@ number and is added here, as one entry or as an amending id on the entry it chan
 - **D-575** The gate's release self-test and shipped boot run on two QEMU processors and require
   the `processors` boot record to count both, the debug self-test and the degraded boots run on
   one, and the VMware machines have four virtual CPUs.
+- **D-576** Page-table entries are atomic words. A shootdown takes one global generation, sends a
+  fixed vector by APIC ID to every other online processor for a kernel-half change and to the
+  processors whose published root is the space's for a user-half one, and each target answers
+  with a whole flush, so a `Flush` completes when every target recorded its generation. One
+  generation and a published root suffice while PCID is off; per-space generations and slots come
+  with PCID (U8).
+- **D-577** A direct-map upgrade to writable sends no shootdown; a write through the stale entry
+  faults and the kernel's fault path resumes it when the live leaf is writable. A wait for a
+  shootdown happens only with interrupts on and no spin lock held, and a drop that cannot wait
+  refuses by panic, never by releasing a frame or table early.
+- **D-578** The local APIC's lifecycle and EOI claim are per processor. A parked processor
+  configures its own APIC with the boot vectors, timer masked, and halts with interrupts on, so it
+  answers kernel-half shootdowns; it never loads a user root.
 
 ## Memory
 

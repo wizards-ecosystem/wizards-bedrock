@@ -2,7 +2,7 @@ use core::sync::atomic::{AtomicU8, Ordering};
 
 use boot_record::{Processors as Online, Record};
 use stack_layout::StackLayout;
-use wost::arch::current::{apic, cpu, percpu, xstate};
+use wost::arch::current::{apic, cpu, interrupt, percpu, xstate};
 use wost::boot::{HandoffError, Processors};
 use wost::sync::{Leaf, SpinLock};
 
@@ -170,7 +170,14 @@ fn application(index: usize) -> ! {
     let forward = time::counter_steps_forward(STEP_ROUNDS);
     let verdict = if matches && forward { PASSED } else { REFUSED };
     STAGES[index].store(verdict, Ordering::Release);
-    cpu::halt_forever()
+    if verdict == REFUSED {
+        cpu::halt_forever();
+    }
+    // Online, it may hold kernel translations, so it takes the shootdown vector and nothing else.
+    interrupt::enable();
+    loop {
+        cpu::halt();
+    }
 }
 
 fn matches_boot_processor() -> bool {

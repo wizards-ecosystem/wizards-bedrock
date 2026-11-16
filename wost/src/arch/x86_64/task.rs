@@ -360,6 +360,7 @@ fn prepare(slot: usize, leaving: State) -> Result<(*mut u64, u64), TaskError> {
     } else {
         restore_ordinary_entry(&table, slot);
     }
+    percpu::current().load_root(roots.map(AddressSpaceRoots::full_root));
     if wanted != cpu::page_table_base() {
         // SAFETY: `bind_address_space` matched the higher half to the kernel root, frozen at
         // activation so device maps stay under shared entries; IF is clear and the lock held.

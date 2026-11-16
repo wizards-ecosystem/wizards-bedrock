@@ -214,12 +214,11 @@ Phase 8:
   (`kernel/src/thread.rs`). Phase 8 needs an on-CPU flag the next thread clears.
 - There is one run queue and one idle thread (`kernel/src/thread.rs`). Phase 8 needs per-CPU queues
   and timers.
-- There is no TLB shootdown: invalidation and "is this root loaded" ask only this CPU, and the
-  user-copy page walk can go stale under a concurrent unmap (`wost/src/arch/x86_64/paging/walk.rs`,
-  `wost/src/arch/x86_64/usercopy.rs`).
-- Other processors start only to park: they run no thread, and the local APIC's lifecycle, timer
-  and EOI claim are one each (`kernel/src/processors.rs`, `wost/src/arch/x86_64/apic.rs`). Phase 8
-  needs a per-CPU APIC state, an idle thread per processor and a fixed-vector IPI to wake one.
+- A kernel-space unmap or rollback under the kernel's space spin lock cannot wait for its
+  shootdown, so once another processor is online it refuses by panic (`wost/src/arch/x86_64/paging/`
+  `{map,device}.rs`, `kernel/src/mem.rs`). Phase 8 needs those waits moved outside the lock.
+- Other processors start only to park: they run no thread (`kernel/src/processors.rs`). Phase 8
+  needs an idle thread per processor and a reschedule vector to wake one.
 
 Phase 9:
 - One VT-d unit, one domain and one function (`wost/src/arch/x86_64/vtd.rs`, `kernel/src/iommu.rs`).

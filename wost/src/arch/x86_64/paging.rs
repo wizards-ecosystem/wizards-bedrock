@@ -18,9 +18,11 @@ pub use device::{
 pub(crate) use direct::{DirectAccess, set_direct_access};
 pub use error::{ActivateError, MapError, ReclaimError, ReclaimFailure, UserMapError};
 pub use flush::Flush;
+pub(crate) use flush::answer as answer_shootdown;
 pub use map::{BootRegion, Unmapped};
 pub(crate) use stack::{KernelStackTop, TaskStackPin};
 pub use stack::{MappedStack, PinnedStack, StackArena};
+pub use walk::stale_kernel_write;
 pub use walk::translate;
 
 use alloc::vec::Vec;
