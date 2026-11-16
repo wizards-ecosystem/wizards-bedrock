@@ -5,12 +5,11 @@ use wost::arch::current::pci as platform_pci;
 use crate::{devfs, fs, info, interrupts, iommu, mem, nvme, pci, thread, tmpfs, vfs, warn};
 
 pub(crate) fn survey_the_bus(
+    context: &mut thread::ThreadContext,
     dma_non_requester: Option<pci_config::QualifiedNonRequester>,
     dma_quiesced: Option<pci_config::QuiescedIsaRequester>,
 ) {
-    let early_boundary = thread::ThreadContext::claim()
-        .is_some_and(|mut context| iommu::establish_fabric_boundary(&mut context));
-    if !early_boundary {
+    if !iommu::establish_fabric_boundary(context) {
         warn!("iommu: no early default-deny PCI boundary; storage and interrupts stay closed");
     }
 
@@ -25,7 +24,7 @@ pub(crate) fn survey_the_bus(
         if function.class.is_nvme() {
             storage += 1;
             if matches!(selection, Selection::Seeking) {
-                selection = try_controller(function.at, storage);
+                selection = try_controller(context, function.at, storage);
             }
         }
     });
@@ -106,18 +105,20 @@ impl CandidateStage {
 }
 
 // Each stage returns its owners here, so one stage frame at a time sits on the boot stack.
-fn try_controller(at: pci_config::Address, ordinal: usize) -> Selection {
-    let mut context = thread::ThreadContext::require();
-
-    let mut stage = claim_candidate(at, ordinal, &mut context);
+fn try_controller(
+    context: &mut thread::ThreadContext,
+    at: pci_config::Address,
+    ordinal: usize,
+) -> Selection {
+    let mut stage = claim_candidate(at, ordinal, context);
     let device = loop {
         if matches!(&stage, CandidateStage::Prepared(_, _, Isolation::Pending)) {
             isolate_candidate(&mut stage);
             continue;
         }
         stage = match stage {
-            CandidateStage::Prepared(..) => admit_candidate(&mut stage, &mut context),
-            CandidateStage::Admitted(..) => start_candidate(&mut stage, &mut context, ordinal),
+            CandidateStage::Prepared(..) => admit_candidate(&mut stage, context),
+            CandidateStage::Admitted(..) => start_candidate(&mut stage, context, ordinal),
             CandidateStage::Retire(device) => break device,
             CandidateStage::Settled(selection) => return selection,
         };

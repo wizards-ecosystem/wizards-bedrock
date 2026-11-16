@@ -13,6 +13,7 @@ use crate::boot::{
     ImageAddress, MemoryKind, MemoryMap, MemoryRegion, record_framebuffer,
 };
 use crate::mmio::MmioRegion;
+use crate::sync::ThreadContext;
 
 // A function because a `const` of `BaseRevision` would hold `UnsafeCell`s.
 pub const fn base_revision() -> BaseRevision {
@@ -21,7 +22,7 @@ pub const fn base_revision() -> BaseRevision {
 
 const SUPPORTED_BPP: u16 = 32;
 
-pub fn enter(requests: Requests, kernel_main: fn(BootInfo) -> !) -> ! {
+pub fn enter(requests: Requests, kernel_main: fn(BootInfo, ThreadContext) -> !) -> ! {
     // A second caller would mint a second framebuffer over live device memory.
     static ENTERED: crate::sync::Once = crate::sync::Once::new();
     assert!(ENTERED.claim(), "the kernel has already been entered");
@@ -35,15 +36,18 @@ pub fn enter(requests: Requests, kernel_main: fn(BootInfo) -> !) -> ! {
         modules,
     } = requests;
 
-    kernel_main(BootInfo {
-        base_revision_supported: base_revision.is_supported(),
-        framebuffer: take_framebuffer(framebuffer),
-        memory_map: take_memory_map(memory_map),
-        direct_map: take_direct_map(direct_map),
-        image: take_image(image),
-        rsdp: take_rsdp(rsdp),
-        module: take_module(modules),
-    })
+    kernel_main(
+        BootInfo {
+            base_revision_supported: base_revision.is_supported(),
+            framebuffer: take_framebuffer(framebuffer),
+            memory_map: take_memory_map(memory_map),
+            direct_map: take_direct_map(direct_map),
+            image: take_image(image),
+            rsdp: take_rsdp(rsdp),
+            module: take_module(modules),
+        },
+        ThreadContext::mint(),
+    )
 }
 
 fn take_image(request: &'static ExecutableAddressRequest) -> Result<ImageAddress, HandoffError> {

@@ -239,8 +239,12 @@ restores the flag it found; setting the flag or switching threads while one is h
 `SpinLock::lock` borrows a `ThreadContext` mutably for the guard's life, so no blocking call
 compiles under it, and `lock_leaf` is for take, mutate and return with no call-out. `ThreadLock`
 is for long work such as console output: it leaves interrupts on and refuses trap context and any
-held `SpinLock`. `ThreadContext` is a zero-sized, non-`Send`, non-`Sync` token that trap context
-cannot mint, and every call that may block takes one.
+held `SpinLock`. `ThreadContext` is a zero-sized, non-`Send`, non-`Sync` token, and every call that
+may block takes one. `wost` mints it in two places only: `boot::enter`, which hands it to the
+kernel's entry function, and `task::thread_start`, which begins every thread on its own stack and
+passes `&mut ThreadContext` and one `usize` argument to the thread's entry. The boot thread's move
+to its guarded stack consumes its token and restarts through `thread_start`, so trap code can
+reach no token. `thread::spawn` takes the entry and its argument.
 
 There is no unwinding: every profile uses `panic = "abort"`. `wost::panic::terminate` disables
 interrupts for good, refuses re-entry, force-releases every `wost` lock through each module's

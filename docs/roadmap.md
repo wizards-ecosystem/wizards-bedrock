@@ -203,8 +203,8 @@ Phase 7:
 - The kernel parses ELF and loads one borrowed Limine module (`kernel/src/user/load.rs`,
   `wost/src/boot/limine_glue.rs`). The user-space loader replaces it and needs every module as owned
   frames; the kernel keeps its mapper checks.
-- Threads take no entry argument, are capped by a 32-slot task table, a 16-slot stack arena and a
-  `u32` waiter mask, and one `Binding` serves one thread (`kernel/src/thread.rs`,
+- User threads take no entry argument, threads are capped by a 32-slot task table, a 16-slot stack
+  arena and a `u32` waiter mask, and one `Binding` serves one thread (`kernel/src/thread.rs`,
   `wost/src/arch/x86_64/task.rs`). Processes need `entry(arg)` and many threads per root.
 - Each process has one fixed ring, timers expire only on kernel entry, and the time page is global
   (`kernel/src/queue.rs`, `kernel/src/timepage.rs`). Channels need their own transport, and time
@@ -234,8 +234,8 @@ Phase 8:
 - There is one run queue and one idle thread, and one PIT watchdog judges one APIC window for a
   global clock published with relaxed stores (`kernel/src/thread.rs`, `kernel/src/time.rs`). Phase 8
   needs per-CPU queues and timers, one clock owner and release and acquire publication.
-- Lock order is a convention: `ThreadContext` can be minted anywhere outside a trap, and leaf locks
-  cover whole-bus PCI walks (`wost/src/sync.rs`, `wost/src/arch/x86_64/pci.rs`). Fine-grained
+- Lock order is a convention: `lock_leaf` takes no token, and leaf locks cover whole-bus PCI walks
+  (`wost/src/sync.rs`, `wost/src/arch/x86_64/pci.rs`). Fine-grained
   locking needs a checked order, and no caller-supplied work may run under a leaf guard.
 - There is no TLB shootdown: invalidation and "is this root loaded" ask only this CPU, and the
   user-copy page walk can go stale under a concurrent unmap (`wost/src/arch/x86_64/paging/walk.rs`,

@@ -31,6 +31,7 @@ pub(crate) fn report_keyboard(masked: Option<ExternalControllersMasked>) {
 
 // Must run before `interrupts::start`, so every controller is masked while delivery is refused.
 pub(crate) fn mask_external_controllers(
+    context: &mut ThreadContext,
     interrupts: Option<Interrupts>,
 ) -> Option<ExternalControllersMasked> {
     let Some(interrupts) = interrupts else {
@@ -38,11 +39,7 @@ pub(crate) fn mask_external_controllers(
         return None;
     };
     let gsi = interrupts.gsi_for(KEYBOARD_IRQ);
-    let Some(mut context) = ThreadContext::claim() else {
-        warn!("ioapic: no thread context for mapping; interrupts stay off");
-        return None;
-    };
-    mask(&mut context, &interrupts, gsi)
+    mask(context, &interrupts, gsi)
 }
 
 const KEYBOARD_IRQ: u8 = 1;

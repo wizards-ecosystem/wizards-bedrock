@@ -207,7 +207,7 @@ pub(crate) fn spawn(name: &'static str, which: u64, argument: u64) -> Result<Spa
             bound
         })
     };
-    let slot = match thread::spawn_in_space(name, cross, binding, arrange) {
+    let slot = match thread::spawn_in_space(name, cross, 0, binding, arrange) {
         Ok(slot) => slot,
         Err(failure) => {
             if let Some(process) = prepared.as_mut() {

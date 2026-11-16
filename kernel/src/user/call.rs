@@ -165,7 +165,7 @@ fn wait_ring(slot: usize, frame: &TrapFrame) -> u64 {
 }
 
 // The switch that scheduled this thread already set `RSP0` and installed its tables.
-pub(super) fn cross() {
+pub(super) fn cross(_: &mut thread::ThreadContext, _: usize) {
     let slot = task::current();
     let Some(launch) = LAUNCHES.lock_leaf().get(slot).copied().flatten() else {
         warn!("user: thread {slot} has no program to run");

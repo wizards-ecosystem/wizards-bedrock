@@ -227,7 +227,7 @@ pub(crate) fn read_key(context: &mut ThreadContext) -> Keystroke {
 }
 
 pub(crate) fn start_poller() {
-    match crate::thread::spawn("keyboard-poll", poll_forever) {
+    match crate::thread::spawn("keyboard-poll", poll_forever, 0) {
         Ok(_) if crate::time::is_calibrated() && interrupt::are_enabled() => {
             info!("keyboard: polled every {POLL_INTERVAL_MS} ms");
         }
@@ -239,14 +239,13 @@ pub(crate) fn start_poller() {
 // The poller owns its interval: no periodic tick wakes it.
 const POLL_INTERVAL_MS: u64 = 10;
 
-fn poll_forever() {
-    let mut context = ThreadContext::require();
+fn poll_forever(context: &mut ThreadContext, _: usize) {
     loop {
         poll();
         if crate::time::is_calibrated() && interrupt::are_enabled() {
-            crate::thread::sleep_ms(&mut context, POLL_INTERVAL_MS);
+            crate::thread::sleep_ms(context, POLL_INTERVAL_MS);
         } else {
-            crate::thread::yield_now(&mut context);
+            crate::thread::yield_now(context);
         }
     }
 }

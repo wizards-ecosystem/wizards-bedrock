@@ -1,6 +1,7 @@
 use core::hint::spin_loop;
 
 use crate::arch::current::debug_exit;
+use crate::thread::ThreadContext;
 use crate::{error, info, time};
 
 mod address_spaces;
@@ -15,126 +16,105 @@ mod threads;
 // The verdict line is parsed by `xtask`; bump this with any change to its grammar.
 const VERDICT_VERSION: usize = 1;
 
-type Check = (&'static str, fn() -> bool);
+type Check = (&'static str, fn(&mut ThreadContext) -> bool);
 
 // The unserved-call check runs before any program; the nvme timeout resets storage, so last.
 const CHECKS: &[Check] = &[
-    (
-        "allocation returns a zeroed frame",
-        memory::allocation_is_zeroed,
-    ),
-    (
-        "the kernel image obeys write-xor-execute",
-        address_spaces::the_image_obeys_write_xor_execute,
-    ),
+    ("allocation returns a zeroed frame", |_| {
+        memory::allocation_is_zeroed()
+    }),
+    ("the kernel image obeys write-xor-execute", |_| {
+        address_spaces::the_image_obeys_write_xor_execute()
+    }),
     (
         "an unserved call is refused without stopping the machine",
-        processes::an_unserved_call_is_refused_without_stopping_the_machine,
+        |_| processes::an_unserved_call_is_refused_without_stopping_the_machine(),
     ),
-    (
-        "a faulting program dies alone",
-        processes::a_faulting_program_dies_alone,
-    ),
+    ("a faulting program dies alone", |_| {
+        processes::a_faulting_program_dies_alone()
+    }),
     (
         "a noncanonical user return stack retires only its program",
-        processes::a_noncanonical_user_return_stack_retires_only_its_program,
+        |_| processes::a_noncanonical_user_return_stack_retires_only_its_program(),
     ),
-    (
-        "a program cannot aim at the copy window",
-        processes::a_program_cannot_aim_at_the_copy_window,
-    ),
-    (
-        "two spaces map one address to different memory",
-        address_spaces::two_spaces_map_one_address_to_different_memory,
-    ),
-    (
-        "every enabled state component survives a switch",
-        threads::every_enabled_state_component_survives_a_switch,
-    ),
+    ("a program cannot aim at the copy window", |_| {
+        processes::a_program_cannot_aim_at_the_copy_window()
+    }),
+    ("two spaces map one address to different memory", |_| {
+        address_spaces::two_spaces_map_one_address_to_different_memory()
+    }),
+    ("every enabled state component survives a switch", |_| {
+        threads::every_enabled_state_component_survives_a_switch()
+    }),
     (
         "a word that does not fit is refused rather than truncated",
-        rings::a_word_that_does_not_fit_is_refused_rather_than_truncated,
+        |_| rings::a_word_that_does_not_fit_is_refused_rather_than_truncated(),
     ),
-    (
-        "opening a node does not restore universal rights",
-        rings::opening_a_node_does_not_restore_universal_rights,
-    ),
+    ("opening a node does not restore universal rights", |_| {
+        rings::opening_a_node_does_not_restore_universal_rights()
+    }),
     (
         "a ring operation cannot reach past its rights or its pages",
-        rings::a_ring_operation_cannot_reach_past_its_rights_or_its_pages,
+        |_| rings::a_ring_operation_cannot_reach_past_its_rights_or_its_pages(),
     ),
-    (
-        "a block read returns the block that was asked for",
-        storage::a_block_read_returns_the_block_that_was_asked_for,
-    ),
+    ("a block read returns the block that was asked for", |_| {
+        storage::a_block_read_returns_the_block_that_was_asked_for()
+    }),
     (
         "the time page and the kernel clock tell the same time",
-        clocks::the_time_page_and_the_kernel_clock_tell_the_same_time,
+        |_| clocks::the_time_page_and_the_kernel_clock_tell_the_same_time(),
     ),
-    (
-        "a program sees the time page and cannot write it",
-        clocks::a_program_sees_the_time_page_and_cannot_write_it,
-    ),
-    (
-        "a completion cannot widen what was offered",
-        handles::a_completion_cannot_widen_what_was_offered,
-    ),
+    ("a program sees the time page and cannot write it", |_| {
+        clocks::a_program_sees_the_time_page_and_cannot_write_it()
+    }),
+    ("a completion cannot widen what was offered", |_| {
+        handles::a_completion_cannot_widen_what_was_offered()
+    }),
     (
         "an operation completes after its deadline and only once",
-        rings::an_operation_completes_after_its_deadline_and_only_once,
+        |_| rings::an_operation_completes_after_its_deadline_and_only_once(),
     ),
-    (
-        "every submission gets exactly one completion",
-        rings::every_submission_gets_exactly_one_completion,
-    ),
-    (
-        "the loader refuses what it may not map",
-        processes::the_loader_refuses_what_it_may_not_map,
-    ),
-    (
-        "thread local storage follows the thread",
-        threads::thread_local_storage_follows_the_thread,
-    ),
-    (
-        "a bound space is not reclaimed",
-        address_spaces::a_bound_space_is_not_reclaimed,
-    ),
-    (
-        "a user page comes back cleared",
-        address_spaces::a_user_page_comes_back_cleared,
-    ),
+    ("every submission gets exactly one completion", |_| {
+        rings::every_submission_gets_exactly_one_completion()
+    }),
+    ("the loader refuses what it may not map", |_| {
+        processes::the_loader_refuses_what_it_may_not_map()
+    }),
+    ("thread local storage follows the thread", |_| {
+        threads::thread_local_storage_follows_the_thread()
+    }),
+    ("a bound space is not reclaimed", |_| {
+        address_spaces::a_bound_space_is_not_reclaimed()
+    }),
+    ("a user page comes back cleared", |_| {
+        address_spaces::a_user_page_comes_back_cleared()
+    }),
     (
         "a dead program gives its memory back",
         processes::a_dead_program_gives_its_memory_back,
     ),
-    (
-        "a program drives its own ring",
-        processes::a_program_drives_its_own_ring,
-    ),
+    ("a program drives its own ring", |_| {
+        processes::a_program_drives_its_own_ring()
+    }),
     (
         "an active unmap exposes only its replacement",
         address_spaces::an_active_unmap_exposes_only_its_replacement,
     ),
-    (
-        "a handle reveals no foreign occupancy",
-        handles::a_handle_reveals_no_foreign_occupancy,
-    ),
-    (
-        "a refused mapping leaves no trace",
-        address_spaces::a_refused_mapping_leaves_no_trace,
-    ),
-    (
-        "a shared mapping keeps its frame",
-        address_spaces::a_shared_mapping_keeps_its_frame,
-    ),
-    (
-        "a user space cannot reach the kernel half",
-        address_spaces::a_user_space_cannot_reach_the_kernel_half,
-    ),
-    (
-        "device mappings refuse allocatable ram",
-        address_spaces::device_mappings_refuse_allocatable_ram,
-    ),
+    ("a handle reveals no foreign occupancy", |_| {
+        handles::a_handle_reveals_no_foreign_occupancy()
+    }),
+    ("a refused mapping leaves no trace", |_| {
+        address_spaces::a_refused_mapping_leaves_no_trace()
+    }),
+    ("a shared mapping keeps its frame", |_| {
+        address_spaces::a_shared_mapping_keeps_its_frame()
+    }),
+    ("a user space cannot reach the kernel half", |_| {
+        address_spaces::a_user_space_cannot_reach_the_kernel_half()
+    }),
+    ("device mappings refuse allocatable ram", |_| {
+        address_spaces::device_mappings_refuse_allocatable_ram()
+    }),
     (
         "callee-saved registers survive a switch",
         threads::registers_survive_a_switch,
@@ -147,18 +127,16 @@ const CHECKS: &[Check] = &[
         "a spinning thread cannot starve another",
         threads::a_spinner_cannot_starve_another,
     ),
-    (
-        "the clock never runs backwards",
-        clocks::the_clock_never_runs_backwards,
-    ),
+    ("the clock never runs backwards", |_| {
+        clocks::the_clock_never_runs_backwards()
+    }),
     (
         "a device write into an unmapped frame faults and changes nothing",
-        storage::a_device_write_into_an_unmapped_frame_faults_and_changes_nothing,
+        |_| storage::a_device_write_into_an_unmapped_frame_faults_and_changes_nothing(),
     ),
-    (
-        "an nvme timeout quiesces before dma memory returns",
-        storage::an_nvme_timeout_quiesces_before_dma_memory_returns,
-    ),
+    ("an nvme timeout quiesces before dma memory returns", |_| {
+        storage::an_nvme_timeout_quiesces_before_dma_memory_returns()
+    }),
 ];
 
 fn runs_until(ms: u64, done: impl Fn() -> bool) -> bool {
@@ -180,11 +158,11 @@ fn runs_until(ms: u64, done: impl Fn() -> bool) -> bool {
     }
 }
 
-pub(crate) fn run() {
+pub(crate) fn run(context: &mut ThreadContext) {
     info!("selftest: image marker v1");
     let mut failed = 0;
     for (name, check) in CHECKS {
-        if check() {
+        if check(context) {
             info!("selftest: {name}");
         } else {
             failed += 1;

@@ -14,13 +14,13 @@ use super::percpu;
 use super::xstate;
 use crate::cell::HardwareCell;
 use crate::panic::PanicToken;
-use crate::sync::{Once, SpinLock};
+use crate::sync::{Once, SpinLock, ThreadContext};
 
 pub(crate) const MAX_TASKS: usize = 32;
 
 pub const BOOT: usize = 0;
 
-pub type Entry = extern "C" fn(usize) -> !;
+pub type Entry = fn(&mut ThreadContext, usize) -> !;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
@@ -599,7 +599,7 @@ const FRAME_BYTES: u64 = FRAME_WORDS as u64 * 8;
 
 const FRAME_WORDS: usize = 8;
 
-// The switch always arrives with interrupts clear, so the creator's flag is restored here.
+// A switch or a stack move arrives with interrupts clear, so the creator's flag is restored here.
 extern "C" fn thread_start() -> ! {
     let slot = current();
     let (entry, interruptible) = {
@@ -615,7 +615,7 @@ extern "C" fn thread_start() -> ! {
     if interruptible {
         interrupt::enable();
     }
-    entry(argument)
+    entry(&mut ThreadContext::mint(), argument)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -770,7 +770,13 @@ fn shared_isolation(mine: Option<KernelStackTop<'_>>) -> Result<(), UserError> {
     }
 }
 
-pub fn continue_on_stack(stack: MappedStack, continuation: Entry, argument: usize) -> ! {
+// Consumes the token on the abandoned stack; `thread_start` mints the next one on the new stack.
+pub fn continue_on_stack(
+    _context: ThreadContext,
+    stack: MappedStack,
+    continuation: Entry,
+    argument: usize,
+) -> ! {
     // The exclusion spans the re-walk and the stack load, so the mapping cannot retire between.
     let disabled = interrupt::disable();
     assert!(
@@ -780,6 +786,12 @@ pub fn continue_on_stack(stack: MappedStack, continuation: Entry, argument: usiz
     let stack = stack
         .retain()
         .unwrap_or_else(|reason| panic!("the boot stack could not be retained: {reason}"));
+    {
+        let mut table = TABLE.lock_leaf();
+        let slot = &mut table.slots[current()];
+        slot.entry = Some((continuation, argument));
+        slot.starts_interruptible = false;
+    }
     // A guard live on the abandoned stack could never be released.
     assert!(
         crate::sync::spinlocks_held() == 0,
@@ -788,8 +800,8 @@ pub fn continue_on_stack(stack: MappedStack, continuation: Entry, argument: usiz
     disabled.commit_disabled();
 
     // SAFETY: `stack` proves a mapped, writable, guarded top nothing else holds; `is_installed` saw
-    // the CPU walk its space; `continuation` never returns, so no return address is owed.
-    unsafe { load_stack(stack.top(), continuation, argument) }
+    // the CPU walk its space; `thread_start` never returns, so no return address is owed.
+    unsafe { load_stack(stack.top()) }
 }
 
 /// # Safety
@@ -797,14 +809,14 @@ pub fn continue_on_stack(stack: MappedStack, continuation: Entry, argument: usiz
 /// `stack_top` must be the sixteen-byte-aligned top of a mapped, writable region nothing else is
 /// using, reachable in the live tables.
 #[unsafe(naked)]
-unsafe extern "C" fn load_stack(stack_top: u64, continuation: Entry, argument: usize) -> ! {
+unsafe extern "C" fn load_stack(stack_top: u64) -> ! {
     ::core::arch::naked_asm!(
         // A jump supplies no return word, so subtract one for the alignment a call would create.
         "lea rsp, [rdi - 8]",
         // Nothing above this frame, so a walker following `rbp` stops before the abandoned stack.
         "xor rbp, rbp",
-        "mov rdi, rdx",
-        "jmp rsi",
+        "jmp {start}",
+        start = sym thread_start,
     )
 }
 

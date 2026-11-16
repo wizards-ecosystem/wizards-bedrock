@@ -469,7 +469,7 @@ impl Queue {
 }
 
 pub(crate) fn start_worker() {
-    match crate::thread::spawn("service-worker", work_forever) {
+    match crate::thread::spawn("service-worker", work_forever, 0) {
         Ok(_) => {
             WORKER_READY.store(true, Ordering::Release);
             crate::info!("kernel: service worker ready; file queue has {WORK_DEPTH} slots");
@@ -499,15 +499,14 @@ fn collect_requested_reap() -> bool {
     )
 }
 
-fn work_forever() {
-    let mut context = crate::thread::ThreadContext::require();
+fn work_forever(context: &mut crate::thread::ThreadContext, _: usize) {
     let mut retry_reap = false;
     loop {
         if retry_reap {
             if crate::time::is_calibrated() {
-                crate::thread::sleep_ms(&mut context, 1);
+                crate::thread::sleep_ms(context, 1);
             } else {
-                crate::thread::yield_now(&mut context);
+                crate::thread::yield_now(context);
             }
         }
         if retry_reap || take_reap_request(&REAP_REQUESTS) {
@@ -519,10 +518,10 @@ fn work_forever() {
         }
         // Queued work that `take` refused is being settled by a context this worker preempted.
         if FILE_WORK.queued.load(Ordering::Acquire) > 0 {
-            crate::thread::yield_now(&mut context);
+            crate::thread::yield_now(context);
             continue;
         }
-        FILE_WORK.waiters.wait_unless(&mut context, || {
+        FILE_WORK.waiters.wait_unless(context, || {
             retry_reap
                 || FILE_WORK.queued.load(Ordering::Acquire) > 0
                 || REAP_REQUESTS.load(Ordering::Acquire) > 0

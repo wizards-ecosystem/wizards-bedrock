@@ -10,6 +10,7 @@ use x86_tables::exception;
 use super::runs_until;
 use super::threads::{STOP_SPINNING, light_spinner, yields_until};
 use crate::arch::current::trap;
+use crate::thread::ThreadContext;
 use crate::{thread, time, user};
 
 const UNSERVED_CALL: usize = 0x0BAD_0BAD;
@@ -210,14 +211,14 @@ impl AllocatorSnapshot {
 }
 
 // Forty programs through sixteen slots beside a spinner: the worker must reclaim each one.
-pub(super) fn a_dead_program_gives_its_memory_back() -> bool {
+pub(super) fn a_dead_program_gives_its_memory_back(context: &mut ThreadContext) -> bool {
     if !runs_until(2000, || !user::has_zombies()) {
         return false;
     }
     let before = AllocatorSnapshot::capture();
     let free_slots = thread::free_slots();
     STOP_SPINNING.store(0, Ordering::Release);
-    if thread::spawn("reap-pressure", light_spinner).is_err() {
+    if thread::spawn("reap-pressure", light_spinner, 0).is_err() {
         return false;
     }
 
@@ -234,7 +235,7 @@ pub(super) fn a_dead_program_gives_its_memory_back() -> bool {
         ran += 1;
     }
     STOP_SPINNING.store(1, Ordering::Release);
-    let settled = yields_until(|| thread::free_slots() == free_slots);
+    let settled = yields_until(context, || thread::free_slots() == free_slots);
 
     ran == 40 && settled && AllocatorSnapshot::capture().has_same_ownership(&before)
 }

@@ -230,12 +230,11 @@ pub(crate) fn unmap_device_exact(
 }
 
 // Mapped after activation so its guard is truly absent; pinned, because the TSS points at it.
-fn guard_the_fault_stack() -> Result<u64, MapError> {
+fn guard_the_fault_stack(context: &mut ThreadContext) -> Result<u64, MapError> {
     let layout = thread::fault_stack_layout().ok_or(MapError::OutOfMemory)?;
     let slot = layout.slot(0).ok_or(MapError::OutOfMemory)?;
 
-    let mut context = ThreadContext::require();
-    let stack = with_active_space(&mut context, |space| space.map_pinned_stack(&slot))
+    let stack = with_active_space(context, |space| space.map_pinned_stack(&slot))
         .ok_or(MapError::OutOfMemory)??;
 
     let top = stack.top();
@@ -246,9 +245,8 @@ fn guard_the_fault_stack() -> Result<u64, MapError> {
     Ok(top)
 }
 
-pub(crate) fn map_boot_stack() -> Option<MappedStack> {
-    let mut context = ThreadContext::require();
-    map_guarded_stack(&mut context, thread::boot_stack_layout()?)
+pub(crate) fn map_boot_stack(context: &mut ThreadContext) -> Option<MappedStack> {
+    map_guarded_stack(context, thread::boot_stack_layout()?)
 }
 
 pub(crate) fn map_guarded_stack(
@@ -285,6 +283,7 @@ fn unrecognised(kind: &MemoryKind) -> bool {
 }
 
 pub(crate) fn init_paging(
+    context: &mut ThreadContext,
     map: Result<MemoryMap, HandoffError>,
     direct: Result<DirectMap, HandoffError>,
     image: Result<ImageAddress, HandoffError>,
@@ -337,7 +336,7 @@ pub(crate) fn init_paging(
 
     *SPACE.lock_leaf() = Some(space);
 
-    report_guarded_paging(thread_slots, write_combining);
+    report_guarded_paging(context, thread_slots, write_combining);
     interrupts
 }
 
@@ -366,10 +365,11 @@ fn map_thread_stacks(space: &mut AddressSpace) -> Option<StackArena> {
 }
 
 fn report_guarded_paging(
+    context: &mut ThreadContext,
     thread_slots: Option<usize>,
     write_combining: Option<cpu::WriteCombining>,
 ) {
-    match guard_the_fault_stack() {
+    match guard_the_fault_stack(context) {
         Ok(top) => info!("faults: double-fault stack guarded, top {top:#x}"),
         Err(reason) => warn!("faults: double-fault stack left unguarded: {reason}"),
     }

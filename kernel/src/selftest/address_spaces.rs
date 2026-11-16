@@ -7,7 +7,7 @@ use x86_paging::{Flags, PAGE_SIZE};
 
 use super::processes::AllocatorSnapshot;
 use super::runs_until;
-use super::threads::context;
+use crate::thread::ThreadContext;
 use crate::{mem, user};
 
 // Samples are offsets from a section's base: adding two higher-half addresses overflows.
@@ -186,7 +186,7 @@ pub(super) fn a_user_page_comes_back_cleared() -> bool {
     unmapped && direct && shared && refused
 }
 
-pub(super) fn an_active_unmap_exposes_only_its_replacement() -> bool {
+pub(super) fn an_active_unmap_exposes_only_its_replacement(context: &mut ThreadContext) -> bool {
     const AT: u64 = user::STACK + 0x30_0000;
     const FIRST: [u8; 16] = [0xa5; 16];
     const SECOND: [u8; 16] = [0x5a; 16];
@@ -199,15 +199,14 @@ pub(super) fn an_active_unmap_exposes_only_its_replacement() -> bool {
     }
     let first_physical = first.address();
     let first_flags = Flags::WRITABLE.union(Flags::NO_EXECUTE);
-    let mut context = context();
-    let Some(Ok(first_mapping)) = mem::map_user_page_for_test(&mut context, AT, first, first_flags)
+    let Some(Ok(first_mapping)) = mem::map_user_page_for_test(context, AT, first, first_flags)
     else {
         return false;
     };
 
     let mut warmed = [0; FIRST.len()];
     let warmed_first = usercopy::copy_from_user(AT, &mut warmed).is_ok() && warmed == FIRST;
-    let Some(Ok(first_taken)) = mem::unmap_for_test(&mut context, first_mapping) else {
+    let Some(Ok(first_taken)) = mem::unmap_for_test(context, first_mapping) else {
         return false;
     };
 
@@ -220,8 +219,7 @@ pub(super) fn an_active_unmap_exposes_only_its_replacement() -> bool {
         return false;
     }
     let second_physical = second.address();
-    let Some(Ok(second_mapping)) =
-        mem::map_user_page_for_test(&mut context, AT, second, Flags::NONE)
+    let Some(Ok(second_mapping)) = mem::map_user_page_for_test(context, AT, second, Flags::NONE)
     else {
         drop(first_taken);
         return false;
@@ -244,8 +242,8 @@ pub(super) fn an_active_unmap_exposes_only_its_replacement() -> bool {
         Err(UserCopyError::ReadOnly(found)) if found == AT
     );
 
-    let second_removed = mem::unmap_for_test(&mut context, second_mapping)
-        .is_some_and(|result| result.map(drop).is_ok());
+    let second_removed =
+        mem::unmap_for_test(context, second_mapping).is_some_and(|result| result.map(drop).is_ok());
     drop(first_taken);
 
     warmed_first

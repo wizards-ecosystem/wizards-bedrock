@@ -8,16 +8,12 @@ use super::runs_until;
 use crate::thread::ThreadContext;
 use crate::{thread, time};
 
-pub(super) fn context() -> ThreadContext {
-    ThreadContext::require()
-}
-
 // A switch that never hands control over is a red verdict, not a hang.
 const YIELD_BUDGET: usize = 100_000;
 
-pub(super) fn yields_until(done: impl Fn() -> bool) -> bool {
+pub(super) fn yields_until(context: &mut ThreadContext, done: impl Fn() -> bool) -> bool {
     (0..YIELD_BUDGET).any(|_| {
-        thread::yield_now(&mut context());
+        thread::yield_now(context);
         done()
     })
 }
@@ -42,7 +38,7 @@ pub(super) fn every_enabled_state_component_survives_a_switch() -> bool {
 
     EXTENDED_INTRUDER_RAN.store(0, Ordering::Release);
     EXTENDED_INTRUDER_SAW_OWN.store(0, Ordering::Release);
-    if thread::spawn("extended-intruder", clobber_extended_state).is_err() {
+    if thread::spawn("extended-intruder", clobber_extended_state, 0).is_err() {
         return false;
     }
     if !runs_until(500, || EXTENDED_INTRUDER_RAN.load(Ordering::Acquire) == 1) {
@@ -57,7 +53,7 @@ pub(super) fn every_enabled_state_component_survives_a_switch() -> bool {
 static EXTENDED_INTRUDER_RAN: AtomicUsize = AtomicUsize::new(0);
 static EXTENDED_INTRUDER_SAW_OWN: AtomicUsize = AtomicUsize::new(0);
 
-fn clobber_extended_state() {
+fn clobber_extended_state(context: &mut ThreadContext, _: usize) {
     const THEIRS: xstate::Probe = xstate::Probe {
         x87: 0x0FED_CBA9_1357_2468,
         xmm: 0x5A5A_8765_4321_5A5A,
@@ -66,7 +62,7 @@ fn clobber_extended_state() {
     if !xstate::write_probe(THEIRS) {
         return;
     }
-    thread::yield_now(&mut context());
+    thread::yield_now(context);
     let saw_own = xstate::read_probe() == Some(THEIRS);
     EXTENDED_INTRUDER_SAW_OWN.store(usize::from(saw_own), Ordering::Release);
     EXTENDED_INTRUDER_RAN.store(1, Ordering::Release);
@@ -88,7 +84,7 @@ pub(super) fn thread_local_storage_follows_the_thread() -> bool {
             !task::set_thread_base(0x0000_8000_0000_0000) && task::read_thread_base() == MINE;
 
         BASE_INTRUDER_RAN.store(0, Ordering::Release);
-        if thread::spawn("base-intruder", set_another_thread_base).is_err()
+        if thread::spawn("base-intruder", set_another_thread_base, 0).is_err()
             || !runs_until(500, || BASE_INTRUDER_RAN.load(Ordering::Acquire) == 1)
         {
             return false;
@@ -107,9 +103,9 @@ const THEIR_BASE: u64 = 0x0000_7654_3210_0000;
 static BASE_INTRUDER_RAN: AtomicUsize = AtomicUsize::new(0);
 static BASE_INTRUDER_SAW: AtomicUsize = AtomicUsize::new(0);
 
-fn set_another_thread_base() {
+fn set_another_thread_base(context: &mut ThreadContext, _: usize) {
     if task::set_thread_base(THEIR_BASE) {
-        thread::yield_now(&mut context());
+        thread::yield_now(context);
         BASE_INTRUDER_SAW.store(task::read_thread_base() as usize, Ordering::Release);
     }
     BASE_INTRUDER_RAN.store(1, Ordering::Release);
@@ -123,7 +119,7 @@ const CHURN_ROUNDS: u64 = 256;
 // Knuth's multiplier, for a sequence with no short cycle.
 const MULTIPLIER: u64 = 6_364_136_223_846_793_005;
 
-fn churn(seed: u64) -> bool {
+fn churn(context: &mut ThreadContext, seed: u64) -> bool {
     let (mut a, mut b, mut c, mut d, mut e) = (
         core::hint::black_box(seed),
         core::hint::black_box(seed.rotate_left(7)),
@@ -137,7 +133,7 @@ fn churn(seed: u64) -> bool {
         c = c.wrapping_mul(MULTIPLIER).wrapping_add(b);
         d = d.wrapping_mul(MULTIPLIER).wrapping_add(c);
         e = e.wrapping_mul(MULTIPLIER).wrapping_add(d);
-        thread::yield_now(&mut context());
+        thread::yield_now(context);
     }
 
     let (mut p, mut q, mut r, mut s, mut t) = (
@@ -157,20 +153,20 @@ fn churn(seed: u64) -> bool {
     (a, b, c, d, e) == (p, q, r, s, t)
 }
 
-fn churn_and_report() {
-    let survived = churn(0x9E37_79B9_7F4A_7C15);
+fn churn_and_report(context: &mut ThreadContext, seed: usize) {
+    let survived = churn(context, seed as u64);
     CHURN_VERDICT.store(if survived { 1 } else { 2 }, Ordering::Release);
 }
 
-pub(super) fn registers_survive_a_switch() -> bool {
+pub(super) fn registers_survive_a_switch(context: &mut ThreadContext) -> bool {
     CHURN_VERDICT.store(0, Ordering::Release);
     let free = thread::free_slots();
-    if thread::spawn("churn", churn_and_report).is_err() {
+    if thread::spawn("churn", churn_and_report, 0x9E37_79B9_7F4A_7C15).is_err() {
         return false;
     }
 
-    let boot_survived = churn(0xD1B5_4A32_D192_ED03);
-    let exited = yields_until(|| thread::free_slots() == free);
+    let boot_survived = churn(context, 0xD1B5_4A32_D192_ED03);
+    let exited = yields_until(context, || thread::free_slots() == free);
 
     boot_survived && exited && CHURN_VERDICT.load(Ordering::Acquire) == 1
 }
@@ -184,29 +180,29 @@ const REUSED_SLOT_SECRET: xstate::Probe = xstate::Probe {
 static REUSED_SLOT_STATE_CLEARED: AtomicUsize = AtomicUsize::new(0);
 static REUSED_SLOT_SECRET_WRITTEN: AtomicUsize = AtomicUsize::new(0);
 
-fn leave_extended_state() {
+fn leave_extended_state(_: &mut ThreadContext, _: usize) {
     let written = xstate::write_probe(REUSED_SLOT_SECRET);
     REUSED_SLOT_SECRET_WRITTEN.store(usize::from(written), Ordering::Release);
 }
 
-fn inspect_reused_extended_state() {
+fn inspect_reused_extended_state(_: &mut ThreadContext, _: usize) {
     let cleared = xstate::read_probe().is_some_and(|found| {
         found.x87 != REUSED_SLOT_SECRET.x87 && found.xmm == 0 && found.ymm == 0
     });
     REUSED_SLOT_STATE_CLEARED.store(usize::from(cleared), Ordering::Release);
 }
 
-pub(super) fn an_exited_slot_is_reused() -> bool {
+pub(super) fn an_exited_slot_is_reused(context: &mut ThreadContext) -> bool {
     if !xstate::is_enabled() {
         return true;
     }
     let free = thread::free_slots();
     REUSED_SLOT_SECRET_WRITTEN.store(0, Ordering::Release);
     REUSED_SLOT_STATE_CLEARED.store(0, Ordering::Release);
-    let secret_slot = thread::spawn("state owner", leave_extended_state).ok();
-    let secret_returned = yields_until(|| thread::free_slots() == free);
-    let clean_slot = thread::spawn("state successor", inspect_reused_extended_state).ok();
-    let clean_returned = yields_until(|| thread::free_slots() == free);
+    let secret_slot = thread::spawn("state owner", leave_extended_state, 0).ok();
+    let secret_returned = yields_until(context, || thread::free_slots() == free);
+    let clean_slot = thread::spawn("state successor", inspect_reused_extended_state, 0).ok();
+    let clean_returned = yields_until(context, || thread::free_slots() == free);
 
     secret_slot.is_some()
         && secret_slot == clean_slot
@@ -219,7 +215,7 @@ pub(super) fn an_exited_slot_is_reused() -> bool {
 pub(super) static STOP_SPINNING: AtomicUsize = AtomicUsize::new(0);
 pub(super) static LIGHT_SPINS: AtomicUsize = AtomicUsize::new(0);
 
-pub(super) fn light_spinner() {
+pub(super) fn light_spinner(_: &mut ThreadContext, _: usize) {
     while STOP_SPINNING.load(Ordering::Acquire) == 0 {
         LIGHT_SPINS.fetch_add(1, Ordering::Relaxed);
         spin_loop();
@@ -231,20 +227,20 @@ pub(super) fn the_clock_is_running() -> bool {
     time::is_calibrated() && spins_until(1_000_000, || time::now_ns() > start)
 }
 
-pub(super) fn a_spinner_cannot_starve_another() -> bool {
+pub(super) fn a_spinner_cannot_starve_another(context: &mut ThreadContext) -> bool {
     // Generous beside a 3 ms slice, stingy beside a hung harness.
     const PATIENCE_MS: u64 = 500;
 
     STOP_SPINNING.store(0, Ordering::Release);
     LIGHT_SPINS.store(0, Ordering::Release);
     let free = thread::free_slots();
-    if thread::spawn("spinner", light_spinner).is_err() {
+    if thread::spawn("spinner", light_spinner, 0).is_err() {
         return false;
     }
 
     let progressed = runs_until(PATIENCE_MS, || LIGHT_SPINS.load(Ordering::Relaxed) > 0);
     STOP_SPINNING.store(1, Ordering::Release);
-    let exited = yields_until(|| thread::free_slots() == free);
+    let exited = yields_until(context, || thread::free_slots() == free);
 
     progressed && exited
 }

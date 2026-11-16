@@ -443,7 +443,8 @@ pub mod __macro {
 #[macro_export]
 macro_rules! entry {
     ($path:path) => {
-        const __WOST_ENTRY_SIGNATURE: fn($crate::boot::BootInfo) -> ! = $path;
+        const __WOST_ENTRY_SIGNATURE: fn($crate::boot::BootInfo, $crate::sync::ThreadContext) -> ! =
+            $path;
 
         // `allow`, since `expect` never fires in a macro; the caller must `deny`, not `forbid`.
         #[used]

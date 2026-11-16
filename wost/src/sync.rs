@@ -14,20 +14,17 @@ pub(crate) fn spinlocks_held() -> usize {
     percpu::current().spinlocks_held()
 }
 
-// Forgeable by design: `claim` mints another token and leaf locks need none.
+// Minted only where a thread begins on its own stack; `!Send`, so no static can hold one.
 #[derive(Debug)]
 pub struct ThreadContext(PhantomData<*const ()>);
 
 impl ThreadContext {
-    pub fn claim() -> Option<Self> {
-        (!interrupt::in_trap()).then_some(Self(PhantomData))
-    }
-
-    pub fn require() -> Self {
-        match Self::claim() {
-            Some(context) => context,
-            None => panic!("thread context required, but a handler is on the stack"),
-        }
+    pub(crate) fn mint() -> Self {
+        assert!(
+            !interrupt::in_trap(),
+            "a thread context minted inside a trap"
+        );
+        Self(PhantomData)
     }
 }
 

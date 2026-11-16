@@ -248,6 +248,10 @@ number and is added here, as one entry or as an amending id on the entry it chan
 - **D-62** `ThreadContext` is a zero-sized, non-`Send`, non-`Sync` token that only thread context
   can mint, and every call that may block takes it, so blocking from a trap handler does not
   compile.
+- **D-466** `wost` mints `ThreadContext` only at boot entry and at thread start, and there is no
+  runtime claim (amends D-62). A claim that checked the trap depth let any helper mint a token, so a
+  blocking call's safety rested on where it was called from rather than on what it was given.
+  Thread entries receive the token and one argument.
 - **D-63** `ThreadLock` is the second lock kind, for long work such as console output: it leaves
   interrupts on and refuses trap context and any held `SpinLock`, because the preempted holder could
   then never run.

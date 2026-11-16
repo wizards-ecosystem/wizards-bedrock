@@ -45,10 +45,11 @@ use wost::boot::BootInfo;
 use wost::sync::SpinLock;
 
 use crate::arch::current::uart::UartError;
+use crate::thread::ThreadContext;
 
 ::wost::entry!(kernel_main);
 
-fn kernel_main(boot: BootInfo) -> ! {
+fn kernel_main(boot: BootInfo, mut context: ThreadContext) -> ! {
     let early_dma = iommu::secure_handoff(&boot);
 
     let serial = dev::init_uart();
@@ -116,7 +117,13 @@ fn kernel_main(boot: BootInfo) -> ! {
 
     // The first write through an address the bootloader chose, so after the fault path.
     mem::init(boot.memory_map, boot.direct_map, early_dma);
-    let interrupts = mem::init_paging(boot.memory_map, boot.direct_map, boot.image, boot.rsdp);
+    let interrupts = mem::init_paging(
+        &mut context,
+        boot.memory_map,
+        boot.direct_map,
+        boot.image,
+        boot.rsdp,
+    );
     if let Ok(rsdp) = boot.rsdp {
         iommu::discover(rsdp);
     }
@@ -129,13 +136,13 @@ fn kernel_main(boot: BootInfo) -> ! {
         dma_non_requester,
         dma_quiesced,
     });
-    match mem::map_boot_stack() {
-        Some(stack) => task::continue_on_stack(stack, boot_continue, GUARDED_STACK),
+    match mem::map_boot_stack(&mut context) {
+        Some(stack) => task::continue_on_stack(context, stack, boot_continue, GUARDED_STACK),
         None => {
             warn!(
                 "boot: staying on the bootloader's stack, which has no guard; ring 3 stays closed"
             );
-            boot_continue(BOOTLOADER_STACK)
+            boot_continue(&mut context, BOOTLOADER_STACK)
         }
     }
 }
@@ -161,7 +168,7 @@ pub(crate) fn user_launch_is_safe() -> bool {
     BOOT_STACK_GUARDED.load(Ordering::Acquire)
 }
 
-extern "C" fn boot_continue(stack: usize) -> ! {
+fn boot_continue(context: &mut ThreadContext, stack: usize) -> ! {
     BOOT_STACK_GUARDED.store(stack == GUARDED_STACK, Ordering::Release);
     let Some(Handoff {
         serial,
@@ -175,9 +182,9 @@ extern "C" fn boot_continue(stack: usize) -> ! {
     };
 
     dev::attach_back_buffer();
-    let masked = routing::mask_external_controllers(interrupts);
+    let masked = routing::mask_external_controllers(context, interrupts);
 
-    storage::survey_the_bus(dma_non_requester, dma_quiesced);
+    storage::survey_the_bus(context, dma_non_requester, dma_quiesced);
     storage::survey_the_filesystems();
     interrupts::start(masked.as_ref());
     input::init();
@@ -202,7 +209,7 @@ extern "C" fn boot_continue(stack: usize) -> ! {
     thread::start_idle();
 
     #[cfg(feature = "selftest")]
-    selftest::run();
+    selftest::run(context);
 
     match user::run() {
         Ok(program) => info!("user: program running in slot {}", program.slot),
@@ -212,14 +219,13 @@ extern "C" fn boot_continue(stack: usize) -> ! {
         "kernel: reading the keyboard, uptime {} ms",
         time::uptime_ms()
     );
-    echo_keystrokes()
+    echo_keystrokes(context)
 }
 
 // Drawn here, not by the keyboard producer, because a glyph can cost a scroll.
-fn echo_keystrokes() -> ! {
-    let mut context = thread::ThreadContext::require();
+fn echo_keystrokes(context: &mut ThreadContext) -> ! {
     loop {
-        let keystroke = input::read_key(&mut context);
+        let keystroke = input::read_key(context);
         info!("input: key consumed");
         debug!("key: {:?} {:?}", keystroke.event.key, keystroke.event.state);
         if let Some(character) = keystroke.character {

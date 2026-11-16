@@ -133,7 +133,7 @@ enum Class {
 #[derive(Clone, Copy, Debug)]
 struct Identity {
     name: &'static str,
-    entry: Option<fn()>,
+    entry: Option<(Entry, usize)>,
 }
 
 impl Identity {
@@ -374,6 +374,7 @@ pub(crate) fn start_idle() {
         Prepared {
             name: "idle",
             entry: idle_loop,
+            argument: 0,
             binding: None,
         },
         |slot, bound| {
@@ -391,7 +392,7 @@ pub(crate) fn start_idle() {
     IDLE_STATE.store(IDLE_STARTED, Ordering::Release);
 }
 
-fn idle_loop() {
+fn idle_loop(_: &mut ThreadContext, _: usize) {
     loop {
         // Syscall handlers defer reporting because they cannot take the console lock.
         if crate::user::report_execution() || crate::user::report_refusals() {
@@ -401,11 +402,18 @@ fn idle_loop() {
     }
 }
 
-pub(crate) fn spawn(name: &'static str, entry: fn()) -> Result<usize, SpawnError> {
+pub(crate) type Entry = fn(&mut ThreadContext, usize);
+
+pub(crate) fn spawn(
+    name: &'static str,
+    entry: Entry,
+    argument: usize,
+) -> Result<usize, SpawnError> {
     spawn_prepared(
         Prepared {
             name,
             entry,
+            argument,
             binding: None,
         },
         |_, bound| {
@@ -418,7 +426,8 @@ pub(crate) fn spawn(name: &'static str, entry: fn()) -> Result<usize, SpawnError
 // `arrange` must store the bound token with the process state while the slot is reserved.
 pub(crate) fn spawn_in_space(
     name: &'static str,
-    entry: fn(),
+    entry: Entry,
+    argument: usize,
     binding: Binding,
     arrange: impl FnOnce(usize, Bound) -> Result<(), Bound>,
 ) -> Result<usize, SpaceSpawnError> {
@@ -426,6 +435,7 @@ pub(crate) fn spawn_in_space(
         Prepared {
             name,
             entry,
+            argument,
             binding: Some(binding),
         },
         move |slot, bound| {
@@ -452,7 +462,8 @@ fn retire_prepared(slot: usize) {
 #[derive(Debug)]
 struct Prepared {
     name: &'static str,
-    entry: fn(),
+    entry: Entry,
+    argument: usize,
     binding: Option<Binding>,
 }
 
@@ -463,12 +474,13 @@ fn spawn_prepared(
     let Prepared {
         name,
         entry,
+        argument,
         binding,
     } = prepared;
     // Before looking for a slot: a spawn most needs a freed one, and the worker may lag.
     while crate::user::has_zombies() && crate::user::collect().is_reclaimed() {}
 
-    let slot = match reserve(name, entry) {
+    let slot = match reserve(name, (entry, argument)) {
         Ok(slot) => slot,
         Err(reason) => return Err(PreparedFailure::before_binding(reason, binding)),
     };
@@ -495,7 +507,7 @@ fn spawn_prepared(
     Ok(slot)
 }
 
-fn reserve(name: &'static str, entry: fn()) -> Result<usize, SpawnError> {
+fn reserve(name: &'static str, entry: (Entry, usize)) -> Result<usize, SpawnError> {
     let zombie_slots = crate::user::zombie_slots_for_spawn();
     let slot = {
         let mut threads = THREADS.lock_leaf();
@@ -837,10 +849,10 @@ pub(crate) fn exit() -> ! {
     panic!("exit to slot {next} refused: {reason}");
 }
 
-extern "C" fn start(slot: usize) -> ! {
+fn start(context: &mut ThreadContext, slot: usize) -> ! {
     let entry = THREADS.lock_leaf().identities[slot].entry;
     match entry {
-        Some(entry) => entry(),
+        Some((entry, argument)) => entry(context, argument),
         None => panic!("slot {slot} started with no entry"),
     }
     exit()
