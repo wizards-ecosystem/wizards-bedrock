@@ -727,7 +727,7 @@ pub(crate) fn current_name() -> &'static str {
 // A cleared interrupted flag prevents only the switch; nothing promises a later re-arm.
 pub(crate) fn reschedule(frame: &TrapFrame) {
     let now = time::scheduler_now_ns();
-    let switchable = frame.flags() & INTERRUPT_FLAG != 0;
+    let switchable = frame.was_interruptible();
     let (next, event) = {
         let mut threads = THREADS.lock_leaf();
         if threads.spawnable == 0 {
@@ -812,9 +812,6 @@ fn reschedule_timer(event: Option<u64>) {
         None => time::disarm(),
     }
 }
-
-// `RFLAGS.IF`, tested against what the CPU pushed.
-const INTERRUPT_FLAG: u64 = 1 << 9;
 
 pub(crate) fn exit() -> ! {
     // Never restored: an expiry before the switch would find a thread neither running nor free.
