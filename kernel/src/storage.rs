@@ -485,7 +485,7 @@ fn mount_the_volume() {
             return;
         }
         Some(Err(reason)) => {
-            warn!("fat32: the volume would not mount: {reason:?}");
+            warn!("fat32: the volume would not mount: {reason}");
             return;
         }
         Some(Ok((clusters, cluster_bytes))) => {
@@ -513,7 +513,7 @@ fn mount_the_volume() {
         }
         true
     }) {
-        warn!("fat32: the root would not list: {reason:?}");
+        warn!("fat32: the root would not list: {reason}");
         return;
     }
     info!("fat32: {files} file(s) and {directories} directory(ies) in the root");
@@ -530,12 +530,12 @@ fn mount_the_volume() {
                     "fat32: {} — read {read} of its bytes",
                     core::str::from_utf8(name).unwrap_or("?")
                 ),
-                Err(reason) => warn!("fat32: that file would not read: {reason:?}"),
+                Err(reason) => warn!("fat32: that file would not read: {reason}"),
             }
         }
         Ok(vfs::Node::Directory(_)) => warn!("fat32: a listed file resolved to a directory"),
         Ok(vfs::Node::Device(_)) => warn!("fat32: a listed file resolved to a device"),
-        Err(reason) => warn!("fat32: a listed name would not resolve: {reason:?}"),
+        Err(reason) => warn!("fat32: a listed name would not resolve: {reason}"),
     }
 }
 
@@ -556,7 +556,7 @@ pub(crate) fn survey_the_filesystems() {
         Ok(()) => {
             info!("tmpfs: {files} file(s) and {directories} directory(ies) at the root");
         }
-        Err(reason) => warn!("tmpfs: the root would not list: {reason:?}"),
+        Err(reason) => warn!("tmpfs: the root would not list: {reason}"),
     }
 
     for device in devfs::DEVICES {
@@ -567,7 +567,7 @@ pub(crate) fn survey_the_filesystems() {
                 found.describes()
             ),
             Ok(_) => warn!("devfs: a device resolved to something with bytes in it"),
-            Err(reason) => warn!("devfs: a device would not resolve: {reason:?}"),
+            Err(reason) => warn!("devfs: a device would not resolve: {reason}"),
         }
     }
 }

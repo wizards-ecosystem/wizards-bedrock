@@ -1,3 +1,5 @@
+use core::fmt;
+
 use fat32::FatError;
 use path_walk::PathError;
 
@@ -32,6 +34,20 @@ pub(crate) enum Error {
     NotADirectory,
     NotFound,
 }
+
+impl fmt::Display for Error {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Path(error) => write!(formatter, "{error}"),
+            Self::Backend(error) => write!(formatter, "{error}"),
+            Self::NoVolume => formatter.write_str("no volume is mounted"),
+            Self::NotADirectory => formatter.write_str("a path component is not a directory"),
+            Self::NotFound => formatter.write_str("no such entry"),
+        }
+    }
+}
+
+impl core::error::Error for Error {}
 
 impl From<PathError> for Error {
     fn from(error: PathError) -> Self {
