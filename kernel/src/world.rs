@@ -28,6 +28,7 @@ pub(crate) struct World {
     key: [u8; 32],
     handles: u32,
     ordinals: AtomicU64,
+    spaces: AtomicU64,
     pub(crate) tables: TablePool,
     pub(crate) queues: QueuePool,
     pub(crate) channels: ChannelPool,
@@ -50,6 +51,7 @@ impl World {
             key,
             handles,
             ordinals: AtomicU64::new(0),
+            spaces: AtomicU64::new(0),
             tables: Pool::new(),
             queues: Pool::new(),
             channels: Pool::new(),
@@ -72,6 +74,12 @@ impl World {
         let ordinal = self.ordinals.fetch_add(1, Ordering::Relaxed);
         let [a, b, c, d, e, f, g, h, ..] = entropy::derive(&self.key, b"handle", ordinal);
         Mixer::from_derived([a, b, c, d, e, f, g, h])
+    }
+
+    // Derived once per address space from the world key and the space's ordinal, then stored.
+    pub(crate) fn placement_seed(&self) -> [u8; 32] {
+        let ordinal = self.spaces.fetch_add(1, Ordering::Relaxed);
+        entropy::derive(&self.key, b"space", ordinal)
     }
 }
 

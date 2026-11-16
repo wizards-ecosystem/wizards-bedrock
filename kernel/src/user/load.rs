@@ -5,11 +5,10 @@ use wost::mm::{self, USegment};
 use wost::sync::{Leaf, SpinLock};
 use x86_paging::{Flags, PAGE_SIZE};
 
-use super::{APART, Regions, STACK, STACK_BYTES};
+use super::{Regions, STACK_BYTES};
 use crate::{info, warn};
 
-pub(super) fn place_stack(space: &mut AddressSpace, which: u64) -> Option<u64> {
-    let at = STACK + which * APART;
+pub(super) fn place_stack(space: &mut AddressSpace, at: u64) -> Option<u64> {
     let stack = mm::allocate_contiguous((STACK_BYTES / PAGE_SIZE) as usize, 1)?;
     // Untyped from here: nothing the kernel later reads from the program's stack may be believed.
     let stack = USegment::zeroed(stack)?;

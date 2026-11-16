@@ -525,6 +525,13 @@ number and is added here, as one entry or as an amending id on the entry it chan
   racing the seal is ordered after it and leaves a sealed object with no handle. The frames sit
   behind an object-rank lock rather than a leaf, because sealing a frame takes the frames leaf.
   `MemoryCopy` moves bytes through a kernel stack buffer, so no two object locks are held together.
+- **D-534** The kernel places each process's stack, ring, buffer 0 and time page from a seed
+  derived once per address space from the world key with its own ordinal, sampling eight words
+  per placement from the seed and a stored counter, and the entry block (version 3) names the
+  three shared pages. Placements stay above 4 GiB, where position-dependent images link, and the
+  stack keeps an unmapped guard page. A seed per process ordinal shared with the handle mixer was
+  the alternative; a space ordinal keeps the seed with the space that C9's `SpaceCreate` makes
+  without a process.
 - **D-481** The ring 3 witness is a cargo-built static `ET_EXEC` linked at `0x400000`, and the
   loader maps each segment at its `p_vaddr` with no per-program shift, because a position-dependent
   image holds absolute addresses that a shift breaks and the in-kernel loader takes no `ET_DYN`;

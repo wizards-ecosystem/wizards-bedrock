@@ -164,13 +164,12 @@ fn start_clock() {
     }
 }
 
-// A program reading `TIME` must find the mode word, not a page fault.
+// A program reading its time page must find the mode word, not a page fault.
 fn publish_time_page() {
     match timepage::root().start() {
         Ok(()) => info!(
-            "time: world clock page v{} at {:#x}, world time from 0 in steps of {} ns",
+            "time: world clock page v{}, world time from 0 in steps of {} ns",
             native_abi::timepage::VERSION,
-            native_abi::address::TIME,
             timepage::PRECISION_NS
         ),
         Err(reason) => warn!("time: {reason}; ring 3 stays closed"),

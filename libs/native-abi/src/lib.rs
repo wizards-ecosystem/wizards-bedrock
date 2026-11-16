@@ -13,34 +13,25 @@ pub use rights::Rights;
 
 const PAGE_BYTES: usize = 4096;
 
-pub mod address {
-    // A fixed address costs KASLR nothing only while no two programs share a table.
-    pub const TIME: u64 = 0x0000_1000_0000_0000;
-
-    pub const RING: u64 = 0x0000_2000_0000_0000;
-
-    // Buffer 0, the data page beside the ring.
-    pub const DATA: u64 = RING + 0x1000;
-
-    // Far from the code, so a stack run-off hits nothing.
-    pub const STACK: u64 = 0x0000_3000_0000_0000;
-}
-
 pub mod limits {
     // Registered buffers per process; index 0 is the data page.
     pub const BUFFERS: u32 = 16;
 }
 
 pub mod entry {
-    pub const VERSION: u64 = 2;
+    pub const VERSION: u64 = 3;
 
-    pub const BYTES: usize = 32;
+    pub const BYTES: usize = 64;
 
     pub mod offset {
         pub const VERSION: usize = 0;
         pub const ARGUMENT: usize = 8;
         pub const BOOTSTRAP_HANDLE: usize = 16;
         pub const OPERAND: usize = 24;
+        // Where the kernel placed this process's ring, buffer 0 and the time page.
+        pub const RING: usize = 32;
+        pub const BUFFER: usize = 40;
+        pub const TIME: usize = 48;
     }
 }
 

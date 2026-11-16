@@ -4,7 +4,6 @@ use core::num::NonZeroU64;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use native_abi::Rights;
-use native_abi::address::{DATA, RING};
 use native_abi::ring::{
     COMPLETIONS, Completion, Opcode, SUBMISSIONS, Submission, flags, header, status,
 };
@@ -234,11 +233,16 @@ impl Queue {
     }
 
     // `&mut self` skips the leaf guard, which may not span the mapper's allocation.
-    pub(crate) fn install(&mut self, space: &mut AddressSpace) -> Result<(), MapError> {
+    pub(crate) fn install(
+        &mut self,
+        space: &mut AddressSpace,
+        ring: u64,
+        data: u64,
+    ) -> Result<(), MapError> {
         let shared = self.ring.get_mut();
         let flags = Flags::WRITABLE.union(Flags::NO_EXECUTE);
-        space.map_shared_ring(RING, &shared.pages, flags)?;
-        space.map_shared(DATA, &shared.data, flags)
+        space.map_shared_ring(ring, &shared.pages, flags)?;
+        space.map_shared(data, &shared.data, flags)
     }
 
     pub(crate) fn serve(

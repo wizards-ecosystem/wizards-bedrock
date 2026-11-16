@@ -1,7 +1,6 @@
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use native_abi::address::TIME;
 use native_abi::timepage::{NOW_NS, VERSION, constants, mode};
 use ring_proto::SharedLayout;
 use wost::arch::current::paging::{AddressSpace, MapError};
@@ -127,14 +126,14 @@ impl WorldClock {
     }
 
     // Mapped `USER` with no owned bit, so a program cannot free the frame and no unmap returns it.
-    pub(crate) fn install(&self, space: &mut AddressSpace) -> Result<(), Error> {
+    pub(crate) fn install(&self, space: &mut AddressSpace, at: u64) -> Result<(), Error> {
         // Shared rather than held, because mapping may allocate, which no leaf guard may span.
         let shared = self.page.lock_leaf().as_ref().map(Arc::clone);
         let Some(shared) = shared else {
             return Err(Error::Absent);
         };
         space
-            .map_shared_ring(TIME, &shared, Flags::NO_EXECUTE)
+            .map_shared_ring(at, &shared, Flags::NO_EXECUTE)
             .map_err(Error::Map)
     }
 

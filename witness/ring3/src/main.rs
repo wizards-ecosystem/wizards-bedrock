@@ -79,18 +79,18 @@ fn run(entry: &Entry) -> Result<(), Failure> {
         witness_rt::jump_to_kernel(entry.argument);
     }
     match entry.argument {
-        ECHO => echo(),
+        ECHO => echo(entry),
         FAULT => fault_with(FAULT),
         PROBE => probe(),
-        DUPLICATE => duplicate(entry.bootstrap_handle),
+        DUPLICATE => duplicate(entry),
         INVALID_RETURN_STACK => witness_rt::enter_with_noncanonical_stack(UNSERVED),
         INVALID_RETURN_FLAGS => witness_rt::enter_with_nested_task(UNSERVED),
         READ_COUNTER => witness_rt::read_counter_with(READ_COUNTER),
         READ_KERNEL => witness_rt::read_kernel(entry.operand),
-        RING_WAIT => ring_wait(),
+        RING_WAIT => ring_wait(entry),
         THREAD_BASE => thread_base(),
         SYSCALL => witness_rt::execute_syscall(SYSCALL),
-        MEMORY => memory(),
+        MEMORY => memory(entry),
         _ => Err(Failure::UnknownBehaviour),
     }
 }
@@ -103,8 +103,8 @@ fn probe() -> Result<(), Failure> {
     Ok(())
 }
 
-fn echo() -> Result<(), Failure> {
-    let completion = exchange(Submission::simple(Opcode::Echo, TOKEN, ECHOED))?;
+fn echo(entry: &Entry) -> Result<(), Failure> {
+    let completion = exchange(entry, Submission::simple(Opcode::Echo, TOKEN, ECHOED))?;
     if completion.value != ECHOED {
         return Err(Failure::WrongValue);
     }
@@ -112,14 +112,13 @@ fn echo() -> Result<(), Failure> {
 }
 
 // The entry block, not the image, supplies the authority the duplicate names.
-fn duplicate(bootstrap: u64) -> Result<(), Failure> {
+fn duplicate(entry: &Entry) -> Result<(), Failure> {
+    let bootstrap = entry.bootstrap_handle;
     let rights = u64::from(Rights::INSPECT.bits());
-    let completion = exchange(Submission::about(
-        Opcode::Duplicate,
-        TOKEN,
-        bootstrap,
-        rights,
-    ))?;
+    let completion = exchange(
+        entry,
+        Submission::about(Opcode::Duplicate, TOKEN, bootstrap, rights),
+    )?;
     if completion.value == 0 || completion.value == bootstrap {
         return Err(Failure::WrongValue);
     }
@@ -127,11 +126,11 @@ fn duplicate(bootstrap: u64) -> Result<(), Failure> {
 }
 
 // Idle, the wait returns at once; with a timer in flight it sleeps until that timer completes.
-fn ring_wait() -> Result<(), Failure> {
+fn ring_wait(entry: &Entry) -> Result<(), Failure> {
     if witness_rt::call(Call::RingWait, 0) != 0 {
         return Err(Failure::IdleWait);
     }
-    let mut ring = open_ring()?;
+    let mut ring = open_ring(entry)?;
     ring.submit(0, Submission::simple(Opcode::Timer, TOKEN, TIMER_NS));
     ring.publish_submission_tail(1);
     if witness_rt::call(Call::RingEnter, 0) != 0 {
@@ -168,8 +167,8 @@ fn thread_base() -> Result<(), Failure> {
 }
 
 // Each refusal names its rule, and only a seal turns the object's one handle into another.
-fn memory() -> Result<(), Failure> {
-    let mut ring = Session::open()?;
+fn memory(entry: &Entry) -> Result<(), Failure> {
+    let mut ring = Session::open(entry)?;
     let sealable = ring.expect(create(0), status::OK)?.value;
     let shareable = ring.expect(create(flags::SHAREABLE), status::OK)?.value;
     let copy = Submission {
@@ -227,9 +226,9 @@ struct Session {
 }
 
 impl Session {
-    fn open() -> Result<Self, Failure> {
+    fn open(entry: &Entry) -> Result<Self, Failure> {
         Ok(Self {
-            ring: open_ring()?,
+            ring: open_ring(entry)?,
             next: 0,
         })
     }
@@ -254,8 +253,8 @@ impl Session {
     }
 }
 
-fn open_ring() -> Result<Ring, Failure> {
-    let ring = Ring::take().ok_or(Failure::RingTaken)?;
+fn open_ring(entry: &Entry) -> Result<Ring, Failure> {
+    let ring = Ring::take(entry).ok_or(Failure::RingTaken)?;
     if ring.version() != native_abi::ring::VERSION {
         return Err(Failure::RingVersion);
     }
@@ -274,8 +273,8 @@ fn completed(ring: &mut Ring) -> Result<Completion, Failure> {
     Ok(completion)
 }
 
-fn exchange(submission: Submission) -> Result<Completion, Failure> {
-    let mut ring = open_ring()?;
+fn exchange(entry: &Entry, submission: Submission) -> Result<Completion, Failure> {
+    let mut ring = open_ring(entry)?;
     ring.submit(0, submission);
     ring.publish_submission_tail(1);
     if witness_rt::call(Call::RingEnter, 0) != 1 {

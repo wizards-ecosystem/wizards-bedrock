@@ -1,6 +1,5 @@
 use core::hint::spin_loop;
 
-use native_abi::address::TIME;
 use wost::arch::current::paging::{AddressSpace, MapError};
 use wost::sync::{Leaf, SpinLock};
 use x86_paging::{Flags, PAGE_SIZE};
@@ -8,6 +7,9 @@ use x86_paging::{Flags, PAGE_SIZE};
 use super::address_spaces::in_reclaimed_space;
 use crate::time;
 use crate::timepage::{self, WorldClock};
+
+// The test space is its own, so the page may go anywhere in the user half.
+const TIME: u64 = 0x0000_1000_0000_0000;
 
 pub(super) fn spins_until(attempts: u32, done: impl Fn() -> bool) -> bool {
     (0..attempts).any(|_| {
@@ -19,7 +21,7 @@ pub(super) fn spins_until(attempts: u32, done: impl Fn() -> bool) -> bool {
 pub(super) fn a_program_reads_served_time_from_a_page_it_cannot_write() -> bool {
     let clock = timepage::root();
     in_reclaimed_space(AddressSpace::for_user, |space| {
-        if clock.install(space).is_err() {
+        if clock.install(space, TIME).is_err() {
             return false;
         }
         let Some((frame, flags)) = space.lookup(TIME) else {

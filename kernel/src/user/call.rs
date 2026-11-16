@@ -146,6 +146,9 @@ pub(super) fn cross(context: &mut thread::ThreadContext, _: usize) {
         .is_err()
         || usercopy::copy_to_user(top + offset::OPERAND as u64, &launch.operand.to_le_bytes())
             .is_err()
+        || usercopy::copy_to_user(top + offset::RING as u64, &launch.ring.to_le_bytes()).is_err()
+        || usercopy::copy_to_user(top + offset::BUFFER as u64, &launch.data.to_le_bytes()).is_err()
+        || usercopy::copy_to_user(top + offset::TIME as u64, &launch.time.to_le_bytes()).is_err()
     {
         warn!("user {which}: could not write its entry block");
         thread::retire();

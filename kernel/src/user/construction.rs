@@ -4,6 +4,7 @@ use native_abi::Rights;
 use wost::arch::current::paging::{ActivateError, AddressSpace, MapError};
 use wost::arch::current::{cpu, xstate};
 use wost::mm::pool::{self as frames, Earmark, Refused};
+use x86_paging::PAGE_SIZE;
 
 use super::call::cross;
 use super::load::{LoadError, load, place_stack};
@@ -11,6 +12,7 @@ use super::{Launch, Regions, STACK_BYTES, Spawned};
 use crate::handle::{HandleError, Table, TableRef};
 use crate::process::{Authority, Objects, ObservationRef, Process, ProcessRef, Space};
 use crate::queue::{self, Queue, QueueRef};
+use crate::space::Placer;
 use crate::world::{self, registry};
 use crate::{object, thread};
 
@@ -81,6 +83,7 @@ pub(crate) enum SpawnError {
     NoRing,
     NoWorld,
     NoMemory(Refused),
+    NoAddress,
 }
 
 impl fmt::Display for SpawnError {
@@ -122,6 +125,7 @@ impl fmt::Display for SpawnError {
             Self::NoRing => formatter.write_str("no memory for a ring"),
             Self::NoWorld => formatter.write_str("no root world; ring 3 is closed"),
             Self::NoMemory(reason) => write!(formatter, "the world's arena refused: {reason}"),
+            Self::NoAddress => formatter.write_str("no free address for a kernel mapping"),
         }
     }
 }
@@ -141,13 +145,18 @@ pub(crate) fn spawn(
     let world_ref = world::root().ok_or(SpawnError::NoWorld)?;
     let world = registry::hold(world_ref).ok_or(SpawnError::NoWorld)?;
     let mut earmark = earmark(context, &world)?;
-    let (entry, stack) = map_program(&mut construction, which)?;
+    let mut placer = Placer::new(world.placement_seed());
+    // The stack keeps one unmapped page below it, so a run-off faults.
+    let mut place = |pages, guard| placer.place(pages, guard).ok_or(SpawnError::NoAddress);
+    let stack_at = place(STACK_BYTES / PAGE_SIZE, 1)?;
+    let (ring, data, time) = (place(1, 0)?, place(1, 0)?, place(1, 0)?);
+    let (entry, stack) = map_program(&mut construction, stack_at)?;
     clock
-        .install(construction.space()?)
+        .install(construction.space()?, time)
         .map_err(SpawnError::NoTimePage)?;
     let mut queue = Queue::new(clock, &mut earmark).ok_or(SpawnError::NoRing)?;
     queue
-        .install(construction.space()?)
+        .install(construction.space()?, ring, data)
         .map_err(SpawnError::NoSpace)?;
     let root = construction.space()?.root();
 
@@ -179,6 +188,9 @@ pub(crate) fn spawn(
         bootstrap_handle: handle,
         which,
         root,
+        ring,
+        data,
+        time,
     };
     let observation = ObservationRef::create(&mut earmark, world_ref, &world);
     let process = ProcessRef::create(
@@ -277,12 +289,12 @@ fn admitted_space() -> Result<AddressSpace, SpawnError> {
 
 fn map_program(
     construction: &mut ProcessConstruction,
-    which: u64,
+    stack_at: u64,
 ) -> Result<(u64, u64), SpawnError> {
     let image = load(construction.space()?).map_err(SpawnError::Load)?;
     construction.regions = image.regions;
 
-    let stack = place_stack(construction.space()?, which).ok_or(SpawnError::NoStack)?;
+    let stack = place_stack(construction.space()?, stack_at).ok_or(SpawnError::NoStack)?;
     assert!(
         construction.regions.record(stack, STACK_BYTES),
         "the region ledger keeps one range beyond the loader's for the stack"

@@ -13,7 +13,7 @@ use native_abi::ring::{
     COMPLETION_BYTES, COMPLETIONS, COMPLETIONS_AT, Completion, ENTRIES_AT, SUBMISSION_BYTES,
     SUBMISSIONS, Submission, header,
 };
-use native_abi::{Call, address, entry};
+use native_abi::{Call, entry};
 
 const ALIGNMENT_CHECK: u64 = 1 << 18;
 
@@ -31,6 +31,9 @@ pub struct Entry {
     pub argument: u64,
     pub bootstrap_handle: u64,
     pub operand: u64,
+    pub ring: u64,
+    pub buffer: u64,
+    pub time: u64,
 }
 
 impl Entry {
@@ -49,6 +52,9 @@ impl Entry {
             argument: word(entry::offset::ARGUMENT),
             bootstrap_handle: word(entry::offset::BOOTSTRAP_HANDLE),
             operand: word(entry::offset::OPERAND),
+            ring: word(entry::offset::RING),
+            buffer: word(entry::offset::BUFFER),
+            time: word(entry::offset::TIME),
         }
     }
 }
@@ -214,16 +220,16 @@ pub fn enter_with_nested_task(call: Call) -> ! {
 
 static RING_TAKEN: AtomicBool = AtomicBool::new(false);
 
-// The kernel maps the ring at `address::RING` in every program; `take` hands out one view.
+// The kernel maps the ring where the entry block says; `take` hands out one view.
 #[derive(Debug)]
 pub struct Ring {
     base: usize,
 }
 
 impl Ring {
-    pub fn take() -> Option<Self> {
+    pub fn take(entry: &Entry) -> Option<Self> {
         (!RING_TAKEN.swap(true, Ordering::AcqRel)).then_some(Self {
-            base: address::RING as usize,
+            base: entry.ring as usize,
         })
     }
 

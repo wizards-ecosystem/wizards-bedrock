@@ -34,6 +34,7 @@ mod reaper;
 mod routing;
 #[cfg(feature = "selftest")]
 mod selftest;
+mod space;
 mod storage;
 mod theme;
 mod thread;

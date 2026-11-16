@@ -1,5 +1,4 @@
 use boot_record::Record;
-use native_abi::address::STACK;
 use wost::arch::current::paging::{AddressSpace, MapError};
 use wost::mm::PhysicalAddress;
 use x86_paging::PAGE_SIZE;
@@ -32,9 +31,6 @@ pub(crate) use selftest::{
 #[cfg(feature = "selftest")]
 pub(crate) const CODE: u64 = 0x0000_4000_0000_0000;
 
-// Keeps two programs' addresses distinct, though their page tables already isolate them.
-const APART: u64 = 0x1_0000;
-
 const STACK_BYTES: u64 = PAGE_SIZE;
 
 #[derive(Clone, Copy, Debug)]
@@ -46,6 +42,9 @@ pub(crate) struct Launch {
     bootstrap_handle: u64,
     which: u64,
     root: PhysicalAddress,
+    ring: u64,
+    data: u64,
+    time: u64,
 }
 
 const MAX_REGIONS: usize = MAX_SEGMENTS + 1;

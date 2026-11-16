@@ -524,13 +524,19 @@ worker (section 9).
 
 ### Entry block and time page
 
-A program starts at its ELF entry with `RSP` 16-byte aligned on a 32-byte entry block: version
-(`u64` at 0, value `2`), the launcher's argument (`u64` at 8), the bootstrap handle (`u64` at 16)
-and the launcher's operand (`u64` at 24). The argument is also in `rdi`; every other general
-register is zero.
+A program starts at its ELF entry with `RSP` 16-byte aligned on a 64-byte entry block: version
+(`u64` at 0, value `3`), the launcher's argument (`u64` at 8), the bootstrap handle (`u64` at 16),
+the launcher's operand (`u64` at 24), the addresses of its ring (32), buffer 0 (40) and time page
+(48), and a zero `u64` at 56. The argument is also in `rdi`; every other general register is zero.
 
-The time page is mapped read-only at `0x0000100000000000` in every program
-(`kernel/src/timepage.rs`, layout in `native_abi::timepage`). Version 2 holds constants written
+The kernel places the stack, ring, buffer 0 and time page of each process at addresses drawn from
+a placement seed the space stores, derived once from the world key (`kernel/src/space.rs`). Each
+is sampled up to eight times from the seed and a stored counter above 4 GiB and below the user
+end, then placed first fit, with no overlap; the stack keeps one unmapped page below it. No fixed
+user address remains in the ABI.
+
+The time page is mapped read-only at its placed address (`kernel/src/timepage.rs`, layout in
+`native_abi::timepage`). Version 2 holds constants written
 before any mapping exists: version (`u32` at 0, value `2`), page size (`u32` at 4), mode (`u32` at
 8: `0` none, `1` normal), precision in nanoseconds (`u64` at 16) and generation (`u64` at 24, never
 0). One aligned `u64` at 64 holds world time in nanoseconds. Ring 3 cannot execute `rdtsc`, so the
