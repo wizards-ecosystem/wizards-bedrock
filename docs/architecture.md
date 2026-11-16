@@ -78,7 +78,8 @@ is treated like a reserved one: never allocated and never direct-mapped.
 6. `interrupts::start` silences the 8259 PICs, applies the speculation controls and chooses user
    isolation, starts the local APIC, calibrates the clock, publishes the time page, checks that
    every interrupt source is masked or remapped, and only then sets the interrupt flag.
-7. `random::seed` seeds the kernel's random generator (section 5). The keyboard comes up polled,
+7. `random::seed` seeds the kernel's random generator (section 5), and `processors::bring_up`
+   starts the other processors and parks them (section 3). The keyboard comes up polled,
    the I/O APIC mappings are released with every line still masked, its poller and the service
    worker start, the idle thread starts, and `user::run` spawns `witness.elf`. The boot thread
    then blocks reading keys and draws each one.
@@ -119,6 +120,21 @@ pushed `CS`: they read `IA32_GS_BASE`, swap when it is not a kernel address and 
 is not. Those three never resume, so the half-swapped `GS` they may interrupt is never returned to.
 A switch loads the null `GS` selector between two `swapgs`, so only ring 3's zero base can clear.
 
+The kernel requests Limine's MP response with x2APIC. After the clock is calibrated and before the
+first user root, `processors::bring_up` (`kernel/src/processors.rs`) offers every other processor
+Limine lists that the MADT also lists. Where the boot posture needs the buffer clear, a processor
+whose APIC ID has nonzero sibling-thread bits (CPUID leaf 0xB) is left in the bootloader's wait
+loop, because sibling threads share a core's buffers. The rest each get an entry area, a block and
+a guarded 32 KiB stack through `percpu::start_processor`, and Limine jumps to `percpu::start_here`,
+which copies the boot processor's PAT, loads the kernel root, its area and the IDT and moves to its
+stack. There the processor sets its control state, enables the boot processor's protections,
+extended-state components and speculation controls, refusing any difference, puts its local APIC
+in x2APIC mode software-disabled, and runs the clock check (section 5). Only then does the boot
+processor admit it to the online set with `percpu::admit`. An admitted processor halts with
+interrupts off: it runs no thread, takes no part in scheduling and answers only the stop NMI. The
+online set is the boot processor and every admitted processor; building the first user root
+closes it.
+
 Every IDT gate is an interrupt gate, so a handler starts with interrupts off. Generated assembly
 stubs push a zero error code where the CPU pushes none, so every frame has one shape, and join
 one common entry in `wost/src/arch/x86_64/interrupt.rs`. It executes `cld`, executes `clac` when
@@ -132,7 +148,8 @@ calls `on_trap` in `kernel/src/arch/x86_64/trap.rs`, which matches on a `TrapCau
 - A breakpoint resumes.
 - A page fault inside the user-copy routine resumes at its fixup (section 7).
 - Any other fault in ring 0 is a kernel bug and panics with the vector, error code, `RIP`, `CS`,
-  `RFLAGS` and `RSP`. A double fault, machine check or NMI is terminal from either ring.
+  `RFLAGS` and `RSP`. A double fault, machine check or NMI is terminal from either ring, except
+  that an NMI during a panic is that panic's stop request (section 5).
 - The timer interrupt is acknowledged through an `EoiToken` minted from the live in-service bit. A
   spurious interrupt is not acknowledged, and a local APIC error panics. An unexpected vector
   panics, so a leaked legacy line cannot pass for something else.
@@ -362,8 +379,10 @@ to its guarded stack consumes its token and restarts through `thread_start`, so 
 reach no token. `thread::spawn` takes the entry and its argument.
 
 There is no unwinding: every profile uses `panic = "abort"`. `wost::panic::terminate` disables
-interrupts for good, refuses re-entry, force-releases every `wost` lock through each module's
-`force_unlock`, clears the held-rank words and calls the kernel reporter. The reporter (`kernel/src/panic.rs`) uses
+interrupts for good and refuses re-entry. It sends an NMI to every other online processor by APIC
+ID, and each sets its stopped flag and halts for good. Only when every one has answered within a
+bounded poll does `terminate` force-release every `wost` lock through each module's `force_unlock`
+and clear the held-rank words; otherwise no lock is forced. Then it calls the kernel reporter. The reporter (`kernel/src/panic.rs`) uses
 `try_lock` only, writes a framed record (`libs/panic-record`) to serial and a panic screen to the
 console, and halts the machine.
 

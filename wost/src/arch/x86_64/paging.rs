@@ -222,6 +222,8 @@ impl AddressSpace {
         if !is_active() {
             return Err(MapError::OutOfMemory);
         }
+        // The first user root closes the processor set, so a stop NMI reaches every processor.
+        let _ = percpu::freeze_areas();
         let kernel = active_root();
         let full = mm::allocate_table().ok_or(MapError::OutOfMemory)?;
         let stripped = match kind {
@@ -310,7 +312,8 @@ impl Drop for AddressSpace {
     }
 }
 
-const MAX_PERMANENT_STACKS: usize = 1;
+// The boot thread's and one per application processor the kernel may start.
+const MAX_PERMANENT_STACKS: usize = 16;
 
 static PERMANENT_STACKS: SpinLock<Leaf, [Option<StackIdentity>; MAX_PERMANENT_STACKS]> =
     SpinLock::new([None; MAX_PERMANENT_STACKS]);

@@ -27,14 +27,14 @@ const _: () = assert!(
 );
 
 #[derive(Debug)]
-struct ExclusionLedger {
+pub(super) struct ExclusionLedger {
     depth: AtomicUsize,
     deferred: AtomicUsize,
     outer_was_enabled: AtomicBool,
 }
 
 impl ExclusionLedger {
-    const fn new() -> Self {
+    pub(super) const fn new() -> Self {
         Self {
             depth: AtomicUsize::new(0),
             deferred: AtomicUsize::new(0),
@@ -44,6 +44,15 @@ impl ExclusionLedger {
 }
 
 static EXCLUSIONS: [ExclusionLedger; CONTEXTS] = [const { ExclusionLedger::new() }; CONTEXTS];
+
+// A processor running no thread keeps its exclusions in its own block.
+fn ledger(owner: usize) -> &'static ExclusionLedger {
+    if owner == percpu::NO_THREAD {
+        &percpu::current().ledger
+    } else {
+        &EXCLUSIONS[owner]
+    }
+}
 
 pub(crate) const FLAGS_INTERRUPT: u64 = 1 << 9;
 
@@ -347,8 +356,17 @@ pub fn init(handlers: &'static Handlers, user_gate: Option<InterruptVector>) {
         };
     }
 
+    load_table();
+}
+
+// Every processor shares the one table `init` filled.
+pub(super) fn load_table() {
+    assert!(
+        !HANDLERS.load(Ordering::Acquire).is_null(),
+        "the interrupt table is loaded only after init filled it"
+    );
     let pointer = TablePointer::new(IDT.address(), idt::TABLE_LIMIT);
-    // SAFETY: `lidt` loads the table its ten-byte operand describes, every gate just written
+    // SAFETY: `lidt` loads the table its ten-byte operand describes, every gate written by `init`
     // present with a valid code selector and a handler address inside the stub table.
     unsafe {
         asm!(
@@ -429,7 +447,7 @@ impl InterruptState {
     pub fn wait_for_interrupt(&mut self) {
         assert!(self.live, "an interrupt exclusion was already consumed");
         assert_owner(self.owner);
-        let ledger = &EXCLUSIONS[self.owner];
+        let ledger = ledger(self.owner);
         assert_eq!(self.level, 1, "only an outer exclusion may wait");
         assert_eq!(
             ledger.depth.load(Ordering::Relaxed),
@@ -465,7 +483,7 @@ impl InterruptState {
     pub(crate) fn commit_disabled(mut self) {
         assert!(self.live, "an interrupt exclusion was already consumed");
         assert_owner(self.owner);
-        let ledger = &EXCLUSIONS[self.owner];
+        let ledger = ledger(self.owner);
         assert_eq!(self.level, 1, "an outer interrupt exclusion is still live");
         assert_eq!(
             ledger.depth.load(Ordering::Relaxed),
@@ -485,7 +503,7 @@ impl InterruptState {
     pub(super) fn commit_context_disabled(mut self) {
         assert!(self.live, "an interrupt exclusion was already consumed");
         assert_owner(self.owner);
-        let ledger = &EXCLUSIONS[self.owner];
+        let ledger = ledger(self.owner);
         assert_eq!(
             self.level,
             ledger.depth.load(Ordering::Relaxed),
@@ -498,11 +516,7 @@ impl InterruptState {
     }
 
     pub fn were_enabled(&self) -> bool {
-        self.live
-            && self.level == 1
-            && EXCLUSIONS[self.owner]
-                .outer_was_enabled
-                .load(Ordering::Relaxed)
+        self.live && self.level == 1 && ledger(self.owner).outer_was_enabled.load(Ordering::Relaxed)
     }
 }
 
@@ -520,7 +534,7 @@ fn assert_owner(owner: usize) {
 
 fn restore_level(owner: usize, level: usize) -> bool {
     assert_owner(owner);
-    let ledger = &EXCLUSIONS[owner];
+    let ledger = ledger(owner);
     let depth = ledger.depth.load(Ordering::Relaxed);
     assert!(
         level != 0 && level <= depth,
@@ -568,7 +582,7 @@ pub fn disable() -> InterruptState {
     // `preserves_flags` is deliberately absent, since modifying IF is the point.
     unsafe { asm!("cli", options(nostack)) };
     let owner = active_context();
-    let ledger = &EXCLUSIONS[owner];
+    let ledger = ledger(owner);
     let depth = ledger.depth.load(Ordering::Relaxed);
     assert!(
         depth < MAX_EXCLUSIONS,
@@ -596,7 +610,7 @@ pub fn disable() -> InterruptState {
 pub fn enable() {
     assert_platform_enable_preconditions();
     assert_eq!(
-        EXCLUSIONS[active_context()].depth.load(Ordering::Relaxed),
+        ledger(active_context()).depth.load(Ordering::Relaxed),
         0,
         "an interrupt exclusion is still live"
     );
@@ -621,7 +635,7 @@ fn assert_platform_enable_preconditions() {
 // Private: only restoration may reuse a previously admitted flag.
 fn set_flag() {
     assert_eq!(
-        EXCLUSIONS[active_context()].depth.load(Ordering::Relaxed),
+        ledger(active_context()).depth.load(Ordering::Relaxed),
         0,
         "an interrupt exclusion is still live"
     );
@@ -677,6 +691,10 @@ extern "C" fn dispatch(raw: *mut RawTrapFrame) {
     // SAFETY: entry passes an aligned, fully initialised block with the exact `RawTrapFrame`
     // layout, and copying it leaves the assembly-owned frame untouched for `iretq`.
     let saved = unsafe { core::ptr::read(raw) };
+    // A panicking processor's stop request; any other NMI takes the trap path and panics.
+    if saved.vector == u64::from(exception::NON_MASKABLE) && crate::panic::is_panicking() {
+        percpu::acknowledge_stop();
+    }
     let frame = TrapFrame {
         raw: saved,
         origin: raw,

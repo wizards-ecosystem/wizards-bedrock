@@ -24,6 +24,7 @@ mod nvme;
 mod object;
 mod panic;
 mod pci;
+mod processors;
 mod queue;
 mod random;
 mod rank;
@@ -147,6 +148,7 @@ fn kernel_main(boot: BootInfo, mut context: ThreadContext) -> ! {
     if let Ok(rsdp) = boot.rsdp {
         iommu::discover(rsdp);
     }
+    let processor_table = boot.rsdp.ok().and_then(acpi::processors);
 
     // The bootloader's stack sits in the unsplittable direct map: it cannot be guarded, only left.
     *HANDOFF.lock_leaf() = Some(Handoff {
@@ -155,6 +157,8 @@ fn kernel_main(boot: BootInfo, mut context: ThreadContext) -> ! {
         module: boot.module,
         dma_non_requester,
         dma_quiesced,
+        processors: boot.processors,
+        processor_table,
     });
     match mem::map_boot_stack(&mut context) {
         Some(stack) => task::continue_on_stack(context, stack, boot_continue, GUARDED_STACK),
@@ -173,6 +177,8 @@ struct Handoff {
     serial: Result<(), UartError>,
     interrupts: Option<acpi::Interrupts>,
     module: Result<&'static [u8], wost::boot::HandoffError>,
+    processors: Result<wost::boot::Processors, wost::boot::HandoffError>,
+    processor_table: Option<acpi::ProcessorTable>,
     dma_non_requester: Option<pci_config::QualifiedNonRequester>,
     dma_quiesced: Option<pci_config::QuiescedIsaRequester>,
 }
@@ -196,6 +202,8 @@ fn boot_continue(context: &mut ThreadContext, stack: usize) -> ! {
         module,
         dma_non_requester,
         dma_quiesced,
+        processors,
+        processor_table,
     }) = HANDOFF.lock_leaf().take()
     else {
         panic!("the boot handoff is gone; boot_continue ran twice");
@@ -211,6 +219,7 @@ fn boot_continue(context: &mut ThreadContext, stack: usize) -> ! {
         Ok(source) => info!("random: generator seeded with 256 bits credited from {source}"),
         Err(reason) => warn!("random: {reason}; ring 3 stays closed"),
     }
+    processors::bring_up(context, processors, processor_table);
     world::start_root(context);
     input::init();
     routing::report_keyboard(masked);

@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 use core::fmt;
 
-use acpi_tables::{MadtInterrupts, Rsdp, Sdt, SdtPointers};
+use acpi_tables::{MadtInterrupts, MadtProcessors, Rsdp, Sdt, SdtPointers};
 use wost::boot::BootMemory;
 use wost::mm::{self, EarlyFirmwareMemory};
 
@@ -170,6 +170,25 @@ fn find<T: AsMut<[u8]> + AsRef<[u8]>>(
 }
 
 pub(crate) type Interrupts = MadtInterrupts<MAX_IO_APICS>;
+
+pub(crate) type ProcessorTable = MadtProcessors<{ crate::processors::MAX_PROCESSORS }>;
+
+pub(crate) fn processors(rsdp: u64) -> Option<ProcessorTable> {
+    let madt = match find_table(rsdp, Sdt::MADT) {
+        Ok(madt) => madt,
+        Err(reason) => {
+            warn!("acpi: no usable madt: {reason}");
+            return None;
+        }
+    };
+    match ProcessorTable::parse(&madt) {
+        Ok(table) => Some(table),
+        Err(reason) => {
+            warn!("acpi: madt processors unusable: {reason}");
+            None
+        }
+    }
+}
 
 // `rsdp` is the bootloader's virtual address, which base revision 4 puts in the direct map.
 pub(crate) fn interrupts(rsdp: u64) -> Option<Interrupts> {

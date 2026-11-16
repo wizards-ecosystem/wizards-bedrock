@@ -1,10 +1,14 @@
+use core::fmt;
+
 use limine::BaseRevision;
 use limine::framebuffer::MemoryModel;
 use limine::memory_map::EntryType;
+use limine::mp::{Cpu, ResponseFlags};
 use limine::request::{
     ExecutableAddressRequest, FramebufferRequest, HhdmRequest, MemoryMapRequest, ModuleRequest,
-    RsdpRequest,
+    MpRequest, RsdpRequest,
 };
+use limine::response::MpResponse;
 
 use pixel::{Channel, FramebufferLayout, PixelFormat};
 
@@ -35,6 +39,7 @@ pub fn enter(requests: Requests, kernel_main: fn(BootInfo, ThreadContext) -> !) 
         image,
         rsdp,
         modules,
+        processors,
     } = requests;
 
     kernel_main(
@@ -45,6 +50,10 @@ pub fn enter(requests: Requests, kernel_main: fn(BootInfo, ThreadContext) -> !) 
             image: take_image(image),
             rsdp: take_rsdp(rsdp),
             module: take_module(modules),
+            processors: processors
+                .get_response()
+                .map(|response| Processors { response })
+                .ok_or(HandoffError::NoResponse),
         },
         ThreadContext::mint(),
     )
@@ -100,6 +109,68 @@ pub struct Requests {
     pub image: &'static ExecutableAddressRequest,
     pub rsdp: &'static RsdpRequest,
     pub modules: &'static ModuleRequest,
+    pub processors: &'static MpRequest,
+}
+
+// Minted once at entry; each waiting processor can be sent on only once, through its `Waiting`.
+pub struct Processors {
+    response: &'static MpResponse,
+}
+
+impl fmt::Debug for Processors {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Processors")
+            .field("boot_apic_id", &self.boot_apic_id())
+            .field("count", &self.response.cpus().len())
+            .finish()
+    }
+}
+
+impl Processors {
+    pub fn boot_apic_id(&self) -> u32 {
+        self.response.bsp_lapic_id()
+    }
+
+    pub fn x2apic(&self) -> bool {
+        self.response.flags().contains(ResponseFlags::X2APIC)
+    }
+
+    pub fn waiting(self) -> impl Iterator<Item = Waiting> {
+        let boot = self.boot_apic_id();
+        self.response
+            .cpus()
+            .iter()
+            .filter(move |cpu| cpu.lapic_id != boot)
+            .map(|&cpu| Waiting { cpu })
+    }
+}
+
+pub struct Waiting {
+    cpu: &'static Cpu,
+}
+
+impl fmt::Debug for Waiting {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Waiting")
+            .field("apic_id", &self.apic_id())
+            .finish()
+    }
+}
+
+impl Waiting {
+    pub fn apic_id(&self) -> u32 {
+        self.cpu.lapic_id
+    }
+
+    // The bootloader's processor reads `extra` only after it sees the jump address.
+    pub(crate) fn send(self, extra: u64, entry: unsafe extern "C" fn(&Cpu) -> !) {
+        self.cpu
+            .extra
+            .store(extra, core::sync::atomic::Ordering::Release);
+        self.cpu.goto_address.write(entry);
+    }
 }
 
 fn take_memory(

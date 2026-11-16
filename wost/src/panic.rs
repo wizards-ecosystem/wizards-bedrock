@@ -10,13 +10,14 @@ pub(crate) struct PanicToken(());
 
 // A second call halts; `report` is a fn pointer so no guard crosses reclamation.
 pub fn terminate(info: &PanicInfo<'_>, report: fn(&PanicInfo<'_>) -> !) -> ! {
-    // Single-CPU only: this stops the calling CPU resuming interrupted code, never another.
     interrupt::disable_for_good();
     if PANICKING.swap(true, Ordering::Relaxed) {
         cpu::halt_forever();
     }
     let token = PanicToken(());
-    reclaim(&token);
+    if crate::arch::current::percpu::stop_others() {
+        reclaim(&token);
+    }
     report(info)
 }
 

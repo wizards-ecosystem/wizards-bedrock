@@ -5,9 +5,9 @@ use core::fmt;
 use x86_cpuid::physical::{ADDRESS_SIZE_LEAF, PhysicalAddressWidth};
 use x86_cpuid::{
     CpuidLeaf, Cr4Additions, ExecutionEnvironment, FrequencyHints, SPEC_CTRL_MSR,
-    SharedKernelMappingReason, Speculation,
+    SharedKernelMappingReason,
 };
-pub use x86_cpuid::{DmaHandoffPlatform, SeedSource};
+pub use x86_cpuid::{DmaHandoffPlatform, SeedSource, Speculation};
 use x86_paging::{CanonicalAddress, Entry};
 
 use super::interrupt;
@@ -235,7 +235,7 @@ pub(crate) fn extended_state_is_enabled() -> bool {
     read_cr4() & CR4_OSXSAVE != 0
 }
 
-// Only `xstate::init` may call this: SSE enabled before switches save it is shared with ring 3.
+// Only `xstate` may call this: SSE enabled before switches save it is shared with ring 3.
 pub(super) fn enable_extended_state() {
     const CR0_MP: u64 = 1 << 1;
 
@@ -660,6 +660,38 @@ pub fn enable_write_combining() -> Option<WriteCombining> {
         previous,
         restore: true,
     })
+}
+
+pub(super) fn page_attributes() -> Option<u64> {
+    const SUPPORTED: u32 = 1 << 16;
+
+    (cpuid(1, 0).edx & SUPPORTED != 0).then(|| msr::read(PAT))
+}
+
+/// # Safety
+///
+/// `value` must be another processor's `IA32_PAT`, read on a processor of the same model, so every
+/// processor maps each page with one memory type; the caller reloads `CR3` before relying on it.
+pub(super) unsafe fn set_page_attributes(value: u64) {
+    // SAFETY: the caller supplies a value this model already accepted, and the next root load
+    // drops translations cached under the old types.
+    unsafe { msr::write(PAT, value) };
+}
+
+// A sibling thread shares its core's buffers; leaf 0xB level 0 says how many APIC ID bits name it.
+pub fn smt_bits() -> u32 {
+    const TOPOLOGY_LEAF: u32 = 0xB;
+    const SMT_LEVEL: u32 = 1;
+
+    if max_leaf(0) < TOPOLOGY_LEAF {
+        return 0;
+    }
+    let level = cpuid(TOPOLOGY_LEAF, 0);
+    if (level.ecx >> 8) & 0xff == SMT_LEVEL {
+        level.eax & 0x1f
+    } else {
+        0
+    }
 }
 
 fn reload_page_table() {

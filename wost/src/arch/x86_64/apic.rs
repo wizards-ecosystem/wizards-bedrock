@@ -4,6 +4,7 @@ use register_bits::low_u32;
 use x86_apic::Register;
 use x86_apic::base::{self, Base};
 use x86_apic::in_service::{DismissalOwnership, FrameLiveness};
+use x86_apic::ipi;
 use x86_apic::lifecycle::{Interrupts, Lifecycle};
 use x86_apic::local_vector::{DeliverableVector, Entry};
 use x86_apic::register;
@@ -360,6 +361,32 @@ pub fn timer_current_count() -> u32 {
 pub fn error_status() -> u32 {
     write(register::ERROR_STATUS, 0);
     low_u32(read(register::ERROR_STATUS))
+}
+
+// A parked processor: x2APIC mode, software-disabled, so every local source stays masked while
+// an NMI from another processor still arrives.
+pub fn join() -> Result<u32, InitError> {
+    if !cpu::has_local_apic() {
+        return Err(InitError::Absent);
+    }
+    if !cpu::has_x2apic() {
+        return Err(InitError::NoExtendedMode);
+    }
+    let (_, registers) = enter_extended_mode()?;
+    registers.write(register::SPURIOUS_INTERRUPT_VECTOR, 0);
+    if Spurious::from_bits(low_u32(registers.read(register::SPURIOUS_INTERRUPT_VECTOR)))
+        .is_enabled()
+    {
+        return Err(InitError::NotResponding);
+    }
+    Ok(low_u32(registers.read(register::ID)))
+}
+
+// Every processor that can send this entered x2APIC mode: the boot one in `init`, the rest in `join`.
+pub(crate) fn send_stop(destination: u32) {
+    if let Some(registers) = ready_registers() {
+        registers.write(register::INTERRUPT_COMMAND, ipi::non_maskable(destination));
+    }
 }
 
 // Zero before the controller is up, which is also the usual boot processor's identifier.

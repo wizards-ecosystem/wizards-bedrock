@@ -8,6 +8,7 @@
 pub mod base;
 pub mod in_service;
 pub mod io;
+pub mod ipi;
 pub mod lifecycle;
 pub mod local_vector;
 pub mod pending;

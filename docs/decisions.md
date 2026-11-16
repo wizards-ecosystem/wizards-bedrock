@@ -182,6 +182,14 @@ number and is added here, as one entry or as an amending id on the entry it chan
   processor's area, decide `GS` by reading `IA32_GS_BASE` instead of the pushed `CS`, and never
   resume, so a half-swapped `GS` is never returned to. Only the transition stack is scrubbed on a
   paired entry and exit, because nothing that pushes onto a fault stack resumes ring 3.
+- **D-573** Other processors start through Limine's MP request with x2APIC, only those the MADT
+  also lists, and on a processor that is not immune to MDS-class leaks only thread zero of each
+  core. Each copies the boot processor's PAT, control state, protections, extended state and
+  speculation controls, refusing any difference, then parks with interrupts off until the scheduler
+  can run threads on it. The online set closes when the first user root is built.
+- **D-574** A panic sends an NMI to every other online processor by APIC ID, never the all-but-self
+  shorthand, and forces locks only after every one acknowledged within a bounded poll; an NMI
+  during a panic is a stop that never resumes (amends D-34).
 
 ## Memory
 

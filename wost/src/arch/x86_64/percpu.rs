@@ -1,19 +1,24 @@
 use core::arch::asm;
 use core::mem::offset_of;
-use core::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+
+use alloc::boxed::Box;
+use limine::mp::Cpu;
 
 use lock_order::HeldRanks;
 
 use x86_paging::PAGE_SIZE;
 use x86_paging::kpti::EnclavePermission::{ReadOnly, Writable};
 
-use super::interrupt::{self, RawTrapFrame};
+use super::apic;
+use super::cpu;
+use super::interrupt::{self, ExclusionLedger, RawTrapFrame};
 use super::kpti::{self, EnclaveMapping};
 use super::msr;
-use super::paging::{AddressSpace, MapError};
+use super::paging::{self, AddressSpace, MapError, MappedStack};
 use super::segment::{self, Tables};
 use super::task;
-use crate::boot::Section;
+use crate::boot::{Section, Waiting};
 use crate::mm::PhysicalAddress;
 use crate::sync::Once;
 
@@ -116,9 +121,16 @@ const _: () = assert!(
     "the entry page layout must match the entry assembly"
 );
 
+// The current task of a processor that runs no thread, and the owner of its own exclusion ledger.
+pub const NO_THREAD: usize = usize::MAX;
+
 // Atomics, so trap and panic paths observe interrupted updates.
 #[derive(Debug)]
 pub(crate) struct PerCpu {
+    pub(super) ledger: ExclusionLedger,
+    apic_id: AtomicU32,
+    stopped: AtomicBool,
+    next_online: AtomicPtr<Self>,
     held_ranks: AtomicU64,
     last_user_root: AtomicU64,
     pub(super) trap_depth: AtomicUsize,
@@ -128,14 +140,18 @@ pub(crate) struct PerCpu {
 }
 
 impl PerCpu {
-    const fn new() -> Self {
+    const fn new(task: usize, apic_id: u32) -> Self {
         Self {
+            ledger: ExclusionLedger::new(),
+            apic_id: AtomicU32::new(apic_id),
+            stopped: AtomicBool::new(false),
+            next_online: AtomicPtr::new(core::ptr::null_mut()),
             held_ranks: AtomicU64::new(0),
             last_user_root: AtomicU64::new(UNKNOWN_ROOT),
             trap_depth: AtomicUsize::new(0),
             live_frame: AtomicPtr::new(core::ptr::null_mut()),
-            current_task: AtomicUsize::new(task::BOOT),
-            exclusion_owner: AtomicUsize::new(task::BOOT),
+            current_task: AtomicUsize::new(task),
+            exclusion_owner: AtomicUsize::new(task),
         }
     }
 
@@ -164,7 +180,13 @@ impl PerCpu {
 }
 
 // The boot processor runs before memory exists, so its block and first entry page are static.
-static BOOT_BLOCK: PerCpu = PerCpu::new();
+static BOOT_BLOCK: PerCpu = PerCpu::new(task::BOOT, 0);
+
+// Every online processor's block, newest first; a block joins once and never leaves.
+static ONLINE: AtomicPtr<PerCpu> = AtomicPtr::new(core::ptr::null_mut());
+
+// A stop answered within this many polls of every other processor lets a panic force locks.
+const STOP_POLLS: u32 = 50_000_000;
 
 static BOOT_ENTRY: EntryPage = EntryPage::new();
 
@@ -347,6 +369,156 @@ pub fn bring_up_boot_processor(space: &mut AddressSpace) -> Result<u64, MapError
         "the boot processor moves to its entry area before any paired route exists"
     );
     load_area(base);
+    join_online(&BOOT_BLOCK);
     disabled.restore();
     Ok(base)
+}
+
+fn join_online(block: &'static PerCpu) {
+    let block_pointer = core::ptr::from_ref(block).cast_mut();
+    let mut head = ONLINE.load(Ordering::Acquire);
+    loop {
+        block.next_online.store(head, Ordering::Relaxed);
+        match ONLINE.compare_exchange(head, block_pointer, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => return,
+            Err(seen) => head = seen,
+        }
+    }
+}
+
+fn online() -> impl Iterator<Item = &'static PerCpu> + Clone {
+    let first = ONLINE.load(Ordering::Acquire);
+    // SAFETY: the list holds only `'static` blocks, each linked before it is published.
+    core::iter::successors(unsafe { first.as_ref() }, |block| {
+        // SAFETY: as above.
+        unsafe { block.next_online.load(Ordering::Acquire).as_ref() }
+    })
+}
+
+pub fn online_count() -> usize {
+    online().count()
+}
+
+pub type ApplicationEntry = fn(usize) -> !;
+
+// Read by the started processor only, after the bootloader hands it `extra`.
+#[derive(Debug)]
+struct Launch {
+    root: PhysicalAddress,
+    page_attributes: Option<u64>,
+    area: u64,
+    stack_top: u64,
+    entry: ApplicationEntry,
+    index: usize,
+}
+
+// A started processor's block, admitted to the online set only once its checks pass.
+#[derive(Debug)]
+pub struct Joining {
+    block: &'static PerCpu,
+    index: usize,
+}
+
+impl Joining {
+    pub const fn index(&self) -> usize {
+        self.index
+    }
+}
+
+pub fn start_processor(
+    space: &mut AddressSpace,
+    waiting: Waiting,
+    stack: MappedStack,
+    entry: ApplicationEntry,
+) -> Result<Joining, MapError> {
+    if !paging::is_active() {
+        return Err(MapError::Inactive(cpu::page_table_base()));
+    }
+    let index = CLAIMED.load(Ordering::Acquire) & !FROZEN;
+    let block: &'static PerCpu = Box::leak(Box::new(PerCpu::new(NO_THREAD, waiting.apic_id())));
+    let area = map_area(space, index, block)?;
+    let stack = stack.retain()?;
+    let launch = Box::leak(Box::new(Launch {
+        root: paging::active_root(),
+        page_attributes: cpu::page_attributes(),
+        area,
+        stack_top: stack.top(),
+        entry,
+        index,
+    }));
+    waiting.send(core::ptr::from_ref(launch).addr() as u64, start_here);
+    Ok(Joining { block, index })
+}
+
+// Refused once a user root exists, since the stop NMI would then reach a processor it never saw.
+#[must_use = "a refused admission leaves the processor out of the online set"]
+pub fn admit(joining: Joining) -> bool {
+    if CLAIMED.load(Ordering::Acquire) & FROZEN != 0 {
+        return false;
+    }
+    join_online(joining.block);
+    true
+}
+
+// Entered by the bootloader on the new processor, on its stack and tables, interrupts off.
+unsafe extern "C" fn start_here(cpu: &Cpu) -> ! {
+    let launch = cpu.extra.load(Ordering::Acquire) as usize as *const Launch;
+    // SAFETY: `start_processor` leaked the launch record and stored its address before the jump.
+    let launch = unsafe { &*launch };
+    if let Some(attributes) = launch.page_attributes {
+        // SAFETY: the boot processor's own value, and the root load below follows at once.
+        unsafe { cpu::set_page_attributes(attributes) };
+    }
+    // SAFETY: the active kernel root maps this code, the bootloader's stack in the direct map, the
+    // launch record on the heap and every entry area, at the addresses the bootloader used.
+    unsafe { cpu::set_page_table_base(launch.root) };
+    load_area(launch.area);
+    interrupt::load_table();
+    // SAFETY: `start_processor` retained the stack, mapped and guarded, for this processor alone.
+    unsafe { run_on(launch.stack_top, core::ptr::from_ref(launch).addr()) }
+}
+
+/// # Safety
+///
+/// `stack_top` must be the sixteen-byte-aligned top of a mapped, writable stack nothing else uses,
+/// and `launch` the address of a live `Launch`.
+#[unsafe(naked)]
+unsafe extern "C" fn run_on(stack_top: u64, launch: usize) -> ! {
+    ::core::arch::naked_asm!(
+        "lea rsp, [rdi - 8]",
+        "xor ebp, ebp",
+        "mov rdi, rsi",
+        "jmp {joined}",
+        joined = sym joined,
+    )
+}
+
+extern "C" fn joined(launch: usize) -> ! {
+    // SAFETY: `run_on` passes the address `start_here` read, of a leaked launch record.
+    let launch = unsafe { &*(launch as *const Launch) };
+    (launch.entry)(launch.index)
+}
+
+pub(super) fn acknowledge_stop() -> ! {
+    current().stopped.store(true, Ordering::Release);
+    cpu::halt_forever()
+}
+
+#[must_use = "an unanswered stop leaves locks another processor may hold"]
+pub(crate) fn stop_others() -> bool {
+    let me = core::ptr::from_ref(current());
+    let others = online().filter(move |block| !core::ptr::eq(*block, me));
+    for block in others.clone() {
+        apic::send_stop(block.apic_id.load(Ordering::Relaxed));
+    }
+    for _ in 0..STOP_POLLS {
+        if others
+            .clone()
+            .all(|block| block.stopped.load(Ordering::Acquire))
+        {
+            return true;
+        }
+        core::hint::spin_loop();
+    }
+    false
 }

@@ -2,7 +2,7 @@ use core::fmt::Write;
 use core::panic::PanicInfo;
 
 use panic_record::write_record;
-use wost::arch::current::cpu;
+use wost::arch::current::{cpu, percpu, task};
 
 use crate::{dev, theme, thread};
 
@@ -12,7 +12,11 @@ fn panic(info: &PanicInfo<'_>) -> ! {
 }
 
 fn report(info: &PanicInfo<'_>) -> ! {
-    let thread = thread::current_name();
+    let thread = if task::current() == percpu::NO_THREAD {
+        "a parked processor"
+    } else {
+        thread::current_name()
+    };
     dev::try_with_uart(|uart| {
         let _ = write_record(uart, thread, info);
     });

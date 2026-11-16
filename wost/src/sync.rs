@@ -39,7 +39,10 @@ fn thread_ranks() -> &'static AtomicU64 {
 
 pub(crate) fn forget_held_ranks(_panic: &PanicToken) {
     percpu::current().set_held_ranks(HeldRanks::empty());
-    thread_ranks().store(0, Ordering::Relaxed);
+    // A processor running no thread has no thread ranks to forget.
+    if let Some(ranks) = THREAD_RANKS.get(task::current()) {
+        ranks.store(0, Ordering::Relaxed);
+    }
 }
 
 fn admit(held: HeldRanks, rank: u8, leaf: bool) -> Option<HeldRanks> {

@@ -3,7 +3,7 @@ mod limine_glue;
 use core::fmt;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-pub use limine_glue::enter;
+pub use limine_glue::{Processors, Waiting, enter};
 pub use memory_map::{DirectMapCache, MemoryKind, MemoryMap, MemoryMapError, MemoryRegion};
 use pixel::FramebufferLayout;
 pub use pixel::{FramebufferLayoutError, PixelFormat, PixelFormatError, Rgb};
@@ -387,6 +387,7 @@ pub struct BootInfo {
     // Virtual from base revision 4.
     pub rsdp: Result<u64, HandoffError>,
     pub module: Result<&'static [u8], HandoffError>,
+    pub processors: Result<Processors, HandoffError>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -417,9 +418,10 @@ impl core::error::Error for HandoffError {}
 #[doc(hidden)]
 pub mod __macro {
     pub use limine::BaseRevision;
+    pub use limine::mp::RequestFlags;
     pub use limine::request::{
         ExecutableAddressRequest, FramebufferRequest, HhdmRequest, MemoryMapRequest, ModuleRequest,
-        RequestsEndMarker, RequestsStartMarker, RsdpRequest,
+        MpRequest, RequestsEndMarker, RequestsStartMarker, RsdpRequest,
     };
 
     pub use super::limine_glue::{Requests, base_revision};
@@ -483,6 +485,13 @@ macro_rules! entry {
 
         #[used]
         #[allow(unsafe_code, reason = "wost code expanding under the caller's deny")]
+        #[unsafe(link_section = ".requests")]
+        static __WOST_PROCESSORS: $crate::boot::__macro::MpRequest =
+            $crate::boot::__macro::MpRequest::new()
+                .with_flags($crate::boot::__macro::RequestFlags::X2APIC);
+
+        #[used]
+        #[allow(unsafe_code, reason = "wost code expanding under the caller's deny")]
         #[unsafe(link_section = ".requests_end_marker")]
         static __WOST_REQUESTS_END: $crate::boot::__macro::RequestsEndMarker =
             $crate::boot::__macro::RequestsEndMarker::new();
@@ -499,6 +508,7 @@ macro_rules! entry {
                     image: &__WOST_IMAGE,
                     rsdp: &__WOST_RSDP,
                     modules: &__WOST_MODULES,
+                    processors: &__WOST_PROCESSORS,
                 },
                 __WOST_ENTRY_SIGNATURE,
             )

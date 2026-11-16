@@ -109,6 +109,26 @@ pub fn init() -> Option<Extended> {
     })
 }
 
+// Another processor enables exactly the boot processor's components, or refuses to join.
+#[must_use = "a refused extended state leaves this processor unlike the boot processor"]
+pub fn join() -> bool {
+    let mask = MASK.load(Ordering::Acquire);
+    if mask == 0 {
+        return true;
+    }
+    let basic = __cpuid_count(1, 0);
+    let supported = __cpuid_count(XSTATE_LEAF, 0);
+    let available = u64::from(supported.eax) | (u64::from(supported.edx) << 32);
+    if xstate::enabled_components(available, basic.ecx) != Some(mask) {
+        return false;
+    }
+    cpu::enable_extended_state();
+    // SAFETY: the same components the boot processor enabled, each reported available here, with
+    // `CR4.OSXSAVE` just set.
+    unsafe { set_extended_control(mask) };
+    true
+}
+
 fn describe(index: u32) -> Component {
     // A sub-leaf the processor does not describe answers zeros, which reads as absent.
     let leaf = __cpuid_count(XSTATE_LEAF, index);

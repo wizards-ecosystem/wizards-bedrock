@@ -37,6 +37,8 @@ pub const ERROR_STATUS: Register = Register::new(0x280);
 
 const LVT_CMCI: Register = Register::new(0x2F0);
 
+pub const INTERRUPT_COMMAND: Register = Register::new(0x300);
+
 pub const LVT_TIMER: Register = Register::new(0x320);
 
 const LVT_THERMAL: Register = Register::new(0x330);

@@ -218,8 +218,9 @@ Phase 8:
 - There is no TLB shootdown: invalidation and "is this root loaded" ask only this CPU, and the
   user-copy page walk can go stale under a concurrent unmap (`wost/src/arch/x86_64/paging/walk.rs`,
   `wost/src/arch/x86_64/usercopy.rs`).
-- The local APIC has no second `init` and no IPI, and a panic stops only its own CPU
-  (`wost/src/arch/x86_64/apic.rs`, `wost/src/panic.rs`). The QEMU machine has one CPU (`xtask/src/qemu.rs`).
+- Other processors start only to park: they run no thread, and the local APIC's lifecycle, timer
+  and EOI claim are one each (`kernel/src/processors.rs`, `wost/src/arch/x86_64/apic.rs`). Phase 8
+  needs a per-CPU APIC state, an idle thread per processor and a fixed-vector IPI to wake one.
 
 Phase 9:
 - One VT-d unit, one domain and one function (`wost/src/arch/x86_64/vtd.rs`, `kernel/src/iommu.rs`).

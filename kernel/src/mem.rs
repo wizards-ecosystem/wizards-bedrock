@@ -225,6 +225,19 @@ pub(crate) fn unmap_device_exact(
     }
 }
 
+pub(crate) fn start_processor(
+    context: &mut ThreadContext,
+    waiting: boot::Waiting,
+    slot: &stack_layout::Slot,
+    entry: percpu::ApplicationEntry,
+) -> Result<percpu::Joining, MapError> {
+    with_active_space(context, |space| {
+        let stack = space.map_stack(slot)?;
+        percpu::start_processor(space, waiting, stack, entry)
+    })
+    .ok_or(MapError::OutOfMemory)?
+}
+
 pub(crate) fn map_boot_stack(context: &mut ThreadContext) -> Option<MappedStack> {
     map_guarded_stack(context, thread::boot_stack_layout()?)
 }

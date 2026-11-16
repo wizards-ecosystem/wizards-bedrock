@@ -2,6 +2,7 @@ use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use boot_record::{Fact, Record};
 use wost::arch::current::{apic, cpu, interrupt, pic};
+use wost::sync::{Leaf, SpinLock};
 
 use crate::arch::current::vector;
 use crate::routing::ExternalControllersMasked;
@@ -39,6 +40,13 @@ pub(crate) fn user_isolation() -> UserIsolation {
 }
 
 static MASKABLE_INTERRUPTS_READY: AtomicBool = AtomicBool::new(false);
+
+static BOOT_SPECULATION: SpinLock<Leaf, Option<cpu::Speculation>> = SpinLock::new(None);
+
+// Every other processor must report exactly this posture to join.
+pub(crate) fn boot_speculation() -> Option<cpu::Speculation> {
+    *BOOT_SPECULATION.lock_leaf()
+}
 
 pub(crate) fn maskable_interrupts_are_ready() -> bool {
     MASKABLE_INTERRUPTS_READY.load(Ordering::Acquire)
@@ -87,6 +95,7 @@ pub(crate) fn start(external_controllers: Option<&ExternalControllersMasked>) {
 
 fn apply_speculation_controls() {
     let speculation = cpu::enable_speculation_controls();
+    *BOOT_SPECULATION.lock_leaf() = Some(speculation);
     info!("cpu: {speculation}");
     if speculation.has_predictor_barrier() {
         info!("cpu: branch predictions cleared on every change of user address space");
