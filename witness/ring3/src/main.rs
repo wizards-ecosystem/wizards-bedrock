@@ -3,7 +3,7 @@
 // Denied, since `forbid` would refuse the `#[allow(unsafe_code)]` glue `witness_rt::entry!` expands.
 #![deny(unsafe_code)]
 
-use native_abi::ring::{Completion, Opcode, Submission, status};
+use native_abi::ring::{Completion, Opcode, Submission, flags, status};
 use native_abi::{Call, Rights, error};
 use witness_rt::{Entry, Ring, fault_with};
 
@@ -21,6 +21,7 @@ const READ_KERNEL: u64 = 9;
 const RING_WAIT: u64 = 10;
 const THREAD_BASE: u64 = 11;
 const SYSCALL: u64 = 12;
+const MEMORY: u64 = 13;
 
 // Far above any call the kernel serves, so adding a call cannot make this one real.
 const UNSERVED: Call = Call::Unknown(0x0BAD_0BAD);
@@ -59,6 +60,7 @@ enum Failure {
     BaseUnread = 15,
     BadBaseAccepted = 16,
     BaseMoved = 17,
+    MemoryAnswer = 18,
 }
 
 fn behave(entry: &Entry) -> u64 {
@@ -88,6 +90,7 @@ fn run(entry: &Entry) -> Result<(), Failure> {
         RING_WAIT => ring_wait(),
         THREAD_BASE => thread_base(),
         SYSCALL => witness_rt::execute_syscall(SYSCALL),
+        MEMORY => memory(),
         _ => Err(Failure::UnknownBehaviour),
     }
 }
@@ -162,6 +165,93 @@ fn thread_base() -> Result<(), Failure> {
         return Err(Failure::BaseMoved);
     }
     Ok(())
+}
+
+// Each refusal names its rule, and only a seal turns the object's one handle into another.
+fn memory() -> Result<(), Failure> {
+    let mut ring = Session::open()?;
+    let sealable = ring.expect(create(0), status::OK)?.value;
+    let shareable = ring.expect(create(flags::SHAREABLE), status::OK)?.value;
+    let copy = Submission {
+        second: shareable,
+        argument: 8,
+        length: 16,
+        ..Submission::about(Opcode::MemoryCopy, TOKEN, sealable, 0)
+    };
+    ring.expect(copy, status::OK)?;
+    ring.expect(seal(shareable), status::DENIED)?;
+    let sealed = ring.expect(seal(sealable), status::OK)?.value;
+    if sealed == sealable {
+        return Err(Failure::MemoryAnswer);
+    }
+    ring.expect(seal(sealed), status::DENIED)?;
+    ring.expect(
+        Submission {
+            handle: sealed,
+            ..copy
+        },
+        status::DENIED,
+    )?;
+    let executable = Rights::READ.union(Rights::EXECUTE);
+    ring.expect(duplicate_as(sealed, executable), status::DENIED)?;
+    ring.expect(duplicate_as(sealed, Rights::READ), status::OK)?;
+    ring.expect(
+        Submission::about(Opcode::Close, TOKEN, sealable, 0),
+        status::BAD_HANDLE,
+    )?;
+    Ok(())
+}
+
+const fn create(flags: u64) -> Submission {
+    Submission {
+        flags,
+        ..Submission::simple(Opcode::MemoryCreate, TOKEN, 1)
+    }
+}
+
+const fn seal(handle: u64) -> Submission {
+    Submission {
+        flags: flags::SEAL_READ,
+        ..Submission::about(Opcode::MemorySeal, TOKEN, handle, 0)
+    }
+}
+
+fn duplicate_as(handle: u64, rights: Rights) -> Submission {
+    Submission::about(Opcode::Duplicate, TOKEN, handle, u64::from(rights.bits()))
+}
+
+// One submission at a time, each answered before the next is published.
+struct Session {
+    ring: Ring,
+    next: u32,
+}
+
+impl Session {
+    fn open() -> Result<Self, Failure> {
+        Ok(Self {
+            ring: open_ring()?,
+            next: 0,
+        })
+    }
+
+    fn expect(&mut self, submission: Submission, wanted: u32) -> Result<Completion, Failure> {
+        let index = self.next;
+        self.next = index.wrapping_add(1);
+        self.ring.submit(index, submission);
+        self.ring.publish_submission_tail(self.next);
+        if witness_rt::call(Call::RingEnter, 0) != 1 {
+            return Err(Failure::NotServed);
+        }
+        if self.ring.completion_tail() != self.next {
+            return Err(Failure::NoCompletion);
+        }
+        let completion = self.ring.completion(index);
+        self.ring.release_completion_head(self.next);
+        if completion.status != wanted {
+            return Err(Failure::MemoryAnswer);
+        }
+        Ok(completion)
+    }
 }
 
 fn open_ring() -> Result<Ring, Failure> {

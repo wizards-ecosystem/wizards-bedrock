@@ -11,6 +11,7 @@ use wost::sync::{Leaf, SpinLock};
 
 use crate::arena::Pool;
 use crate::handle::Table;
+use crate::memory::MemoryObject;
 use crate::object::Channel;
 use crate::process::{Observation, Process};
 use crate::queue::Queue;
@@ -32,6 +33,7 @@ pub(crate) struct World {
     pub(crate) channels: ChannelPool,
     pub(crate) processes: ProcessPool,
     pub(crate) observations: ObservationPool,
+    pub(crate) memories: MemoryPool,
 }
 
 pub(crate) type TablePool = Pool<Table, 16>;
@@ -39,6 +41,7 @@ pub(crate) type QueuePool = Pool<Queue, 2>;
 pub(crate) type ChannelPool = Pool<Channel, 64>;
 pub(crate) type ProcessPool = Pool<Process, 4>;
 pub(crate) type ObservationPool = Pool<Observation, 16>;
+pub(crate) type MemoryPool = Pool<MemoryObject, 16>;
 
 impl World {
     fn new(arena: ArenaId, key: [u8; 32], handles: u32) -> Self {
@@ -52,6 +55,7 @@ impl World {
             channels: Pool::new(),
             processes: Pool::new(),
             observations: Pool::new(),
+            memories: Pool::new(),
         }
     }
 

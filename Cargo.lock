@@ -602,6 +602,7 @@ dependencies = [
  "entropy",
  "fat32",
  "handle-space",
+ "memory-object",
  "native-abi",
  "noto-sans-mono-bitmap",
  "nvme",

@@ -64,6 +64,17 @@ pub mod status {
     pub const BAD_PATH: u32 = 10;
     pub const UNAVAILABLE: u32 = 11;
     pub const IO: u32 = 12;
+    // The caller's arena cannot cover the frames the operation needs.
+    pub const NO_MEMORY: u32 = 13;
+    pub const BUSY: u32 = 14;
+}
+
+// Submission flag bits, by the opcode that reads them.
+pub mod flags {
+    // `MemoryCreate`: the object may be duplicated and shared, and is never sealed.
+    pub const SHAREABLE: u64 = 1 << 0;
+    // `MemorySeal`: sealed read-only.
+    pub const SEAL_READ: u64 = 1 << 0;
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -77,6 +88,9 @@ pub enum Opcode {
     Read,
     Random,
     Close,
+    MemoryCreate,
+    MemoryCopy,
+    MemorySeal,
     Unknown(u32),
 }
 
@@ -92,6 +106,9 @@ impl Opcode {
             7 => Self::Read,
             8 => Self::Random,
             9 => Self::Close,
+            11 => Self::MemoryCreate,
+            12 => Self::MemoryCopy,
+            13 => Self::MemorySeal,
             other => Self::Unknown(other),
         }
     }
@@ -107,6 +124,9 @@ impl Opcode {
             Self::Read => 7,
             Self::Random => 8,
             Self::Close => 9,
+            Self::MemoryCreate => 11,
+            Self::MemoryCopy => 12,
+            Self::MemorySeal => 13,
             Self::Unknown(other) => other,
         }
     }

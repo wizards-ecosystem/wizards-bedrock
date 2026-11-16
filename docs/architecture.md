@@ -469,8 +469,8 @@ A submission is opcode (`u32` at 0), token (`u32` at 4), handle (`u64` at 8), se
 (`u64` at 48) and flags (`u64` at 56). A completion is token (`u32` at 0), status (`u32` at 4),
 value (`u64` at 8), extra (`u64` at 16) and a reserved zero `u64`. A byte range names a registered
 buffer by index and a byte offset in it; only buffer 0 exists until programs register more. An
-opcode reads only its own fields: a nonzero field it does not use, or any flag, is refused with
-`DENIED`. Each direction has one producer and one consumer: the
+opcode reads only its own fields: a nonzero field it does not use, or a flag bit it does not
+define, is refused with `DENIED`. Each direction has one producer and one consumer: the
 producer writes the entry and then release-stores the index, and the consumer acquire-loads the
 index and copies the entry once. `wost` accesses each publication word with one aligned 32-bit
 `mov`, because ring 3's plain stores make a Rust atomic over them unsound.
@@ -491,11 +491,14 @@ kernel narrows it with `try_from` and refuses or saturates.
 | 7 | `Read` | reads file `handle` from file offset `offset` into `buffer` at `at`, up to `length` bytes |
 | 8 | `Random` | fills `length` bytes of `buffer` from `at` with generator output; completes with the byte count, or `UNAVAILABLE` before the generator is seeded |
 | 9 | `Close` | ends `handle`; its object goes once no handle or kernel reference holds it |
+| 11 | `MemoryCreate` | makes an object of `argument` zeroed pages in the caller's world; flag bit 0 makes it shareable. Completes with a handle: sealable `TRANSFER READ WRITE MAP`, shareable adds `DUPLICATE` |
+| 12 | `MemoryCopy` | copies `length` bytes from object `second` at byte `argument` into object `handle` at byte `offset`; needs `READ` and `WRITE`, and both ranges inside their objects (`BAD_BUFFER` otherwise) |
+| 13 | `MemorySeal` | with flag bit 0, seals the sealable object `handle` read-only; needs `WRITE` and no writer (`BUSY`). Completes with the new handle `DUPLICATE TRANSFER READ MAP`; the old value is gone |
 
 The statuses are `OK` (0), `UNKNOWN_OPCODE` (1), `NO_HANDLE_SLOT` (2), `BAD_HANDLE` (3), `DENIED`
 (4), `CANCELLED` (5), `NOT_FOUND` (6, a cancel that named nothing in flight), `NO_ROOM` (7),
-`BAD_BUFFER` (8), `NO_ENTRY` (9), `BAD_PATH` (10), `UNAVAILABLE` (11) and `IO` (12, a device or
-volume failure). A pending operation stays
+`BAD_BUFFER` (8), `NO_ENTRY` (9), `BAD_PATH` (10), `UNAVAILABLE` (11), `IO` (12, a device or
+volume failure), `NO_MEMORY` (13, the caller's arena cannot cover the operation) and `BUSY` (14). A pending operation stays
 in its slot until its completion is posted, and ring pages are reclaimed only once the queue is
 quiet. Cancellation is advisory.
 

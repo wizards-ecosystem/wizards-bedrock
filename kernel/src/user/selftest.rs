@@ -14,6 +14,7 @@ const READ_KERNEL: u64 = 9;
 const RING_WAIT: u64 = 10;
 const THREAD_BASE: u64 = 11;
 const SYSCALL: u64 = 12;
+const MEMORY: u64 = 13;
 
 pub(crate) fn spawn_faulting(context: &mut ThreadContext) -> Result<Spawned, SpawnError> {
     spawn(context, "user-fault", 2, FAULT, 0)
@@ -79,4 +80,8 @@ pub(crate) fn spawn_setting_its_thread_base(
 
 pub(crate) fn spawn_executing_syscall(context: &mut ThreadContext) -> Result<Spawned, SpawnError> {
     spawn(context, "user-syscall", 16, SYSCALL, 0)
+}
+
+pub(crate) fn spawn_refusing_memory(context: &mut ThreadContext) -> Result<Spawned, SpawnError> {
+    spawn(context, "user-memory", 17, MEMORY, 0)
 }

@@ -25,8 +25,8 @@ pub(crate) use load::{LoadError, image, load_image};
 pub(crate) use selftest::{
     spawn_duplicating, spawn_executing_syscall, spawn_faulting, spawn_for_bootstrap,
     spawn_into_the_copy_window, spawn_probing, spawn_reading_the_counter, spawn_reading_the_kernel,
-    spawn_setting_its_thread_base, spawn_waiting_on_the_ring, spawn_with_invalid_return_flags,
-    spawn_with_invalid_return_stack,
+    spawn_refusing_memory, spawn_setting_its_thread_base, spawn_waiting_on_the_ring,
+    spawn_with_invalid_return_flags, spawn_with_invalid_return_stack,
 };
 
 #[cfg(feature = "selftest")]

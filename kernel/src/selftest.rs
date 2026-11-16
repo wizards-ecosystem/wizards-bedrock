@@ -61,6 +61,10 @@ const CHECKS: &[Check] = &[
         "a thread base is taken only inside user memory",
         processes::a_thread_base_is_taken_only_inside_user_memory,
     ),
+    (
+        "memory refusals name their rule",
+        processes::memory_refusals_name_their_rule,
+    ),
     ("two spaces map one address to different memory", |_| {
         address_spaces::two_spaces_map_one_address_to_different_memory()
     }),

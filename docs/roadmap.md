@@ -190,9 +190,10 @@ Phase 7:
   tables taken as arena table frames.
 - Frame ownership lives in a page-table software bit, nothing changes a permission or unmaps a
   shared mapping, and spawn takes each segment as one contiguous run with no quota
-  (`wost/src/arch/x86_64/paging.rs`, `kernel/src/user/load.rs`). Memory objects need objects that
-  own their frames, a protect primitive, a shared unmap and accounting that cannot starve a
-  sibling.
+  (`wost/src/arch/x86_64/paging.rs`, `kernel/src/user/load.rs`). Memory objects own their arena
+  frames and seal read-only (`kernel/src/memory.rs`), but no program can map one, seal one for
+  execution or charge a code quota, and the loader does not use them. They need mapping records,
+  user page tables of arena frames and a shared unmap.
 - `DmaSegment::from` wraps a `Segment` without zeroing it, and each caller zeroes first
   (`wost/src/mm/dma.rs`). Memory a device reaches needs the same zeroing conversion as a `USegment`.
 - The kernel parses ELF and loads one borrowed Limine module (`kernel/src/user/load.rs`,

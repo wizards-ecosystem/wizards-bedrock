@@ -1,6 +1,7 @@
 use native_abi::Rights;
 
 use crate::arena::Local;
+use crate::memory::MemoryObject;
 use crate::world::World;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -8,6 +9,7 @@ pub(crate) enum ObjectType {
     Channel,
     File,
     Directory,
+    Memory,
 }
 
 impl ObjectType {
@@ -16,6 +18,10 @@ impl ObjectType {
             Self::Channel => Rights::NONE,
             Self::File => Rights::READ,
             Self::Directory => Rights::TRAVERSE.union(Rights::ENUMERATE),
+            Self::Memory => Rights::READ
+                .union(Rights::WRITE)
+                .union(Rights::EXECUTE)
+                .union(Rights::MAP),
         }
     }
 }
@@ -34,6 +40,7 @@ pub(crate) enum ObjectRef {
     Channel(Local<Channel>),
     File(crate::vfs::File),
     Directory(crate::vfs::Directory),
+    Memory(Local<MemoryObject>),
 }
 
 impl ObjectRef {
@@ -42,20 +49,21 @@ impl ObjectRef {
             Self::Channel(_) => ObjectType::Channel,
             Self::File(_) => ObjectType::File,
             Self::Directory(_) => ObjectType::Directory,
+            Self::Memory(_) => ObjectType::Memory,
         }
     }
 
     pub(crate) const fn as_file(&self) -> Option<&crate::vfs::File> {
         match self {
             Self::File(file) => Some(file),
-            Self::Channel(_) | Self::Directory(_) => None,
+            Self::Channel(_) | Self::Directory(_) | Self::Memory(_) => None,
         }
     }
 
     pub(crate) const fn as_directory(&self) -> Option<&crate::vfs::Directory> {
         match self {
             Self::Directory(directory) => Some(directory),
-            Self::Channel(_) | Self::File(_) => None,
+            Self::Channel(_) | Self::File(_) | Self::Memory(_) => None,
         }
     }
 
@@ -63,6 +71,7 @@ impl ObjectRef {
     pub(crate) fn acquire(self, world: &World) -> bool {
         match self {
             Self::Channel(channel) => world.channels.acquire(channel).is_ok(),
+            Self::Memory(memory) => world.memories.acquire(memory).is_ok(),
             Self::File(_) | Self::Directory(_) => true,
         }
     }
@@ -71,6 +80,9 @@ impl ObjectRef {
         match self {
             Self::Channel(channel) => {
                 let _ = world.channels.destroy(channel);
+            }
+            Self::Memory(memory) => {
+                let _ = world.memories.destroy(memory);
             }
             Self::File(_) | Self::Directory(_) => {}
         }

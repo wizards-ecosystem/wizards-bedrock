@@ -222,6 +222,31 @@ impl Entry {
         }
     }
 
+    // A seal names the object again in the same slot under the next generation, so the old value
+    // stops resolving; the last generation cannot renew.
+    #[verus_spec(r =>
+        ensures
+            match r {
+                Some((next, issued)) => self == Entry::Live(generation)
+                    && issued == generation + 1
+                    && issued < GENERATIONS
+                    && next == Entry::Live(issued)
+                    && next != Entry::Live(generation),
+                None => self != Entry::Live(generation) || generation + 1 >= GENERATIONS,
+            },
+    )]
+    pub const fn renew(self, generation: u64) -> Option<(Self, u64)> {
+        proof! {
+            proof::lemma_widths();
+        }
+        match self {
+            Self::Live(live) if live == generation && generation < GENERATIONS - 1 => {
+                Some((Self::Live(generation + 1), generation + 1))
+            }
+            Self::Free(_) | Self::Live(_) | Self::Retired => None,
+        }
+    }
+
     #[verus_spec(r =>
         ensures
             r == (self == Entry::Live(generation)),

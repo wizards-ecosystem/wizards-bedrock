@@ -20,6 +20,7 @@ mod interrupts;
 mod iommu;
 mod log;
 mod mem;
+mod memory;
 mod nvme;
 mod object;
 mod panic;

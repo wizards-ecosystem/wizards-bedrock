@@ -183,6 +183,42 @@ impl Table {
         entry.held.ok_or(HandleError::Stale)
     }
 
+    // `false` when the slot is at its last generation, so a seal refuses before it changes anything.
+    pub(crate) fn renewable(&self, handle: u64) -> bool {
+        Slot::decode(handle, self.mixer).is_some_and(|named| {
+            Slot::new(named.index(), named.generation().saturating_add(1)).is_some()
+        })
+    }
+
+    // The same slot and object under the next generation with new rights; the old value is gone.
+    pub(crate) fn replace(
+        &self,
+        context: &mut ThreadContext,
+        handle: u64,
+        object: ObjectRef,
+        rights: Rights,
+    ) -> Result<u64, HandleError> {
+        if !rights.are_meaningful_for(object.kind().per_type_rights()) {
+            return Err(HandleError::Meaningless);
+        }
+        let named = Slot::decode(handle, self.mixer).ok_or(HandleError::Malformed)?;
+        let mut pages = self.entries.lock(context);
+        let entry = entry_mut(&mut pages, named.index()).ok_or(HandleError::Stale)?;
+        if entry.held.is_none_or(|(held, _)| held != object) {
+            return Err(HandleError::Stale);
+        }
+        let (renewed, generation) = entry
+            .generation
+            .renew(named.generation())
+            .ok_or(HandleError::Stale)?;
+        entry.generation = renewed;
+        entry.held = Some((object, rights));
+        let Some(issued) = Slot::new(named.index(), generation) else {
+            panic!("a table renewed a slot outside the handle range");
+        };
+        Ok(issued.encode(self.mixer))
+    }
+
     // The entry goes first and the object's reference after, outside the table lock.
     pub(crate) fn close(
         &self,

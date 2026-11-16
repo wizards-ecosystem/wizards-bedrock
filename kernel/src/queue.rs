@@ -5,7 +5,9 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use native_abi::Rights;
 use native_abi::address::{DATA, RING};
-use native_abi::ring::{COMPLETIONS, Completion, Opcode, SUBMISSIONS, Submission, header, status};
+use native_abi::ring::{
+    COMPLETIONS, Completion, Opcode, SUBMISSIONS, Submission, flags, header, status,
+};
 use ring_proto::{Capacity, Queues, SharedLayout};
 use world_tree::NodeRef;
 use wost::arch::current::paging::{AddressSpace, MapError};
@@ -22,6 +24,7 @@ use crate::timepage::WorldClock;
 use crate::wait::WaitQueue;
 use crate::world::{QueuePool, World, registry};
 
+mod memory;
 mod ring;
 #[cfg(feature = "selftest")]
 mod selftest;
@@ -303,6 +306,9 @@ impl Queue {
             Opcode::OpenAt => return self.open_at(process, submission),
             Opcode::Read => return self.read(process, submission),
             Opcode::Random => self.random(submission),
+            Opcode::MemoryCreate => memory::create(process, submission),
+            Opcode::MemoryCopy => memory::copy(process, submission),
+            Opcode::MemorySeal => memory::seal(process, submission),
             Opcode::Unknown(_) => refuse(token, status::UNKNOWN_OPCODE),
         })
     }
@@ -515,43 +521,93 @@ struct Process<'context, 'held> {
     here: QueueRef,
 }
 
-// The submission fields an opcode reads; every other field, and every flag, must be zero.
+// The submission fields an opcode reads and the flag bits it defines; every other field is zero.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct Fields {
     handle: bool,
+    second: bool,
     offset: bool,
     argument: bool,
-    bytes: bool,
+    length: bool,
+    buffer: bool,
+    flags: u64,
 }
 
 impl Fields {
     const fn of(opcode: Opcode) -> Option<Self> {
-        let (handle, offset, argument, bytes) = match opcode {
-            Opcode::Echo | Opcode::Timer | Opcode::Cancel => (false, false, true, false),
-            Opcode::Uptime => (false, false, false, false),
-            Opcode::Duplicate => (true, false, true, false),
-            Opcode::Close => (true, false, false, false),
-            Opcode::OpenAt => (true, false, false, true),
-            Opcode::Read => (true, true, false, true),
-            Opcode::Random => (false, false, false, true),
-            Opcode::Unknown(_) => return None,
+        let none = Self {
+            handle: false,
+            second: false,
+            offset: false,
+            argument: false,
+            length: false,
+            buffer: false,
+            flags: 0,
         };
-        Some(Self {
-            handle,
-            offset,
-            argument,
-            bytes,
+        Some(match opcode {
+            Opcode::Echo | Opcode::Timer | Opcode::Cancel => Self {
+                argument: true,
+                ..none
+            },
+            Opcode::Uptime => none,
+            Opcode::Duplicate => Self {
+                handle: true,
+                argument: true,
+                ..none
+            },
+            Opcode::Close => Self {
+                handle: true,
+                ..none
+            },
+            Opcode::OpenAt => Self {
+                handle: true,
+                length: true,
+                buffer: true,
+                ..none
+            },
+            Opcode::Read => Self {
+                handle: true,
+                offset: true,
+                length: true,
+                buffer: true,
+                ..none
+            },
+            Opcode::Random => Self {
+                length: true,
+                buffer: true,
+                ..none
+            },
+            Opcode::MemoryCreate => Self {
+                argument: true,
+                flags: flags::SHAREABLE,
+                ..none
+            },
+            Opcode::MemoryCopy => Self {
+                handle: true,
+                second: true,
+                offset: true,
+                argument: true,
+                length: true,
+                ..none
+            },
+            Opcode::MemorySeal => Self {
+                handle: true,
+                second: true,
+                flags: flags::SEAL_READ,
+                ..none
+            },
+            Opcode::Unknown(_) => return None,
         })
     }
 
     const fn admit(self, submission: &Submission) -> bool {
-        submission.flags == 0
-            && submission.second == 0
+        submission.flags & !self.flags == 0
             && (self.handle || submission.handle == 0)
+            && (self.second || submission.second == 0)
             && (self.offset || submission.offset == 0)
             && (self.argument || submission.argument == 0)
-            && (self.bytes
-                || (submission.length == 0 && submission.buffer == 0 && submission.at == 0))
+            && (self.length || submission.length == 0)
+            && (self.buffer || (submission.buffer == 0 && submission.at == 0))
     }
 }
 

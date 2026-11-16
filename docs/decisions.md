@@ -517,6 +517,14 @@ number and is added here, as one entry or as an amending id on the entry it chan
   until its teardown has seen it off the processor, and a kernel thread leaves it `Exited`, reusable
   only by another running thread. The reaper's queue is bounded by the thread slots until thread
   records live in arenas.
+- **D-533** A memory object is a page array of arena data frames in its world, and its state word
+  moves by compare and swap from `libs/memory-object`. A seal changes the state first, then seals
+  every frame under the object's lock and waits for the flush, then renews the handle's entry in
+  place under the next generation with the sealed rights, so the old value stops resolving and the
+  slot is unchanged. The handle's generation is checked renewable before anything changes; a close
+  racing the seal is ordered after it and leaves a sealed object with no handle. The frames sit
+  behind an object-rank lock rather than a leaf, because sealing a frame takes the frames leaf.
+  `MemoryCopy` moves bytes through a kernel stack buffer, so no two object locks are held together.
 - **D-481** The ring 3 witness is a cargo-built static `ET_EXEC` linked at `0x400000`, and the
   loader maps each segment at its `p_vaddr` with no per-program shift, because a position-dependent
   image holds absolute addresses that a shift breaks and the in-kernel loader takes no `ET_DYN`;

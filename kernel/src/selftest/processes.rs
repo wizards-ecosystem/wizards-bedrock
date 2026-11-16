@@ -219,6 +219,15 @@ pub(super) fn ring_wait_sleeps_only_while_work_is_in_flight(context: &mut Thread
     last_rites_for(&spawned, 2_000).is_some_and(|rites| agreed(&rites) && rites.served == 1)
 }
 
+// Every memory refusal names its rule, and a seal leaves exactly one handle without `WRITE`.
+pub(super) fn memory_refusals_name_their_rule(context: &mut ThreadContext) -> bool {
+    let Ok(spawned) = user::spawn_refusing_memory(context) else {
+        return false;
+    };
+    last_rites_for(&spawned, 2_000)
+        .is_some_and(|rites| agreed(&rites) && rites.served == 10 && rites.handles == 4)
+}
+
 // A user base is read back through `fs`, and a kernel-half or noncanonical one is refused.
 pub(super) fn a_thread_base_is_taken_only_inside_user_memory(context: &mut ThreadContext) -> bool {
     let Ok(spawned) = user::spawn_setting_its_thread_base(context) else {
