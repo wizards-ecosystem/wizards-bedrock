@@ -88,6 +88,10 @@ against them. A statement changes only together with the code it governs.
   another world is weak: it never keeps that world or its objects alive.
 - **Refusal.** An arena never uses more frames of a colour than it has reserved. A request past the
   reservation returns a refusal to its caller and changes no state, in that world or any other.
+- **Separation.** Nothing a world does allocates from another world's arena or lowers its free
+  reservation, with one exception: a spawn into a descendant world is charged to that descendant.
+  What a foreign world may cause to be recorded in an object is prepaid by the object's owner at a
+  bound fixed when the object is made.
 - **Accounting.** A world's charge is its frame count times the frame size, and no byte a world
   causes lies outside its frames. For each colour, the reservations of all arenas plus the kernel's
   own frames never exceed the managed frames.
@@ -134,8 +138,7 @@ against them. A statement changes only together with the code it governs.
 - **Call.** Each call has exactly one outcome: a reply, abandoned, peer closed, cancelled or timed
   out. A reply right names one call and succeeds at most once. A call the server received is never
   reported as peer closed.
-- **Cost.** Nothing a world does allocates from another world's arena or lowers its free
-  reservation. An inbox is paid for by its holder when the endpoint is made, and a send to a full
+- **Cost.** An inbox is paid for by its holder when the endpoint is made, and a send to a full
   inbox is refused and changes nothing. An endpoint moved in a message stays in its sender's arena
   until the receiver reads it into its own.
 - **Donation.** While a server serves a synchronous call, its running time is charged to the
