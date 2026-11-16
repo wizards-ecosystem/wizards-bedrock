@@ -8,7 +8,7 @@ use x86_paging::{
 
 use super::{
     AddressSpace, CACHE_TYPE, EntrySlot, Flush, MapError, NOT_THE_CALLERS, Reach, TableRoot,
-    UserMapError, clear_mapping_slot, entry_slot, is_user_address, leaf_in,
+    UserMapError, clear_mapping_slot, entry_slot, is_active, is_user_address, leaf_in,
     protected_stack_overlap, ram_cache_policy, slot_in,
 };
 use crate::mm::{
@@ -321,6 +321,10 @@ impl AddressSpace {
         region: BootRegion,
         flags: Flags,
     ) -> Result<(), MapError> {
+        // `activate` checks the tables it installs; a boot mapping added later nobody checks.
+        if is_active() {
+            return Err(MapError::Activated(virtual_base));
+        }
         if flags.contains(Flags::USER) {
             return Err(MapError::NotYours(virtual_base));
         }
@@ -333,8 +337,16 @@ impl AddressSpace {
         {
             return Err(MapError::WriteExecute(virtual_base));
         }
-        // Allocatable RAM gets one leaf per frame, so sealing a frame rewrites only its own leaf.
-        let grain = if mm::is_allocatable(region.base.get(), region.len) {
+        // Allocatable RAM gets one leaf per frame at its direct-map address and nowhere else, so
+        // sealing a frame rewrites its only boot mapping.
+        let allocatable = mm::is_allocatable(region.base.get(), region.len);
+        if allocatable
+            && mm::direct_map().and_then(|direct| direct.virtual_address(region.base.get()))
+                != Some(virtual_base)
+        {
+            return Err(MapError::AllocatableAlias(virtual_base));
+        }
+        let grain = if allocatable {
             Grain::Pages
         } else {
             Grain::Largest

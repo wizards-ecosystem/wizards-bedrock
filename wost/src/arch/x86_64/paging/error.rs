@@ -33,6 +33,8 @@ pub enum MapError {
     WriteExecute(u64),
     Inactive(PhysicalAddress),
     KernelTopologyFrozen(u64),
+    Activated(u64),
+    AllocatableAlias(u64),
     InvalidEntryEnclave(u64),
     EntryEnclaveUnavailable,
 }
@@ -133,6 +135,14 @@ impl fmt::Display for MapError {
             Self::KernelTopologyFrozen(address) => write!(
                 formatter,
                 "the active kernel cannot add a top-level mapping at {address:#x}"
+            ),
+            Self::Activated(address) => write!(
+                formatter,
+                "the kernel's tables are active, so no boot region maps at {address:#x}"
+            ),
+            Self::AllocatableAlias(address) => write!(
+                formatter,
+                "allocatable memory maps only at its direct-map address, not {address:#x}"
             ),
             Self::InvalidEntryEnclave(address) => {
                 write!(formatter, "the entry enclave is invalid at {address:#x}")
