@@ -122,6 +122,7 @@ docs/            architecture, conventions, roadmap and decisions
 | `timebase` | ticks to nanoseconds by multiply and shift |
 | `trap-cause` | exception vector and error-code decoding |
 | `vtd` | VT-d registers, tables and invalidation |
+| `wake-state` | the thread wake word and wake placement |
 | `x86-apic` | local and I/O APIC encodings |
 | `x86-cpuid` | CPUID leaves, capability MSRs and the speculation policy |
 | `x86-paging` | four-level page-table entries |

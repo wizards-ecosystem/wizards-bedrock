@@ -344,6 +344,10 @@ name = "vtd"
 version = "0.3.1"
 
 [[package]]
+name = "wake-state"
+version = "0.3.1"
+
+[[package]]
 name = "wasi"
 version = "0.13.3+wasi-0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
