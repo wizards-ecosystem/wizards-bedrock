@@ -2,7 +2,7 @@ use core::fmt;
 
 use native_abi::Rights;
 use world_tree::NodeRef;
-use wost::arch::current::paging::{ActivateError, AddressSpace, MapError, UserAccess};
+use wost::arch::current::paging::{ActivateError, AddressSpace, Binding, MapError, UserAccess};
 use wost::arch::current::{cpu, xstate};
 use wost::mm::pool::{self as frames, Earmark, Refused};
 use x86_paging::PAGE_SIZE;
@@ -15,6 +15,7 @@ use crate::memory::{Kind, MemoryObject};
 use crate::process::{Authority, Objects, ObservationRef, Process, ProcessRef, Space};
 use crate::queue::{self, Queue, QueueRef};
 use crate::space::{self, Mapping, Target};
+use crate::timepage::WorldClock;
 use crate::world::{self, World, registry};
 use crate::{object, thread};
 
@@ -143,9 +144,9 @@ pub(crate) fn spawn(
         space: None,
         authority: thread::SpaceAuthority::None,
     };
-    // Siblings, not nested: the placement and record work in `lay_out` never runs under `build`.
-    let spawned = lay_out(context, world_ref, &world, &mut construction, address).and_then(
-        |(earmark, layout)| {
+    // Siblings, not nested: the placement, record and thread work never runs under `build`.
+    let spawned = lay_out(context, world_ref, &world, &mut construction, address)
+        .and_then(|(earmark, layout)| {
             build(
                 context,
                 world_ref,
@@ -153,24 +154,30 @@ pub(crate) fn spawn(
                 &mut construction,
                 (earmark, layout),
                 Named {
-                    name,
                     which,
                     argument,
                     operand,
                 },
             )
-        },
-    );
+        })
+        .and_then(|built| start(context, &mut construction, name, built));
     construction.dismantle(context, &world);
     spawned
 }
 
 #[derive(Clone, Copy, Debug)]
 struct Named {
-    name: &'static str,
     which: u64,
     argument: u64,
     operand: u64,
+}
+
+#[derive(Debug)]
+struct Built {
+    process: ProcessRef,
+    observation: ObservationRef,
+    binding: Binding,
+    clock: &'static WorldClock,
 }
 
 fn build(
@@ -180,9 +187,8 @@ fn build(
     construction: &mut ProcessConstruction,
     (mut earmark, layout): (Earmark, Layout),
     named: Named,
-) -> Result<Spawned, SpawnError> {
+) -> Result<Built, SpawnError> {
     let Named {
-        name,
         which,
         argument,
         operand,
@@ -243,6 +249,26 @@ fn build(
         world,
         Process::new(launch, observation.local(), objects),
     );
+    Ok(Built {
+        process,
+        observation,
+        binding,
+        clock,
+    })
+}
+
+fn start(
+    context: &mut thread::ThreadContext,
+    construction: &mut ProcessConstruction,
+    name: &'static str,
+    built: Built,
+) -> Result<Spawned, SpawnError> {
+    let Built {
+        process,
+        observation,
+        binding,
+        clock,
+    } = built;
     // The process takes the space only once its thread is bound to it.
     let arrange = |thread, bound| {
         let Some(space) = construction.space.take() else {
