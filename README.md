@@ -104,6 +104,7 @@ docs/            architecture, conventions, roadmap and decisions
 | `fat32` | a read-only FAT32 reader over any sector source |
 | `frame-space` | the physical frame bitmap |
 | `handle-space` | handle encoding and quotas |
+| `lock-order` | lock ranks checked by type, the equal-rank pair rule and the held-rank word |
 | `memory-map` | a bounded firmware memory map that refuses rather than truncates |
 | `mmio-range` | checked offsets for repeated MMIO accesses |
 | `native-abi` | every value that crosses ring 3: calls, errors, the entry block, ring layout, rights, the time page and fixed addresses |

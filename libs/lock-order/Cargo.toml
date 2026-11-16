@@ -1,0 +1,11 @@
+[package]
+name = "lock-order"
+description = "Lock ranks checked by type, the equal-rank pair rule and the held-rank word"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true

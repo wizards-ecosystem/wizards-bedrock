@@ -12,6 +12,7 @@ members = [
     "libs/fat32",
     "libs/frame-space",
     "libs/handle-space",
+    "libs/lock-order",
     "libs/memory-map",
     "libs/mmio-range",
     "libs/native-abi",
@@ -49,6 +50,7 @@ default-members = [
     "libs/fat32",
     "libs/frame-space",
     "libs/handle-space",
+    "libs/lock-order",
     "libs/memory-map",
     "libs/mmio-range",
     "libs/native-abi",
@@ -91,6 +93,7 @@ entropy = { path = "libs/entropy" }
 fat32 = { path = "libs/fat32" }
 frame-space = { path = "libs/frame-space" }
 handle-space = { path = "libs/handle-space" }
+lock-order = { path = "libs/lock-order" }
 memory-map = { path = "libs/memory-map" }
 mmio-range = { path = "libs/mmio-range" }
 native-abi = { path = "libs/native-abi" }
