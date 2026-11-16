@@ -5,7 +5,7 @@ use slab_layout::{CLASSES, Placement, SizeClass, place};
 
 use super::{PhysicalAddress, Segment, allocate_zeroed, direct_pointer};
 use crate::arch::current::interrupt;
-use crate::sync::SpinLock;
+use crate::sync::{Leaf, SpinLock};
 
 // Zero is never a slot address, since the direct map is in the higher half.
 const EMPTY: usize = 0;
@@ -95,7 +95,7 @@ impl Heap {
     }
 }
 
-static HEAP: SpinLock<Heap> = SpinLock::new(Heap::new());
+static HEAP: SpinLock<Leaf, Heap> = SpinLock::new(Heap::new());
 
 #[cfg(feature = "selftest")]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

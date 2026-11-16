@@ -1,4 +1,4 @@
-use wost::sync::{Once, SpinLock};
+use wost::sync::{Leaf, Once, SpinLock};
 
 const MAX_ENTRIES: usize = 8;
 
@@ -48,7 +48,7 @@ impl Arena {
     };
 }
 
-static ARENA: SpinLock<Arena> = SpinLock::new(Arena::EMPTY);
+static ARENA: SpinLock<Leaf, Arena> = SpinLock::new(Arena::EMPTY);
 static INIT: Once = Once::new();
 
 pub(crate) fn init() {

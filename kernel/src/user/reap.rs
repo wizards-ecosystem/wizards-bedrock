@@ -1,6 +1,6 @@
 use wost::arch::current::paging::{MapError, ReclaimError};
 use wost::arch::current::task;
-use wost::sync::SpinLock;
+use wost::sync::{Leaf, SpinLock};
 
 use super::{BOOTSTRAPS, Bootstrap, BootstrapAuthority, LAUNCHES};
 use crate::{queue, thread, warn};
@@ -76,7 +76,7 @@ impl ZombieTable {
     }
 }
 
-static ZOMBIES: SpinLock<ZombieTable> = SpinLock::new(ZombieTable::new());
+static ZOMBIES: SpinLock<Leaf, ZombieTable> = SpinLock::new(ZombieTable::new());
 
 #[cfg(feature = "selftest")]
 #[derive(Clone, Copy, Debug)]
@@ -87,7 +87,7 @@ pub(crate) struct LastRites {
 }
 
 #[cfg(feature = "selftest")]
-static RITES: SpinLock<[Option<LastRites>; thread::CAPACITY]> =
+static RITES: SpinLock<Leaf, [Option<LastRites>; thread::CAPACITY]> =
     SpinLock::new([const { None }; thread::CAPACITY]);
 
 #[cfg(feature = "selftest")]

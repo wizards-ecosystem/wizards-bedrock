@@ -5,11 +5,12 @@ use wost::sync::ThreadLock;
 
 use crate::arch::current::uart::{Uart, UartError};
 use crate::console::Console;
+use crate::rank;
 use crate::theme;
 use crate::{debug, info, warn};
 
-static UART: ThreadLock<Option<Uart>> = ThreadLock::new(None);
-static CONSOLE: ThreadLock<Option<Console>> = ThreadLock::new(None);
+static UART: ThreadLock<rank::Serial, Option<Uart>> = ThreadLock::new(None);
+static CONSOLE: ThreadLock<rank::Console, Option<Console>> = ThreadLock::new(None);
 
 pub(crate) fn init_uart() -> Result<(), UartError> {
     let uart = Uart::new()?;

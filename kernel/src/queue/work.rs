@@ -3,7 +3,7 @@ use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use native_abi::Rights;
 use native_abi::ring::{Completion, Submission, status};
-use wost::sync::SpinLock;
+use wost::sync::{Leaf, SpinLock};
 
 use super::ring::data_bounds;
 use super::{Pending, PendingKind, Queue, ReadRequest, WorkPhase, refuse};
@@ -145,7 +145,7 @@ impl WorkState {
 
 #[derive(Debug)]
 pub(super) struct FileWorkQueue {
-    state: SpinLock<WorkState>,
+    state: SpinLock<Leaf, WorkState>,
     pub(super) queued: AtomicUsize,
     pub(super) waiters: WaitQueue,
 }

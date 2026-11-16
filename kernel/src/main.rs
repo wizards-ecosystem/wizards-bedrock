@@ -25,6 +25,7 @@ mod panic;
 mod pci;
 mod queue;
 mod random;
+mod rank;
 mod routing;
 #[cfg(feature = "selftest")]
 mod selftest;
@@ -44,7 +45,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use boot_record::{Fact, Protections, Record};
 use wost::arch::current::{cpu, segment, task, xstate};
 use wost::boot::BootInfo;
-use wost::sync::SpinLock;
+use wost::sync::{Leaf, SpinLock};
 
 use crate::arch::current::uart::UartError;
 use crate::thread::ThreadContext;
@@ -174,7 +175,7 @@ struct Handoff {
     dma_quiesced: Option<pci_config::QuiescedIsaRequester>,
 }
 
-static HANDOFF: SpinLock<Option<Handoff>> = SpinLock::new(None);
+static HANDOFF: SpinLock<Leaf, Option<Handoff>> = SpinLock::new(None);
 
 const BOOTLOADER_STACK: usize = 0;
 const GUARDED_STACK: usize = 1;

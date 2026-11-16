@@ -2,7 +2,7 @@ use core::fmt;
 
 use super::port::{self, PortBlock};
 use crate::panic::PanicToken;
-use crate::sync::SpinLock;
+use crate::sync::{Leaf, SpinLock};
 
 const PRIMARY: u16 = 0x20;
 
@@ -30,7 +30,7 @@ const SECONDARY_VECTORS: u8 = PRIMARY_VECTORS + 8;
 
 const MASK_ALL: u8 = 0xFF;
 
-static CONTROLLERS: SpinLock<Option<Pair>> = SpinLock::new(None);
+static CONTROLLERS: SpinLock<Leaf, Option<Pair>> = SpinLock::new(None);
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]

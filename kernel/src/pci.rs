@@ -7,14 +7,14 @@ use pci_config::{
 };
 use wost::arch::current::vtd::{DmaDomain, InterruptIsolation};
 use wost::arch::current::{paging, pci};
-use wost::sync::SpinLock;
+use wost::sync::{Leaf, SpinLock};
 
 pub(crate) const FUNCTION_AUTHORITY_LIMIT: usize = pci_config::FUNCTION_AUTHORITY_LIMIT;
 
 const MAX_BUSES: usize = 256;
 
 // Static, so a topology proof never consumes the candidate's fixed boot stack.
-static TOPOLOGY: SpinLock<PciTopology> = SpinLock::new(PciTopology::new());
+static TOPOLOGY: SpinLock<Leaf, PciTopology> = SpinLock::new(PciTopology::new());
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct Function {
@@ -256,14 +256,14 @@ fn secondary_of(entry: &Function) -> Option<u8> {
     Some(pci_config::secondary_bus(pci::read(at)?))
 }
 
-static RETAINED_COMMAND: SpinLock<Option<Device>> = SpinLock::new(None);
+static RETAINED_COMMAND: SpinLock<Leaf, Option<Device>> = SpinLock::new(None);
 
-static RETAINED_PROBE: SpinLock<Option<ProbeRecovery>> = SpinLock::new(None);
+static RETAINED_PROBE: SpinLock<Leaf, Option<ProbeRecovery>> = SpinLock::new(None);
 
-static RETAINED_RELEASES: SpinLock<[Option<Device>; FUNCTION_AUTHORITY_LIMIT]> =
+static RETAINED_RELEASES: SpinLock<Leaf, [Option<Device>; FUNCTION_AUTHORITY_LIMIT]> =
     SpinLock::new([const { None }; FUNCTION_AUTHORITY_LIMIT]);
 
-static RETAINED_FUNCTIONS: SpinLock<[Option<pci::FunctionClaim>; FUNCTION_AUTHORITY_LIMIT]> =
+static RETAINED_FUNCTIONS: SpinLock<Leaf, [Option<pci::FunctionClaim>; FUNCTION_AUTHORITY_LIMIT]> =
     SpinLock::new([const { None }; FUNCTION_AUTHORITY_LIMIT]);
 
 #[derive(Debug)]
@@ -773,6 +773,7 @@ fn retain_failed_function(function: pci::FunctionClaim) {
 }
 
 static RETAINED_BARS: SpinLock<
+    Leaf,
     [Option<BarQuarantine>; FUNCTION_AUTHORITY_LIMIT * pci_config::BARS],
 > = SpinLock::new([const { None }; FUNCTION_AUTHORITY_LIMIT * pci_config::BARS]);
 

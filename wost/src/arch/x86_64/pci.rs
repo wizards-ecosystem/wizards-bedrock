@@ -12,7 +12,7 @@ use register_bits::u16_halves;
 use crate::arch::current::paging::{AdmittedDeviceRange, DeviceMapping, ReleasableDevice};
 use crate::arch::current::vtd::{DmaDomain, InterruptIsolation};
 use crate::mmio::MmioError;
-use crate::sync::SpinLock;
+use crate::sync::{Leaf, SpinLock};
 
 use super::port::{self, Port, PortBlock};
 
@@ -33,7 +33,7 @@ impl Configuration {
     }
 }
 
-static CONFIGURATION: SpinLock<Configuration> = SpinLock::new(Configuration::new());
+static CONFIGURATION: SpinLock<Leaf, Configuration> = SpinLock::new(Configuration::new());
 
 pub(crate) fn force_unlock(panic: &crate::panic::PanicToken) {
     CONFIGURATION.force_unlock(panic);
@@ -91,37 +91,45 @@ pub fn fence_dma_handoff(
     } else {
         None
     };
-    let fenced = {
-        let mut configuration = CONFIGURATION.lock_leaf();
-        if configuration.functions.len() != 0 {
-            Err(DmaHandoffFenceError::Busy)
-        } else if let Some((address, data)) = configuration.ports.as_mut() {
-            pci_config::fence_dma_handoff(policy, |at, operation| {
-                Port::write(address, at.bits());
-                match operation {
-                    HandoffAccess::ReadIdentity
-                    | HandoffAccess::ReadClass
-                    | HandoffAccess::ReadCommand => Some(Port::read(data)),
-                    HandoffAccess::WriteCommand(value) => {
-                        Port::write(data, u32::from(value));
-                        Some(0)
-                    }
-                    HandoffAccess::QuiesceIsaDma => isa_dma.as_mut().map(IsaDma::quiesce),
+    let fenced = take_ports_for_fence().and_then(|mut ports| {
+        let (address, data) = &mut ports;
+        let fenced = pci_config::fence_dma_handoff(policy, |at, operation| {
+            Port::write(address, at.bits());
+            match operation {
+                HandoffAccess::ReadIdentity
+                | HandoffAccess::ReadClass
+                | HandoffAccess::ReadCommand => Some(Port::read(data)),
+                HandoffAccess::WriteCommand(value) => {
+                    Port::write(data, u32::from(value));
+                    Some(0)
                 }
-            })
-            .map_err(DmaHandoffFenceError::Fence)
-        } else {
-            Err(DmaHandoffFenceError::Unavailable)
-        }
-    };
+                HandoffAccess::QuiesceIsaDma => isa_dma.as_mut().map(IsaDma::quiesce),
+            }
+        })
+        .map_err(DmaHandoffFenceError::Fence);
+        CONFIGURATION.lock_leaf().ports = Some(ports);
+        fenced
+    });
     if let Some(controllers) = isa_dma {
         *ISA_DMA.lock_leaf() = Some(controllers);
     }
     fenced
 }
 
+// The walk spans every bus, so it owns the ports instead of a guard, and no claim begins meanwhile.
+fn take_ports_for_fence() -> Result<(Port<u32>, Port<u32>), DmaHandoffFenceError> {
+    let mut configuration = CONFIGURATION.lock_leaf();
+    if configuration.functions.len() != 0 {
+        return Err(DmaHandoffFenceError::Busy);
+    }
+    configuration
+        .ports
+        .take()
+        .ok_or(DmaHandoffFenceError::Unavailable)
+}
+
 // Owned for the boot once claimed, so no later owner can unmask a channel.
-static ISA_DMA: SpinLock<Option<IsaDma>> = SpinLock::new(None);
+static ISA_DMA: SpinLock<Leaf, Option<IsaDma>> = SpinLock::new(None);
 
 #[derive(Debug)]
 struct IsaDma {

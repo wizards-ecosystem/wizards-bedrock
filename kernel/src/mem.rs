@@ -21,7 +21,7 @@ use x86_paging::{Flags, MappingRangeError};
 use crate::acpi::Interrupts;
 use crate::iommu::EarlyDmaBoundary;
 use crate::thread::ThreadContext;
-use crate::{debug, info, pci, thread, warn};
+use crate::{debug, info, pci, rank, thread, warn};
 
 #[cfg(feature = "selftest")]
 mod selftest;
@@ -54,7 +54,7 @@ pub(crate) fn init(memory: Result<BootMemory, HandoffError>, _dma: EarlyDmaBound
     );
 }
 
-static SPACE: SpinLock<Option<AddressSpace>> = SpinLock::new(None);
+static SPACE: SpinLock<rank::Space, Option<AddressSpace>> = SpinLock::new(None);
 
 // Private: `AddressSpace` also carries reclaim and unmap authority over the live tables.
 fn with_active_space<T>(

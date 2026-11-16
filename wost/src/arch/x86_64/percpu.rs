@@ -1,4 +1,6 @@
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
+
+use lock_order::HeldRanks;
 
 use crate::mm::PhysicalAddress;
 
@@ -8,14 +10,14 @@ const UNKNOWN_ROOT: u64 = u64::MAX;
 // Atomics, so trap and panic paths observe interrupted updates.
 #[derive(Debug)]
 pub(crate) struct PerCpu {
-    spinlocks_held: AtomicUsize,
+    held_ranks: AtomicU64,
     last_user_root: AtomicU64,
 }
 
 impl PerCpu {
     const fn new() -> Self {
         Self {
-            spinlocks_held: AtomicUsize::new(0),
+            held_ranks: AtomicU64::new(0),
             last_user_root: AtomicU64::new(UNKNOWN_ROOT),
         }
     }
@@ -35,16 +37,12 @@ impl PerCpu {
         );
     }
 
-    pub(crate) fn spinlocks_held(&self) -> usize {
-        self.spinlocks_held.load(Ordering::Relaxed)
+    pub(crate) fn held_ranks(&self) -> HeldRanks {
+        HeldRanks::from_bits(self.held_ranks.load(Ordering::Relaxed))
     }
 
-    pub(crate) fn took_lock(&self) {
-        self.spinlocks_held.fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub(crate) fn released_lock(&self) {
-        self.spinlocks_held.fetch_sub(1, Ordering::Relaxed);
+    pub(crate) fn set_held_ranks(&self, held: HeldRanks) {
+        self.held_ranks.store(held.bits(), Ordering::Relaxed);
     }
 }
 

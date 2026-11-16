@@ -15,11 +15,11 @@ use wost::arch::current::pci as platform_pci;
 use wost::arch::current::pci::DmaHandoffFenceError;
 use wost::arch::current::vtd::{DmaDomain, Establishment, InterruptIsolation, Retargeting, Vtd};
 use wost::boot::BootInfo;
-use wost::sync::{SpinLock, ThreadLock, ThreadLockGuard};
+use wost::sync::{Leaf, SpinLock, ThreadLock, ThreadLockGuard};
 
 use crate::mem::{self, DeviceRetirement};
 use crate::thread::ThreadContext;
-use crate::{acpi, info, nvme, pci, warn};
+use crate::{acpi, info, nvme, pci, rank, warn};
 
 const REGISTER_WINDOW: u64 = 4096;
 
@@ -130,20 +130,20 @@ pub(crate) fn secure_handoff(boot: &BootInfo) -> Result<EarlyDmaBoundary, EarlyD
     })
 }
 
-static DMAR: SpinLock<Option<&'static [u8]>> = SpinLock::new(None);
+static DMAR: SpinLock<Leaf, Option<&'static [u8]>> = SpinLock::new(None);
 
-static DMA_COVERAGE: SpinLock<Option<&'static [u8]>> = SpinLock::new(None);
+static DMA_COVERAGE: SpinLock<Leaf, Option<&'static [u8]>> = SpinLock::new(None);
 
 // A thread lock, because commands run under the guard, which a leaf guard forbids.
-static INSTALLED: ThreadLock<Option<InstalledUnit>> = ThreadLock::new(None);
+static INSTALLED: ThreadLock<rank::Iommu, Option<InstalledUnit>> = ThreadLock::new(None);
 
-static RETAINED_REGISTERS: SpinLock<Option<ReleasableDevice>> = SpinLock::new(None);
+static RETAINED_REGISTERS: SpinLock<Leaf, Option<ReleasableDevice>> = SpinLock::new(None);
 
-static RETAINED_MAPPING: SpinLock<Option<DeviceMapping>> = SpinLock::new(None);
+static RETAINED_MAPPING: SpinLock<Leaf, Option<DeviceMapping>> = SpinLock::new(None);
 
-static RETAINED_FENCES: SpinLock<Option<UnitFences>> = SpinLock::new(None);
+static RETAINED_FENCES: SpinLock<Leaf, Option<UnitFences>> = SpinLock::new(None);
 
-static UNIT_FENCE_SLOTS: SpinLock<[Option<pci::DmaFence>; pci::FUNCTION_AUTHORITY_LIMIT]> =
+static UNIT_FENCE_SLOTS: SpinLock<Leaf, [Option<pci::DmaFence>; pci::FUNCTION_AUTHORITY_LIMIT]> =
     SpinLock::new([const { None }; pci::FUNCTION_AUTHORITY_LIMIT]);
 
 // Runs before any candidate, while the heap may still grow; candidates never allocate.
@@ -613,7 +613,7 @@ fn release_refused_fences(fences: UnitFences) -> FenceAcquisition {
     }
 }
 
-pub(crate) fn installed() -> ThreadLockGuard<'static, Option<InstalledUnit>> {
+pub(crate) fn installed() -> ThreadLockGuard<'static, rank::Iommu, Option<InstalledUnit>> {
     INSTALLED.lock()
 }
 

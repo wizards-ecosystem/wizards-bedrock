@@ -2,7 +2,7 @@ use core::hint::spin_loop;
 
 use native_abi::address::TIME;
 use wost::arch::current::paging::{AddressSpace, MapError};
-use wost::sync::SpinLock;
+use wost::sync::{Leaf, SpinLock};
 use x86_paging::{Flags, PAGE_SIZE};
 
 use super::address_spaces::in_reclaimed_space;
@@ -74,7 +74,7 @@ pub(super) fn the_clock_never_runs_backwards() -> bool {
     let mut monotonic = true;
     for attempt in 0..ATTEMPTS {
         let sample = if attempt == 0 {
-            let lock = SpinLock::new(0u32);
+            let lock = SpinLock::<Leaf, _>::new(0u32);
             let held = lock.lock_leaf();
             let sample = time::now_ns();
             drop(held);

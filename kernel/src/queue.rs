@@ -9,7 +9,7 @@ use native_abi::ring::{COMPLETIONS, Completion, Opcode, SUBMISSIONS, Submission,
 use ring_proto::{Capacity, Queues, SharedLayout};
 use wost::arch::current::paging::{AddressSpace, MapError};
 use wost::mm::{self, SharedRing, USegment};
-use wost::sync::SpinLock;
+use wost::sync::{Leaf, SpinLock};
 use x86_paging::{Flags, PAGE_SIZE};
 
 use crate::handle::HandleTable;
@@ -131,9 +131,9 @@ struct SharedQueue {
 
 #[derive(Debug)]
 pub(crate) struct Queue {
-    ring: SpinLock<SharedQueue>,
+    ring: SpinLock<Leaf, SharedQueue>,
     waiters: WaitQueue,
-    pending: SpinLock<PendingTable>,
+    pending: SpinLock<Leaf, PendingTable>,
     // Kernel-owned, so ring 3 cannot forge the edge a waiter samples before it sleeps.
     served: AtomicUsize,
     clock: &'static WorldClock,

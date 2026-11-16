@@ -2,7 +2,7 @@ use core::fmt;
 
 use entropy::{Base, Local, NotReady};
 use wost::arch::current::cpu::{self, SeedReader, SeedSource};
-use wost::sync::SpinLock;
+use wost::sync::{Leaf, SpinLock};
 
 use crate::time;
 
@@ -16,7 +16,7 @@ struct Generator {
     local: Local,
 }
 
-static GENERATOR: SpinLock<Option<Generator>> = SpinLock::new(None);
+static GENERATOR: SpinLock<Leaf, Option<Generator>> = SpinLock::new(None);
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum SeedError {

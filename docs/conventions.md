@@ -60,6 +60,10 @@ code a panic interrupted may hold any lock. `wost` reclaims only its own locks, 
 boundary that cannot capture a live guard. Kernel reporting uses `try_lock` and omits a channel
 whose lock is busy.
 
+Every lock names its level as its first type parameter. A lock is `Leaf` unless code under its
+guard takes another lock or runs caller-supplied work; such a lock gets a level in its crate's one
+rank list (`kernel/src/rank.rs` in the kernel), chained after every level held when it is taken.
+
 `kernel/` uses `deny`, not `forbid`, because `wost::entry!` expands `#[allow(unsafe_code)]` boot
 glue into the binary crate and `forbid` cannot be lifted by any `allow`.
 

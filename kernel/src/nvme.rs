@@ -9,8 +9,8 @@ use wost::arch::current::pci::MappedBar;
 use wost::mm::DmaSegment;
 use wost::sync::ThreadLock;
 
-use crate::info;
 use crate::thread::ThreadContext;
+use crate::{info, rank};
 
 mod io;
 mod preparation;
@@ -536,17 +536,24 @@ impl DisabledController {
     }
 }
 
-static CONTROLLER: ThreadLock<Option<(Controller, DmaSegment)>> = ThreadLock::new(None);
-
-static UNCOMMITTED: ThreadLock<Option<(Controller, DmaSegment)>> = ThreadLock::new(None);
-
-static PREPARE_QUARANTINE: ThreadLock<Option<(PrepareQuarantine, crate::pci::Device)>> =
+static CONTROLLER: ThreadLock<rank::Storage, Option<(Controller, DmaSegment)>> =
     ThreadLock::new(None);
 
-static CONTROLLER_QUARANTINE: ThreadLock<Option<RetainedController>> = ThreadLock::new(None);
-
-static IOMMU_QUARANTINE: ThreadLock<Option<(DisabledController, crate::pci::Device)>> =
+static UNCOMMITTED: ThreadLock<rank::Storage, Option<(Controller, DmaSegment)>> =
     ThreadLock::new(None);
+
+static PREPARE_QUARANTINE: ThreadLock<
+    rank::Storage,
+    Option<(PrepareQuarantine, crate::pci::Device)>,
+> = ThreadLock::new(None);
+
+static CONTROLLER_QUARANTINE: ThreadLock<rank::Storage, Option<RetainedController>> =
+    ThreadLock::new(None);
+
+static IOMMU_QUARANTINE: ThreadLock<
+    rank::Storage,
+    Option<(DisabledController, crate::pci::Device)>,
+> = ThreadLock::new(None);
 
 #[derive(Debug)]
 struct RetainedController {

@@ -6,7 +6,7 @@ use native_abi::timepage::{NOW_NS, VERSION, constants, mode};
 use ring_proto::SharedLayout;
 use wost::arch::current::paging::{AddressSpace, MapError};
 use wost::mm::{self, SharedRing, USegment};
-use wost::sync::SpinLock;
+use wost::sync::{Leaf, SpinLock};
 use x86_paging::{Flags, PAGE_SIZE};
 
 use crate::time;
@@ -27,7 +27,7 @@ pub(crate) struct WorldClock {
     origin_ns: AtomicU64,
     precision_ns: u64,
     served_ns: AtomicU64,
-    page: SpinLock<Option<Arc<PageWords>>>,
+    page: SpinLock<Leaf, Option<Arc<PageWords>>>,
 }
 
 static ROOT: WorldClock = WorldClock::new(PRECISION_NS);

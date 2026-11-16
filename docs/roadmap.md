@@ -222,9 +222,6 @@ Phase 8:
 - There is one run queue and one idle thread, and one PIT watchdog judges one APIC window for a
   global clock published with relaxed stores (`kernel/src/thread.rs`, `kernel/src/time.rs`). Phase 8
   needs per-CPU queues and timers, one clock owner and release and acquire publication.
-- Lock order is a convention: `lock_leaf` takes no token, and leaf locks cover whole-bus PCI walks
-  (`wost/src/sync.rs`, `wost/src/arch/x86_64/pci.rs`). Fine-grained
-  locking needs a checked order, and no caller-supplied work may run under a leaf guard.
 - There is no TLB shootdown: invalidation and "is this root loaded" ask only this CPU, and the
   user-copy page walk can go stale under a concurrent unmap (`wost/src/arch/x86_64/paging/walk.rs`,
   `wost/src/arch/x86_64/usercopy.rs`).

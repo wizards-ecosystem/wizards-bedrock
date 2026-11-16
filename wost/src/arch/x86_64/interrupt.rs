@@ -597,7 +597,7 @@ pub fn enable() {
 
 fn assert_platform_enable_preconditions() {
     assert!(
-        crate::sync::spinlocks_held() == 0,
+        !crate::sync::holds_spin_lock(),
         "a spin lock is held, so setting the interrupt flag would strand it"
     );
     assert!(
@@ -620,7 +620,7 @@ fn set_flag() {
         "an interrupt exclusion is still live"
     );
     assert!(
-        crate::sync::spinlocks_held() == 0 || crate::panic::is_panicking(),
+        !crate::sync::holds_spin_lock() || crate::panic::is_panicking(),
         "a spin lock is held, so setting the interrupt flag would strand it"
     );
     // SAFETY: `sti` sets IF on this CPU and touches nothing else; every caller checked the

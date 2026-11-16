@@ -4,7 +4,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use handle_space::{Mixer, Quota, SLOTS, Slot};
 use native_abi::Rights;
-use wost::sync::SpinLock;
+use wost::sync::{Leaf, SpinLock};
 
 use crate::object::ObjectRef;
 
@@ -126,7 +126,7 @@ impl Arena {
 }
 
 // A leaf: objects released in table teardown drop only after its guard is gone.
-static ARENA: SpinLock<Arena> = SpinLock::new(Arena::new());
+static ARENA: SpinLock<Leaf, Arena> = SpinLock::new(Arena::new());
 
 // Backing for the whole quota is committed here, so a trap-context claim never allocates.
 fn commit_table(quota: usize) -> Result<TableId, HandleError> {

@@ -2,7 +2,7 @@ use elf64::{Elf, ElfError, SegmentKind};
 use wost::arch::current::paging::{AddressSpace, Flush, MapError};
 use wost::boot::HandoffError;
 use wost::mm::{self, USegment};
-use wost::sync::SpinLock;
+use wost::sync::{Leaf, SpinLock};
 use x86_paging::{Flags, PAGE_SIZE};
 
 use super::{APART, Regions, STACK, STACK_BYTES};
@@ -19,7 +19,7 @@ pub(super) fn place_stack(space: &mut AddressSpace, which: u64) -> Option<u64> {
     Some(at)
 }
 
-static IMAGE: SpinLock<Option<&'static [u8]>> = SpinLock::new(None);
+static IMAGE: SpinLock<Leaf, Option<&'static [u8]>> = SpinLock::new(None);
 
 #[cfg(feature = "selftest")]
 pub(crate) fn image() -> Option<&'static [u8]> {

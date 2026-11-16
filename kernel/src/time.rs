@@ -3,7 +3,7 @@ use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use timebase::Timebase;
 use wost::arch::current::{apic, cpu, interrupt};
-use wost::sync::SpinLock;
+use wost::sync::{Leaf, SpinLock};
 use x86_apic::timer::{self, Divide};
 use x86_pit::calibrate::WatchdogVerdict;
 use x86_pit::{CRYSTAL_HZ, calibrate, elapsed_ticks};
@@ -78,7 +78,7 @@ static REVOCATION: AtomicUsize = AtomicUsize::new(0);
 
 static WATCHDOG_DISAGREEMENTS: AtomicUsize = AtomicUsize::new(0);
 
-static HARDWARE: SpinLock<ClockHardware> = SpinLock::new(ClockHardware::EMPTY);
+static HARDWARE: SpinLock<Leaf, ClockHardware> = SpinLock::new(ClockHardware::EMPTY);
 
 #[derive(Debug)]
 struct ClockHardware {

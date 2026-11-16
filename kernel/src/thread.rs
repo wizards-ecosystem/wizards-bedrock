@@ -10,6 +10,7 @@ use wost::arch::current::task::{self, BOOT, Bound, InitFailure, Released, TaskEr
 use wost::sync::SpinLock;
 pub(crate) use wost::sync::ThreadContext;
 
+use crate::rank;
 use crate::time::{self, NANOSECONDS_PER_MS};
 use crate::timepage::WorldClock;
 use crate::warn;
@@ -349,8 +350,8 @@ enum CurrentEligibility {
     Excluded,
 }
 
-// A leaf lock; every switch happens after its guard drops, with interrupts off throughout.
-static THREADS: SpinLock<Threads> = SpinLock::new(Threads {
+// Every switch happens after its guard drops, with interrupts off throughout.
+static THREADS: SpinLock<rank::Scheduler, Threads> = SpinLock::new(Threads {
     identities: [Identity::FREE; CAPACITY],
     queue: RunQueue {
         slots: [Scheduled::FREE; CAPACITY],

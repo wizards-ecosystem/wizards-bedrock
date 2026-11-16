@@ -322,6 +322,12 @@ number and is added here, as one entry or as an amending id on the entry it chan
   call or second token lock compiles while it is held; `lock_leaf` is for take, mutate and return
   with no call-out and may nest under a token lock. A leaf-guarded static exposes no closure form
   (D-121, D-430), and the heap never holds its lock while taking a frame.
+- **D-560** Every lock names a `libs/lock-order` level as a type parameter (amends D-85 and D-63).
+  A token lock compiles only when its level is declared after the token's, and a held-rank word in
+  the per-CPU block refuses at run time a spin lock at or below a held rank and any lock under a
+  leaf guard, which also holds the top rank. Leaves stay run-time checked rather than token checked
+  because trap paths take them with no token in reach. Thread locks keep the same word per thread
+  slot, because a preempted holder keeps its lock, and rank below every spin lock.
 - **D-99** Everything that follows a thread (`RSP0`, the address-space root, extended state,
   `FS_BASE`) is switched in `task::prepare`, the one function every switch passes through. The root
   is installed from a `Binding` that `AddressSpace::bind` mints only after comparing the higher half

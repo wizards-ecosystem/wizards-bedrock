@@ -290,13 +290,23 @@ A `WaitQueue` (`kernel/src/wait.rs`) is a list of thread slots linked through
 waiter checks its condition and links itself under that lock with interrupts off, so no wake can
 fall between the check and the block. A wait may also end at a deadline.
 
-`wost/src/sync.rs` has two lock kinds. `SpinLock` clears the interrupt flag while held and
-restores the flag it found; setting the flag or switching threads while one is held panics.
-`SpinLock::lock` borrows a `ThreadContext` mutably for the guard's life, so no blocking call
-compiles under it, and `lock_leaf` is for take, mutate and return with no call-out. `ThreadLock`
-is for long work such as console output: it leaves interrupts on and refuses trap context and any
-held `SpinLock`. `ThreadContext` is a zero-sized, non-`Send`, non-`Sync` token, and every call that
-may block takes one. `wost` mints it in two places only: `boot::enter`, which hands it to the
+`wost/src/sync.rs` has two lock kinds, and every lock names its rank as its first type
+parameter: a `libs/lock-order` level, declared once per crate, whose number orders it. `wost`
+declares only `Leaf`, the highest rank; `kernel/src/rank.rs` declares the storage, IOMMU, console
+and serial thread locks, then the kernel address space and the scheduler, as one chain whose ranks
+a constant assertion keeps ascending. `SpinLock` clears the interrupt flag while held and restores
+the flag it found; setting the flag or switching threads while one is held panics.
+`SpinLock::lock` borrows a `Held<M>` token mutably for the guard's life and compiles only when the
+lock's level is declared after `M`. The thread's own token is `ThreadContext`, which is
+`Held<Unlocked>`, so no blocking call compiles under the guard. `lock_leaf` takes no token and is
+for take, mutate and return with no call-out. Each processor's per-CPU block holds a word of the
+ranks it holds: a spin lock is taken only when its rank is above every one held, and a leaf guard
+also holds `Leaf`, so nothing at all is taken under it. A violation panics before the lock is
+waited on, and a user copy under a leaf guard panics too. `ThreadLock` is for long work such as
+console output: it leaves interrupts on and refuses trap context and any held `SpinLock`. Its
+holder can be preempted, so thread-lock ranks are kept in a word per thread slot, and they rank
+below every spin lock. `ThreadContext` is a zero-sized, non-`Send`, non-`Sync` token, and every call
+that may block takes one. `wost` mints it in two places only: `boot::enter`, which hands it to the
 kernel's entry function, and `task::thread_start`, which begins every thread on its own stack and
 passes `&mut ThreadContext` and one `usize` argument to the thread's entry. The boot thread's move
 to its guarded stack consumes its token and restarts through `thread_start`, so trap code can
@@ -304,7 +314,7 @@ reach no token. `thread::spawn` takes the entry and its argument.
 
 There is no unwinding: every profile uses `panic = "abort"`. `wost::panic::terminate` disables
 interrupts for good, refuses re-entry, force-releases every `wost` lock through each module's
-`force_unlock` and calls the kernel reporter. The reporter (`kernel/src/panic.rs`) uses
+`force_unlock`, clears the held-rank words and calls the kernel reporter. The reporter (`kernel/src/panic.rs`) uses
 `try_lock` only, writes a framed record (`libs/panic-record`) to serial and a panic screen to the
 console, and halts the machine.
 
@@ -492,7 +502,8 @@ The kernel's first act, before memory initialization, is `iommu::secure_handoff`
 the CPU-identified QEMU TCG or VMware platform, because a device can rewrite RAM but cannot forge
 the hypervisor CPUID leaf. It requires a checksummed `WZDH` ACPI table, which `xtask` supplies to
 both machines, attesting CF8/CFC reach, static requesters and quiescence until this point. It then
-clears and reads back Bus Master Enable on every function of segment 0. VMware's 440BX host
+clears and reads back Bus Master Enable on every function of segment 0; the walk owns the
+configuration ports for its length instead of holding their lock, so no claim starts during it. VMware's 440BX host
 bridge, whose BME bit is read-only, is kept as a qualified non-requester, and its PIIX4 ISA bridge
 is fenced by masking both 8237 controllers. Any other refusal panics, so a machine without
 CF8/CFC configuration access does not boot.

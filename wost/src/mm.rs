@@ -29,21 +29,21 @@ pub use shared::{SealedSegment, Shared, SharedBytes, SharedRing, USegment};
 use crate::arch::current::cache;
 use crate::boot::{BootMemory, DirectMap, MemoryKind, MemoryMap};
 use crate::panic::PanicToken;
-use crate::sync::SpinLock;
+use crate::sync::{Leaf, SpinLock};
 
 // Two zeroed `.bss` bits per frame, so 16 GiB costs one megabyte the image does not carry.
 pub(crate) const CEILING: u64 = 16 << 30;
 
 type Space = FrameSpace<{ words_for(CEILING) }>;
 
-// One leaf lock (rank `lock_order::LEAF`) keeps the bitmap, the reservations and the nodes agreed.
+// One leaf lock keeps the bitmap, the reservations and the nodes agreed.
 struct Frames {
     space: Space,
     pool: Pool,
     nodes: pool::Nodes,
 }
 
-static FRAMES: SpinLock<Frames> = SpinLock::new(Frames {
+static FRAMES: SpinLock<Leaf, Frames> = SpinLock::new(Frames {
     space: Space::new(),
     pool: Pool::new(),
     nodes: pool::Nodes::new(),
@@ -140,7 +140,7 @@ pub(crate) fn device_range_is_eligible(start: u64, end: u64) -> bool {
     map.allows_device_mapping(start, end)
 }
 
-static MAP: SpinLock<Option<MemoryMap>> = SpinLock::new(None);
+static MAP: SpinLock<Leaf, Option<MemoryMap>> = SpinLock::new(None);
 
 pub(crate) fn map_direct_cache(start: u64, end: u64) -> Option<crate::boot::DirectMapCache> {
     MAP.lock_leaf()

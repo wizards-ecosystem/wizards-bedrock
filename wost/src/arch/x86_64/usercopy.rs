@@ -132,6 +132,10 @@ struct Window {
 
 impl Window {
     fn open() -> Self {
+        assert!(
+            !crate::sync::holds_leaf(),
+            "a leaf guard is held, so no user copy may run"
+        );
         let opened = cpu::Protections::enabled().smap;
         if opened {
             // SAFETY: `stac` runs only where `cpuid` reported SMAP. It changes `AC` and access

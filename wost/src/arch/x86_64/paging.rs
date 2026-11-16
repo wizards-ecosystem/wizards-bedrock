@@ -33,7 +33,7 @@ use super::cpu;
 use super::kpti;
 use super::task::Released;
 use crate::mm::{self, PhysicalAddress, SharedKeepalive};
-use crate::sync::SpinLock;
+use crate::sync::{Leaf, SpinLock};
 use device::{DEVICE_WINDOW_END, DEVICE_WINDOW_START, DeviceExtent};
 use map::Grain;
 use stack::{StackIdentity, protected_stack_overlap};
@@ -311,10 +311,11 @@ impl Drop for AddressSpace {
 
 const MAX_PERMANENT_STACKS: usize = 2;
 
-static PERMANENT_STACKS: SpinLock<[Option<StackIdentity>; MAX_PERMANENT_STACKS]> =
+static PERMANENT_STACKS: SpinLock<Leaf, [Option<StackIdentity>; MAX_PERMANENT_STACKS]> =
     SpinLock::new([None; MAX_PERMANENT_STACKS]);
 
-static TASK_STACK_PIN: SpinLock<Option<(AddressSpaceRoots, StackLayout)>> = SpinLock::new(None);
+static TASK_STACK_PIN: SpinLock<Leaf, Option<(AddressSpaceRoots, StackLayout)>> =
+    SpinLock::new(None);
 
 pub(crate) fn force_unlock(panic: &crate::panic::PanicToken) {
     PERMANENT_STACKS.force_unlock(panic);

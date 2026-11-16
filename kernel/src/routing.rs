@@ -3,7 +3,7 @@ use alloc::vec::Vec;
 use boot_record::{Fact, Record};
 use wost::arch::current::interrupt;
 use wost::arch::current::paging::{self, ReleasableDevice};
-use wost::sync::SpinLock;
+use wost::sync::{Leaf, SpinLock};
 use x86_apic::io;
 
 use crate::acpi::Interrupts;
@@ -46,10 +46,11 @@ pub(crate) fn mask_external_controllers(
 
 const KEYBOARD_IRQ: u8 = 1;
 
-static RETAINED_MAPPING: SpinLock<Option<(paging::DeviceMapping, Vec<IoApic>)>> =
+static RETAINED_MAPPING: SpinLock<Leaf, Option<(paging::DeviceMapping, Vec<IoApic>)>> =
     SpinLock::new(None);
 
-static RETAINED_REGISTERS: SpinLock<Option<(ReleasableDevice, Vec<IoApic>)>> = SpinLock::new(None);
+static RETAINED_REGISTERS: SpinLock<Leaf, Option<(ReleasableDevice, Vec<IoApic>)>> =
+    SpinLock::new(None);
 
 #[derive(Debug)]
 pub(crate) struct ExternalControllersMasked {

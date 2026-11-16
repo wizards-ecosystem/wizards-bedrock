@@ -14,7 +14,7 @@ use super::percpu;
 use super::xstate;
 use crate::cell::HardwareCell;
 use crate::panic::PanicToken;
-use crate::sync::{Once, SpinLock, ThreadContext};
+use crate::sync::{Leaf, Once, SpinLock, ThreadContext};
 
 pub(crate) const MAX_TASKS: usize = 32;
 
@@ -119,7 +119,7 @@ impl Table {
     }
 }
 
-static TABLE: SpinLock<Table> = SpinLock::new(Table {
+static TABLE: SpinLock<Leaf, Table> = SpinLock::new(Table {
     slots: [Slot::VACANT; MAX_TASKS],
     count: 0,
     stacks: None,
@@ -327,7 +327,7 @@ pub fn exit_to(slot: usize) -> TaskError {
 
 fn prepare(slot: usize, leaving: State) -> Result<(*mut u64, u64), TaskError> {
     assert!(
-        crate::sync::spinlocks_held() == 0,
+        !crate::sync::holds_spin_lock(),
         "a spin lock is held, so the thread left behind could never release it"
     );
     let mut table = TABLE.lock_leaf();
@@ -717,7 +717,7 @@ fn user_entry_preflight(entry: u64, stack_top: u64) -> Result<(), UserError> {
     }
     // Entry never returns, so a guard live in the caller's frame could never be released.
     assert!(
-        crate::sync::spinlocks_held() == 0,
+        !crate::sync::holds_spin_lock(),
         "a spin lock is held, so entering ring 3 would strand it"
     );
 
@@ -776,7 +776,7 @@ pub fn continue_on_stack(
     }
     // A guard live on the abandoned stack could never be released.
     assert!(
-        crate::sync::spinlocks_held() == 0,
+        !crate::sync::holds_spin_lock(),
         "a spin lock is held, so the stack being abandoned would strand it"
     );
     disabled.commit_disabled();

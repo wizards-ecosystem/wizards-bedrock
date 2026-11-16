@@ -503,6 +503,7 @@ dependencies = [
  "address",
  "frame-space",
  "limine",
+ "lock-order",
  "memory-map",
  "mmio-range",
  "nvme",

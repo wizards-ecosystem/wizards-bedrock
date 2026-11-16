@@ -3,7 +3,7 @@
 use boot_record::{Fact, Record};
 use ps2_keys::{Arriving, Decoder, KeyEvent, KeyState, SetProbe, Shift, us};
 use wost::arch::current::interrupt;
-use wost::sync::SpinLock;
+use wost::sync::{Leaf, SpinLock};
 
 use crate::arch::current::i8042::Controller;
 use crate::thread::ThreadContext;
@@ -79,7 +79,7 @@ impl Keyboard {
     }
 }
 
-static KEYBOARD: SpinLock<Option<Keyboard>> = SpinLock::new(None);
+static KEYBOARD: SpinLock<Leaf, Option<Keyboard>> = SpinLock::new(None);
 
 // The character is resolved at decode time, since a reader may look milliseconds later.
 #[derive(Clone, Copy, Debug)]
@@ -211,7 +211,7 @@ impl Events {
     }
 }
 
-static EVENTS: SpinLock<Events> = SpinLock::new(Events::new());
+static EVENTS: SpinLock<Leaf, Events> = SpinLock::new(Events::new());
 
 static READERS: WaitQueue = WaitQueue::new();
 

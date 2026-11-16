@@ -2,7 +2,7 @@ use native_abi::address::{RING, STACK};
 use wost::arch::current::paging::{AddressSpace, MapError};
 use wost::arch::current::task;
 use wost::mm::PhysicalAddress;
-use wost::sync::SpinLock;
+use wost::sync::{Leaf, SpinLock};
 use x86_paging::PAGE_SIZE;
 
 use crate::handle::HandleTable;
@@ -51,7 +51,7 @@ struct Launch {
     root: PhysicalAddress,
 }
 
-static LAUNCHES: SpinLock<[Option<Launch>; thread::CAPACITY]> =
+static LAUNCHES: SpinLock<Leaf, [Option<Launch>; thread::CAPACITY]> =
     SpinLock::new([None; thread::CAPACITY]);
 
 const MAX_REGIONS: usize = MAX_SEGMENTS + 1;
@@ -117,7 +117,7 @@ enum BootstrapAuthority {
     Released(task::Released),
 }
 
-static BOOTSTRAPS: SpinLock<[Option<Bootstrap>; thread::CAPACITY]> =
+static BOOTSTRAPS: SpinLock<Leaf, [Option<Bootstrap>; thread::CAPACITY]> =
     SpinLock::new([const { None }; thread::CAPACITY]);
 
 #[derive(Debug)]

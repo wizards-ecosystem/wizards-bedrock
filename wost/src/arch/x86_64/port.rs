@@ -4,10 +4,10 @@ use core::marker::PhantomData;
 use port_space::PortSpace;
 
 use crate::panic::PanicToken;
-use crate::sync::SpinLock;
+use crate::sync::{Leaf, SpinLock};
 
 // Fixed claims are permanent, so a register set is claimed in one transaction.
-static CLAIMED: SpinLock<PortSpace> = SpinLock::new(PortSpace::new());
+static CLAIMED: SpinLock<Leaf, PortSpace> = SpinLock::new(PortSpace::new());
 
 fn reserve(number: u16, len: usize) -> bool {
     CLAIMED.lock_leaf().reserve(number as usize, len)
