@@ -252,6 +252,11 @@ number and is added here, as one entry or as an amending id on the entry it chan
   unreserved frames, and an operation earmarks before it takes, so a reserved frame can always be
   taken and a refused request changes nothing. Huge-page and contiguous needs are reserved
   physically when they arrive.
+- **D-495** `USegment::seal` and `ArenaFrame::seal` return an `mm::Sealing` that yields the
+  `SealedSegment` or `SealedFrame` only once the seal's own flush has completed, and until then can
+  only be read (amends D-478). The caller merges the seal's flush into its own, so a memory object
+  seals every page under its object lock, waits once after the lock and finishes each page. A seal
+  that waited before returning would wait under that spin lock.
 - **D-520** A kernel object lives in a slot of an object page, and a reference to it held by
   kernel code is a counted `Hold` rather than a lifetime: a slot with borrows cannot be removed or
   reached mutably, a page with borrows cannot close, and `pool::dissolve` refuses while any object

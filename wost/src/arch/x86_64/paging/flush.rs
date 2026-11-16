@@ -32,6 +32,13 @@ impl Flush {
         }
     }
 
+    pub(crate) const fn duplicate(&self) -> Self {
+        Self {
+            cpus: self.cpus,
+            generation: self.generation,
+        }
+    }
+
     pub fn is_complete(&self) -> bool {
         self.laggards() == 0
     }

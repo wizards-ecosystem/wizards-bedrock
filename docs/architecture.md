@@ -326,7 +326,9 @@ handle, marks its record sealed and rewrites its direct-map leaf read-only, the 
 that ever changes in place (`paging/direct.rs`). A sealed frame becomes writable again only when it
 is released: the record goes free first, then the leaf turns writable, then the frame is zeroed.
 Each change returns a `paging::Flush`. A downgrade to read-only reaches every other online
-processor. A release back to writable needs none: a write through a stale read-only entry faults,
+processor, and a seal hands back an `mm::Sealing` that can be read but yields its `SealedSegment`
+or `SealedFrame` only once its flush has completed; a caller that seals many frames under a lock
+merges their flushes, waits once after the lock and then finishes each. A release back to writable needs none: a write through a stale read-only entry faults,
 and `paging::stale_kernel_write` finds the live leaf writable and resumes.
 
 A shootdown (`paging/flush.rs`) takes the next generation of one counter and sends the shootdown

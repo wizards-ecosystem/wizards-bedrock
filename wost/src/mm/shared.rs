@@ -54,13 +54,44 @@ impl USegment {
     }
 
     // Consuming the run proves no writable mapping of it remains, since mapping consumes it too.
-    pub fn seal(self, flush: &mut Flush) -> SealedSegment {
+    pub fn seal(self, flush: &mut Flush) -> Sealing<SealedSegment> {
         let mut run = ManuallyDrop::new(self);
         // SAFETY: `run` is never dropped, so this is the one move out of its segment.
         let segment = unsafe { ManuallyDrop::take(&mut run.segment) };
-        seal_run(&segment, flush);
-        SealedSegment {
-            segment: ManuallyDrop::new(segment),
+        let mut own = Flush::none();
+        seal_run(&segment, &mut own);
+        flush.merge(own.duplicate());
+        Sealing::new(
+            SealedSegment {
+                segment: ManuallyDrop::new(segment),
+            },
+            own,
+        )
+    }
+}
+
+// Until its flush completes another processor may still write the frames, so it is only read.
+#[derive(Debug)]
+#[must_use = "a seal is usable only once its flush completes"]
+pub struct Sealing<T> {
+    sealed: T,
+    flush: Flush,
+}
+
+impl<T> Sealing<T> {
+    pub(super) const fn new(sealed: T, flush: Flush) -> Self {
+        Self { sealed, flush }
+    }
+
+    pub const fn sealed(&self) -> &T {
+        &self.sealed
+    }
+
+    pub fn finish(self) -> Result<T, Self> {
+        if self.flush.is_complete() {
+            Ok(self.sealed)
+        } else {
+            Err(self)
         }
     }
 }

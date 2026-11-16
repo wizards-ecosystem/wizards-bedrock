@@ -139,9 +139,12 @@ fn place(
             .map_err(|reason| LoadError::NotMapped(reason.reason()));
     }
     let mut flush = Flush::none();
-    let sealed = run.seal(&mut flush);
+    let sealing = run.seal(&mut flush);
     // No processor may keep a writable translation of code it could later run.
     flush.wait(context);
+    let Ok(sealed) = sealing.finish() else {
+        panic!("a sealed run awaited its flush and still holds a writable translation");
+    };
     space
         .map_user_sealed(placement.at, sealed, placement.flags)
         .map_err(LoadError::NotMapped)

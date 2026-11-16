@@ -6,7 +6,7 @@ pub use frame_space::{ColourMask, FrameKind};
 
 use super::direct::DirectSpan;
 use super::frame::{frame_address, zero_frame};
-use super::{FRAMES, Frames, table};
+use super::{FRAMES, Frames, Sealing, table};
 use crate::arch::current::paging::{DirectAccess, Flush, set_direct_access};
 use crate::sync::ThreadContext;
 
@@ -338,21 +338,25 @@ impl ArenaFrame {
     }
 
     // Consuming the frame proves no writable mapping of it remains, since a mapping consumes it.
-    pub fn seal(self, flush: &mut Flush) -> SealedFrame {
+    pub fn seal(self, flush: &mut Flush) -> Sealing<SealedFrame> {
         assert!(
             self.kind != FrameKind::Table,
             "a page-table frame is never sealed"
         );
         let frame = ManuallyDrop::new(self);
-        {
+        let own = {
             let _guard = FRAMES.lock_leaf();
             table::seal(frame.frame);
-            flush.merge(set_direct_access(frame.address(), DirectAccess::ReadOnly));
-        }
-        SealedFrame {
-            frame: frame.frame,
-            arena: frame.arena,
-        }
+            set_direct_access(frame.address(), DirectAccess::ReadOnly)
+        };
+        flush.merge(own.duplicate());
+        Sealing::new(
+            SealedFrame {
+                frame: frame.frame,
+                arena: frame.arena,
+            },
+            own,
+        )
     }
 }
 

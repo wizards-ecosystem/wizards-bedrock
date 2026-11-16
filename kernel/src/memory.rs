@@ -3,6 +3,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use memory_object::{Seal, StateRefusal, StateWord};
 use native_abi::Rights;
 use wost::arch::current::paging::Flush;
+use wost::mm::Sealing;
 use wost::mm::pool::{ArenaFrame, Earmark, FrameKind, SealedFrame};
 use wost::sync::SpinLock;
 use x86_paging::PAGE_SIZE;
@@ -18,6 +19,7 @@ const PAGE_BYTES: usize = PAGE_SIZE as usize;
 #[derive(Debug)]
 enum Frame {
     Writable(ArenaFrame),
+    Sealing(Sealing<SealedFrame>),
     Sealed(SealedFrame),
 }
 
@@ -146,6 +148,7 @@ impl MemoryObject {
             let chunk = &mut into[done..done + len];
             let read = match slot_mut(&mut blocks, page) {
                 Some(Frame::Writable(frame)) => frame.read_at(offset, chunk),
+                Some(Frame::Sealing(frame)) => frame.sealed().read_at(offset, chunk),
                 Some(Frame::Sealed(frame)) => frame.read_at(offset, chunk),
                 None => false,
             };
@@ -192,10 +195,21 @@ impl MemoryObject {
                 let Some(Frame::Writable(frame)) = slot.take() else {
                     panic!("a memory object sealed a page that was not writable");
                 };
-                *slot = Some(Frame::Sealed(frame.seal(&mut flush)));
+                *slot = Some(Frame::Sealing(frame.seal(&mut flush)));
             }
         }
         flush.wait(context);
+        let mut blocks = self.frames.lock(context);
+        for page in 0..self.pages {
+            let slot = slot_mut(&mut blocks, page);
+            let Some(Frame::Sealing(sealing)) = slot.take() else {
+                panic!("a memory object's sealing page changed under its seal");
+            };
+            let Ok(frame) = sealing.finish() else {
+                panic!("a memory object's page awaited its flush and is still not sealed");
+            };
+            *slot = Some(Frame::Sealed(frame));
+        }
         Ok(())
     }
 }
