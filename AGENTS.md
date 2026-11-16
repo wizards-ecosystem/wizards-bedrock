@@ -65,9 +65,12 @@ cargo xtask help               every task
 
 ## Tests
 
-- The suite is minimal. Keep a test only if it pins a contract a user could hit or a fixed real bug with non-trivial logic.
-- A change adds at most one focused test, and only when it fixes a real bug. Prefer extending an existing test to adding a file.
-- Never test prose, constants, tables, layouts, wiring or source text; what must hold of the source is a lint, a deny or a type.
+- The suite is minimal. Keep a test only if it pins a contract a user could hit or a fixed real
+  bug with non-trivial logic.
+- A change adds at most one focused test, and only when it fixes a real bug. Prefer extending an
+  existing test to adding a file.
+- Never test prose, constants, tables, layouts, wiring or source text; what must hold of the source
+  is a lint, a deny or a type.
 - A flaky or slow check is deleted, not fixed.
 - Builds and test tiers run on the laptop, never on the desktop.
 
@@ -77,4 +80,5 @@ are on-demand laptop work that nothing requires or records.
 ## Docs
 
 - Docs never fail a build: no test, script or CI step checks prose against code.
-- Update the docs a change makes false in the same change; at a release, read the docs against the code and fix what drifted.
+- Update the docs a change makes false in the same change; at a release, read the docs against the
+  code and fix what drifted.

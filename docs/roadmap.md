@@ -190,13 +190,19 @@ Phase 7:
   calls must allocate and block, so a call from ring 3 must become thread context.
 - Kernel memory comes from one frame bitmap with no owner or colour, one heap that never shrinks and
   one handle arena behind one lock (`wost/src/mm.rs`, `wost/src/mm/heap.rs`,
-  `kernel/src/handle.rs`). Per-world arenas need frames that name their pool and colour, and a
-  handle table per process carved from its world's arena.
+  `kernel/src/handle.rs`), so handle values reveal the shared arena's allocation order across
+  processes. Per-world arenas need frames that name their pool and colour, and a handle table per
+  process carved from its world's arena.
 - Frame ownership lives in a page-table software bit, nothing changes a permission or unmaps a
   shared mapping, spawn takes each segment as one contiguous run with no quota, and `USegment::from`
   does not zero (`wost/src/arch/x86_64/paging.rs`, `kernel/src/user/load.rs`,
   `wost/src/mm/shared.rs`). Memory objects need objects that own their frames, a protect primitive,
   a shared unmap, accounting that cannot starve a sibling, and a conversion that zeroes.
+- The direct map aliases kernel text as executable, so W^X holds per mapping and not per frame
+  (`kernel/src/mem.rs`). Write-then-seal needs W^X per frame.
+- `mm::init` and `EarlyFirmwareMemory::new` are safe functions over a `MemoryMap` that any safe
+  caller can build (`wost/src/mm.rs`, `wost/src/mm/firmware.rs`, `libs/memory-map`). Only a map the
+  bootloader handed over may reach them.
 - The kernel parses ELF and loads one borrowed Limine module (`kernel/src/user/load.rs`,
   `wost/src/boot/limine_glue.rs`). The user-space loader replaces it and needs every module as owned
   frames; the kernel keeps its mapper checks.
@@ -207,8 +213,11 @@ Phase 7:
   (`kernel/src/queue.rs`, `kernel/src/timepage.rs`). Channels need their own transport, and time
   needs per-world clock modes and the trap on direct clock reads.
 - The ring 3 witness is hand-encoded machine code (`xtask/src/image/program.rs`), and the gate
-  matches kernel log sentences by hand (`xtask/src/qemu.rs`). Phase 7 needs witness programs built
-  by cargo that import the ABI from `libs/`, and a few machine records both sides share.
+  matches kernel log sentences by hand (`xtask/src/qemu/boot.rs`, `xtask/src/qemu/serial.rs`).
+  Phase 7 needs witness programs built by cargo that import the ABI from `libs/`, and a few machine
+  records both sides share. No ring 3 program faults on a kernel address to witness isolation,
+  issues `RingWait` or `ThreadBase`, or executes `syscall`, so those witnesses must cover all
+  three.
 - `task::prepare` issues no IBPB when it changes address space, which world isolation needs.
 
 Phase 8:
@@ -231,7 +240,7 @@ Phase 8:
   `wost/src/arch/x86_64/usercopy.rs`).
 - The local APIC has no second `init` and no IPI, the MADT model keeps no processors, and a panic
   stops only its own CPU (`wost/src/arch/x86_64/apic.rs`, `libs/acpi-tables/src/madt.rs`,
-  `wost/src/panic.rs`). The QEMU machine has one CPU and refuses `-smp` (`xtask/src/qemu.rs`).
+  `wost/src/panic.rs`). The QEMU machine has one CPU (`xtask/src/qemu.rs`).
 
 Phase 9:
 - One VT-d unit, one domain and one function (`wost/src/arch/x86_64/vtd.rs`, `kernel/src/iommu.rs`).
@@ -240,8 +249,11 @@ Phase 9:
   per machine and the inventory stops at 64 (`kernel/src/iommu.rs`). The empty root already denies
   siblings, so those claims go.
 - Interrupt remapping is deny-all, with no entry allocator and queued invalidation torn down after
-  one use, so every device is polled (`wost/src/arch/x86_64/vtd.rs`). Per-driver vectors need a
-  sized table and per-device entries.
+  one use, so every device is polled (`wost/src/arch/x86_64/vtd.rs`). Remapping stays enabled after
+  queued invalidation is switched off, a state the VT-d specification does not describe.
+  Per-driver vectors need a sized table and per-device entries.
+- The second-level table arena never returns a table: an unmap clears the leaf and keeps every
+  table it carved (`wost/src/arch/x86_64/vtd.rs`).
 - PCI has no capability walk, MSI-X or ECAM, identity is the CF8 word, and `admit_bus_master`
   accepts only an NVMe proof (`libs/pci-config`, `wost/src/arch/x86_64/pci.rs`).
 - Claims are linear tokens never dropped, and uncertain outcomes park in write-only statics
@@ -261,6 +273,8 @@ Phase 10:
   mapped once.
 - The VFS, tmpfs, devfs and file worker run in the kernel (`kernel/src/vfs.rs`,
   `kernel/src/queue/work.rs`). They are replaced, not extended.
+- One global eight-slot file-work queue serves every program, so one program can fill it and
+  starve the others (`kernel/src/queue/work.rs`).
 
 Later phases:
 - The platform is two hypervisors gated by a private `WZDH` table and their CPUID identity, with one
@@ -270,6 +284,8 @@ Later phases:
 - Without enhanced IBRS nothing mitigates branch-target injection from ring 3, and there is no BHI
   or SSBD handling (`libs/x86-cpuid`).
 - `qualify-vmware` cannot tell a copied transcript from a fresh one; the guest gets no challenge.
+- The host tool's QEMU boots are verified on Linux; on the Windows host it has only been compiled
+  and unit-tested. The VMware boot of this tree has not been run.
 - The toolchain and the `limine` 0.5.0 pin change only when a concrete need forces it.
 
 ## 8. Open decisions

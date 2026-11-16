@@ -25,8 +25,9 @@ The kernel uses `deny` rather than `forbid` because `wost::entry!` expands
 `#[allow(unsafe_code)]` boot glue into the binary crate. That glue, `kernel/linker.ld` and
 `kernel/build.rs` stay in the binary crate because a linker may drop `#[used]` statics in an rlib.
 Architecture-specific code lives under `arch/x86_64/` and is reached through `arch::current`.
-`wost/src/boot/limine_glue.rs` is the only file that names the boot protocol; the kernel sees a
-`wost::boot::BootInfo`. `README.md` lists the library crates.
+`wost/src/boot/limine_glue.rs` and the request statics that `wost::entry!` expands are the only
+code that names the boot protocol; the kernel sees a `wost::boot::BootInfo`. `README.md` lists
+the library crates.
 
 ## 2. Boot and handoff
 
@@ -66,13 +67,15 @@ is treated like a reserved one: never allocated and never direct-mapped.
    tables, starts the thread table and guards the double-fault stack.
 4. `iommu::discover` validates the DMAR, and the boot thread moves to a guarded stack through
    `task::continue_on_stack`.
-5. `boot_continue` attaches the console's RAM shadow, masks every I/O APIC, surveys PCI and
-   selects storage (`survey_the_bus`) and lists tmpfs and devfs.
-6. `start_interrupts` silences the 8259 PICs, applies the speculation controls and chooses user
+5. `boot_continue` attaches the console's RAM shadow, masks every I/O APIC
+   (`kernel/src/routing.rs`), surveys PCI and selects storage (`storage::survey_the_bus`) and lists
+   tmpfs and devfs (`storage::survey_the_filesystems`).
+6. `interrupts::start` silences the 8259 PICs, applies the speculation controls and chooses user
    isolation, starts the local APIC, calibrates the clock, publishes the time page, checks that
    every interrupt source is masked or remapped, and only then sets the interrupt flag.
-7. The keyboard, its poller and the service worker start, the idle thread starts, and
-   `user::run` spawns `hello.elf`. The boot thread then blocks reading keys and draws each one.
+7. The keyboard comes up polled, the I/O APIC mappings are released with every line still masked,
+   its poller and the service worker start, the idle thread starts, and `user::run` spawns
+   `hello.elf`. The boot thread then blocks reading keys and draws each one.
 
 Storage comes up before the clock is calibrated, so its bring-up waits use bounded spin counts.
 A failed stage logs a typed reason and the boot continues with less: no paging keeps the
@@ -94,13 +97,15 @@ SMAP is on, loads `KERNEL_DATA` into `SS`, saves every general register and call
 Rust. `dispatch` raises the trap depth, records the live frame and calls the kernel's handler in
 `kernel/src/arch/x86_64/trap.rs`, which matches on a `TrapCause` decoded by `libs/trap-cause`:
 
-- A breakpoint records its frame and resumes.
+- A breakpoint resumes.
 - A page fault inside the user-copy routine resumes at its fixup (section 7).
 - Any other fault from ring 3, judged by the pushed `CS`, retires the faulting program and the
   machine continues. A double fault, machine check or NMI is terminal from either ring.
-- Any other fault in ring 0 is a kernel bug and panics with the vector, error code and registers.
-- An interrupt is acknowledged through an `EoiToken` minted from the live in-service bit. An
-  unexpected vector panics, so a leaked legacy line cannot pass for something else.
+- Any other fault in ring 0 is a kernel bug and panics with the vector, error code, `RIP`, `CS`,
+  `RFLAGS` and `RSP`.
+- The timer interrupt is acknowledged through an `EoiToken` minted from the live in-service bit. A
+  spurious interrupt is not acknowledged, and a local APIC error panics. An unexpected vector
+  panics, so a leaked legacy line cannot pass for something else.
 
 A handler never logs, because the interrupted code may hold the console lock; it records a number
 that the idle thread reports later. Before the common `iretq` to ring 3, `dispatch` validates the
@@ -131,7 +136,7 @@ capability word never counts as immunity. Boot enables enhanced IBRS where it is
 return to ring 3 executes `VERW` unless the capability word reports immunity to every flaw it
 clears: MDS, TAA (or no TSX), the MMIO stale-data classes and RFDS.
 
-`apply_speculation_controls` in `kernel/src/main.rs` chooses one user isolation mode per boot:
+`apply_speculation_controls` in `kernel/src/interrupts.rs` chooses one user isolation mode per boot:
 
 - Shared: a user address space copies the kernel's top-level entries. This needs an affirmative
   `RDCL_NO` or the exact QEMU TCG hypervisor tuple.
@@ -213,12 +218,12 @@ holds a context value. Every switch passes through `task::prepare`, which instal
 address-space root, extended state and `FS_BASE` for the next thread.
 
 `kernel/src/thread.rs` is the policy: names, states and EEVDF entities over the same slots, with
-the arithmetic in `libs/eevdf` and a 3 ms slice. If the policy ever returns nobody, the kernel
-falls back to round-robin and counts it. The idle thread sits outside the policy, runs only when
-nothing else can, halts, and emits the reports trap handlers left behind. The other kernel threads
-are the keyboard poller and the service worker. Preemption happens only at trap exit, after
-end-of-interrupt, and only when the interrupted frame had interrupts enabled. Every spin lock
-clears that flag, so critical sections need no preempt count.
+the arithmetic in `libs/eevdf` and a 3 ms slice. If the policy ever returns nobody while every
+thread is a candidate, the kernel takes the first candidate. The idle thread sits outside the
+policy, runs only when nothing else can, halts, and emits the reports trap handlers left behind.
+The other kernel threads are the keyboard poller and the service worker. Preemption happens only
+at trap exit, after end-of-interrupt, and only when the interrupted frame had interrupts enabled.
+Every spin lock clears that flag, so critical sections need no preempt count.
 
 A `WaitQueue` (`kernel/src/wait.rs`) is a bitmask of thread slots, so a wake from a handler
 allocates nothing. A waiter registers and rechecks its condition with interrupts off, which on one
@@ -247,8 +252,8 @@ the 8254 PIT over 20 ms windows and accepts a rate when two windows agree to one
 0x16 is never used as a rate. When the PIT was the source it also checks live APIC windows as a
 watchdog. Two consecutive conclusive disagreements revoke
 public time: the time page switches to `MODE_NONE` and scheduling continues on a private epoch.
-A wait on hardware or a person is bounded by the clock through `PollLimit`, with a spin count only
-when no clock exists.
+An NVMe or VT-d wait is bounded by the clock, through `timebase::PollLimit` for NVMe, with a spin
+count only when no clock exists.
 
 ## 6. The native ABI
 
@@ -476,10 +481,10 @@ compile-time ceiling of `Info`. QEMU sends serial to standard output; VMware wri
 file in the machine's directory.
 
 The framebuffer console (`kernel/src/console.rs`) draws Noto Sans Mono bitmap glyphs, packing
-pixels from the bootloader's channel masks (`libs/pixel`). It keeps a RAM shadow of the screen and
-scrolls from it, so the device is never read, and the framebuffer is mapped write-combining
-through PAT entry 1 with exactly one alias. The console carries the banner, echoed keys and the
-panic screen; diagnostics stay on serial.
+pixels from the bootloader's channel masks (`libs/pixel`). Once `boot_continue` attaches a RAM
+shadow of the screen, it scrolls from the shadow, so the device is not read. The framebuffer is
+mapped write-combining through PAT entry 1 with exactly one alias. The console carries the
+banner, echoed keys and the panic screen; diagnostics stay on serial.
 
 The PS/2 keyboard (`kernel/src/arch/x86_64/i8042.rs`, `kernel/src/input.rs`) is brought up after
 interrupts are on. `libs/ps2-keys` decodes scancode sets 1 and 2 and reads the set in use from the
@@ -522,8 +527,9 @@ invariant. `cargo xtask model-check` runs them with the digest-pinned `tools/tla
 - The bootloader and CPU honour their mapping and instruction contracts. Parsers bound every
   reported range but cannot make an unmapped physical address safe to read.
 - Firmware describes the machine. ACPI tables are read only from ACPI memory through
-  `FirmwareMemory`, after their length, checksum and signature check out. The MADT's I/O APIC
-  addresses and the DMAR's register base are trusted once admitted as device ranges.
+  `EarlyFirmwareMemory` and `FirmwareMemory`, after their length, checksum and signature check
+  out. The MADT's I/O APIC addresses and the DMAR's register base are trusted once admitted as
+  device ranges.
 - The `WZDH` table and the QEMU TCG CPUID tuple are trusted configuration on the two hypervisors.
   A hostile monitor can spoof CPUID, so they attest nothing elsewhere, and bare metal refuses to
   boot.

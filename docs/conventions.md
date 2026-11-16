@@ -8,7 +8,8 @@ leave open and what this project decides differently. `C-XXX` names an API Guide
 item.
 
 The compiler enforces what it can, and the rest is written down here. Where a convention can be a
-lint, it is one: the `[workspace.lints]` tables in `Cargo.toml` govern every crate.
+lint, it is one: the `[workspace.lints]` tables in `Cargo.toml` govern every crate but `xtask`,
+which takes no workspace lints and forbids `unsafe_code` at its own roots.
 
 ## Crate boundaries
 
@@ -64,7 +65,7 @@ glue into the binary crate and `forbid` cannot be lifted by any `allow`.
 - Architecture-specific code lives under `arch/<arch>/`, reached through `arch::current`, so
   callers never name a concrete architecture.
 - A module that names an external protocol or vendor crate is the only one that does.
-  `wost::boot::limine_glue` is the whole bootloader dependency.
+  `wost::boot` is the whole bootloader dependency.
 - Items are `pub(crate)` rather than `pub` unless another crate calls them; `unreachable_pub`
   enforces it.
 - Self-test code compiles only under the `selftest` feature and never widens the shipped API.
@@ -116,14 +117,13 @@ Kernel and `wost`:
 - Malformed external input (ring entries, images, firmware tables, filesystem and device data)
   ends in a typed error, never a panic.
 - `assert!` is for an internal contradiction that breaks ownership or an unsafe precondition, and
-  its message says what was violated. `debug_assert!` is refused (`disallowed_macros`), so no
-  production invariant is debug-only. An operation that can refuse is `#[must_use]`.
+  its message says what was violated. `debug_assert!` is not used, so no production invariant is
+  debug-only. An operation that can refuse is `#[must_use]`.
 - Make total what can be made total. Glyph lookup falls back rather than unwrapping; a pixel
   outside the visible area is clipped.
 - Error types are enums, never strings, and are well-behaved (C-GOOD-ERR): `Debug`, `Display` and
   `core::error::Error`. `Display` writes a lowercase clause with no trailing period, so it reads
   inside a sentence: `"no serial log: no controller answered the loopback probe"`.
-- Public error enums in `libs/` and `wost` are `#[non_exhaustive]`.
 - Types implement the common traits eagerly (C-COMMON-TRAITS, C-DEBUG): `Debug` on everything
   public (`missing_debug_implementations`), and `Clone`, `Copy`, `PartialEq` and `Eq` on plain
   data. Serial output is the only debugger, and a `Debug` impl never blocks: `SpinLock` prints
@@ -134,11 +134,11 @@ X" when chained, and no `unwrap`.
 
 ## Tests
 
-The suite is minimal and has six tiers.
+The suite is minimal, and each check belongs to one of these tiers.
 
 | Tier | Usually lives in |
 |---|---|
-| one boot smoke whose serial scan finds no warning or panic | `cargo xtask boot-check` |
+| one boot smoke that must settle with its required records and no panic | `cargo xtask boot-check` |
 | syscall and ABI behaviour | `kernel/src/selftest/` |
 | isolation and security a hostile program can hit | `kernel/src/selftest/` |
 | a few edge tests per hostile-input parser | the parser's `libs/` crate |
@@ -152,12 +152,11 @@ The suite is minimal and has six tiers.
 | tooling a user runs | a host test in `xtask/` | `cargo test` |
 
 A `no_std`, `no_main` kernel cannot host the `test` harness, so pure logic moves to a `libs/` crate
-carrying `#![cfg_attr(not(test), no_std)]`, which `cargo test` builds for the host. Doctests run
-only there, because `wost` and `kernel` are cross-compiled and their examples could never run.
-A `libs/` crate is a workspace member in `default-members`, so a bare `cargo test` covers it. A
-cargo feature is a separate crate graph, and a build-only feature adds its graph to
-`xtask/src/gate.rs`. Tests never touch the environment: `Paths::new` takes everything explicitly
-and `Paths::discover` reads the environment and delegates.
+carrying `#![cfg_attr(not(test), no_std)]`, which `cargo test` builds for the host. A `libs/`
+crate is a workspace member in `default-members`, so a bare `cargo test` covers it. A cargo
+feature is a separate crate graph, and a build-only feature adds its graph to `CARGO_PASSES` in
+`xtask/src/tasks.rs`. Tests never touch the environment; `Paths::discover` reads it, and no test
+calls it.
 
 A check that cannot fail still reads as evidence. Four rules keep a check able to fail:
 
