@@ -38,10 +38,6 @@ impl Frames {
         }
     }
 
-    pub(super) const fn arena(&self) -> Option<ArenaId> {
-        self.arena
-    }
-
     pub(super) fn count(&self) -> u32 {
         self.frames.iter().filter(|frame| frame.is_some()).count() as u32
     }

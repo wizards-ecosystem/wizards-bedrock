@@ -62,6 +62,12 @@ impl<T, const N: usize> Pool<T, N> {
         let mut taken = Frames::none();
         loop {
             let mut state = self.state.lock_leaf();
+            // A listed page takes no frame, so the earmark itself names whose object this is.
+            let owner = *state.arena.get_or_insert(earmark.arena());
+            assert!(
+                owner == earmark.arena(),
+                "a pool of one arena was handed an earmark of another"
+            );
             let needed = state.frames_to_insert();
             if taken.count() >= needed {
                 let local = state.insert(&mut taken, value);
@@ -166,13 +172,6 @@ impl<T, const N: usize> State<T, N> {
     }
 
     fn insert(&mut self, taken: &mut Frames, value: T) -> Local<T> {
-        if let Some(arena) = taken.arena() {
-            let owner = *self.arena.get_or_insert(arena);
-            assert!(
-                owner == arena,
-                "a pool of one arena was handed a frame of another"
-            );
-        }
         if self.available == NONE {
             let frame = taken.pop();
             let ordinal = self.directory.open(taken, |floor| Page {

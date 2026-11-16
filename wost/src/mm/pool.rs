@@ -249,6 +249,10 @@ pub struct Earmark {
 }
 
 impl Earmark {
+    pub const fn arena(&self) -> ArenaId {
+        self.arena
+    }
+
     pub fn take(&mut self, kind: FrameKind) -> Option<ArenaFrame> {
         if self.left == 0 {
             return None;
