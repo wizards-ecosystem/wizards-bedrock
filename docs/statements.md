@@ -105,9 +105,10 @@ against them. A statement changes only together with the code it governs.
 ## Handles
 
 - **Table.** Each process has one handle table, in its world's arena. A handle resolves only in the
-  table that issued it, and a derived handle's rights never exceed its source's. A handle value is
-  a function of the world's key, the process, the slot and the generation, and a slot retires
-  rather than repeat a generation.
+  table that issued it. A handle made from another handle to the same object never has a right its
+  source lacks; a handle to a new object, such as an opened file or a sealed memory object, has
+  exactly the rights its operation names. A handle value is a function of the world's key, the
+  process, the slot and the generation, and a slot retires rather than repeat a generation.
 
 ## Memory objects
 
