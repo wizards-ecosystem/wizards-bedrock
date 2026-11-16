@@ -1,5 +1,10 @@
+use vstd::prelude::verus_verify;
+#[cfg(verus_only)]
+use vstd::prelude::*;
+
 use crate::Unexpected;
 
+#[verus_verify]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Link<Id> {
     Open(Id),
@@ -7,12 +12,14 @@ pub enum Link<Id> {
     Forwarded(Id),
 }
 
+#[verus_verify]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Hop {
     First,
     Forwarded,
 }
 
+#[verus_verify]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Route<Id> {
     Deliver,
@@ -20,6 +27,7 @@ pub enum Route<Id> {
     PeerClosed,
 }
 
+#[verus_verify]
 impl<Id: Copy + PartialEq> Link<Id> {
     pub fn close(self) -> Result<Self, Unexpected> {
         match self {
@@ -47,7 +55,13 @@ impl<Id: Copy + PartialEq> Link<Id> {
 // the sender back, and a forward is followed once.
 pub fn route<Id: Copy + PartialEq>(sender: Id, receiver: Link<Id>, hop: Hop) -> Route<Id> {
     match (receiver, hop) {
-        (Link::Open(peer), _) if peer == sender => Route::Deliver,
+        (Link::Open(peer), _) => {
+            if peer == sender {
+                Route::Deliver
+            } else {
+                Route::PeerClosed
+            }
+        }
         (Link::Forwarded(to), Hop::First) => Route::Follow(to),
         _ => Route::PeerClosed,
     }

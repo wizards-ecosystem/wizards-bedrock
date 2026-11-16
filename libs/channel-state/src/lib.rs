@@ -2,13 +2,15 @@
 #![forbid(unsafe_code)]
 
 mod cell;
+// The crate's only unverified code: Verus cannot check formatting.
+#[cfg_attr(verus_only, verifier::external)]
+mod fmt;
 mod inbox;
 mod peer;
+pub mod proof;
 mod receivers;
-#[cfg(test)]
-mod tests;
 
-use core::fmt;
+use vstd::prelude::verus_verify;
 
 pub use cell::{CallEvent, CallState, Cell, CellRefusal, GENERATION_LIMIT};
 pub use inbox::{
@@ -18,13 +20,6 @@ pub use inbox::{
 pub use peer::{Hop, Link, Route, route};
 pub use receivers::{NotArmed, Receivers, Relink};
 
+#[verus_verify]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Unexpected;
-
-impl fmt::Display for Unexpected {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("the event has no transition from this state")
-    }
-}
-
-impl core::error::Error for Unexpected {}

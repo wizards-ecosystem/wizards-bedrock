@@ -1,6 +1,9 @@
-use core::fmt;
+#[cfg(verus_only)]
+use vstd::prelude::*;
+use vstd::prelude::{verus, verus_verify};
 
 // The head and tail of a singly linked FIFO whose links live in the receivers themselves.
+#[verus_verify]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Receivers<Id> {
     head: Option<Id>,
@@ -8,18 +11,26 @@ pub struct Receivers<Id> {
 }
 
 // The caller writes `next` into the link of `of`.
+#[verus_verify]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Relink<Id> {
     pub of: Id,
     pub next: Option<Id>,
 }
 
+verus! {
+
 impl<Id: Copy + PartialEq> Receivers<Id> {
-    pub const EMPTY: Self = Self {
+    pub exec const EMPTY: Self = Self {
         head: None,
         tail: None,
     };
+}
 
+} // verus!
+
+#[verus_verify]
+impl<Id: Copy + PartialEq> Receivers<Id> {
     pub fn head(self) -> Option<Id> {
         self.head
     }
@@ -77,13 +88,21 @@ impl<Id: Copy + PartialEq> Receivers<Id> {
             return Err(NotArmed);
         };
         let relink = match before {
-            None if head == id => None,
-            None => return Err(NotArmed),
-            Some(before) if before == id => return Err(NotArmed),
-            Some(before) => Some(Relink {
-                of: before,
-                next: after,
-            }),
+            None => {
+                if head != id {
+                    return Err(NotArmed);
+                }
+                None
+            }
+            Some(before) => {
+                if before == id {
+                    return Err(NotArmed);
+                }
+                Some(Relink {
+                    of: before,
+                    next: after,
+                })
+            }
         };
         let head = if before.is_none() { after } else { Some(head) };
         let tail = if self.tail == Some(id) {
@@ -95,13 +114,6 @@ impl<Id: Copy + PartialEq> Receivers<Id> {
     }
 }
 
+#[verus_verify]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct NotArmed;
-
-impl fmt::Display for NotArmed {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("the receiver is not armed on this endpoint")
-    }
-}
-
-impl core::error::Error for NotArmed {}
