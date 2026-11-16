@@ -24,14 +24,15 @@ pub mod address {
 }
 
 pub mod entry {
-    pub const VERSION: u64 = 1;
+    pub const VERSION: u64 = 2;
 
-    pub const BYTES: usize = 24;
+    pub const BYTES: usize = 32;
 
     pub mod offset {
         pub const VERSION: usize = 0;
         pub const ARGUMENT: usize = 8;
         pub const BOOTSTRAP_HANDLE: usize = 16;
+        pub const OPERAND: usize = 24;
     }
 }
 

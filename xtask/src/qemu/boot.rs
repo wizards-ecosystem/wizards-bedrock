@@ -3,7 +3,7 @@ use std::process::Command;
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail, ensure};
-use boot_record::{Fact, Protections, Record};
+use boot_record::{Exit, Fact, Protections, Record};
 
 use super::serial::{FULL_PROTECTIONS, Records, read_record, require_no_panic};
 use super::{Control, Event, Installation, Machine, Remapping};
@@ -29,7 +29,8 @@ const SHIPPED_REQUIRED: &[Record] = &[
     Record::Fact(Fact::Fat32Mounted),
     Record::Fact(Fact::KeyboardLinesMasked),
     Record::Fact(Fact::KeyboardPolled),
-    Record::Fact(Fact::UserCall),
+    // The boot witness is the shipped kernel's only program, and status 0 is its agreement.
+    Record::Exit(Exit { status: 0 }),
 ];
 
 const NO_X2APIC_REQUIRED: &[Record] = &[

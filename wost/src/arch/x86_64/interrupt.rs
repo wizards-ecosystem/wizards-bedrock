@@ -157,7 +157,8 @@ const USER_PRIVILEGE: u64 = 3;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum UserEntry {
     Call,
-    Fault(TrapCause),
+    // The address is `CR2`, read before interrupts reopen, for a page fault; zero otherwise.
+    Fault(TrapCause, u64),
     Interrupted,
 }
 
@@ -195,6 +196,10 @@ impl UserRegisters<'_> {
 
     pub const fn r9(&self) -> u64 {
         self.raw.r9
+    }
+
+    pub const fn error_code(&self) -> u64 {
+        self.raw.error_code
     }
 
     pub const fn vector(&self) -> u8 {
@@ -704,7 +709,10 @@ fn user_entry(frame: &TrapFrame) -> Option<UserEntry> {
         TrapCause::Fault(Fault::DoubleFault | Fault::MachineCheck | Fault::NonMaskable)
         | TrapCause::Interrupt(_)
         | TrapCause::Reserved(_) => None,
-        cause @ TrapCause::Fault(_) => Some(UserEntry::Fault(cause)),
+        cause @ TrapCause::Fault(Fault::PageFault(_)) => {
+            Some(UserEntry::Fault(cause, cpu::faulting_address()))
+        }
+        cause @ TrapCause::Fault(_) => Some(UserEntry::Fault(cause, 0)),
     }
 }
 

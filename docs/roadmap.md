@@ -180,8 +180,8 @@ What exists today that each phase must replace or build on; `docs/architecture.m
 
 Phase 7:
 - A process is a thread slot in global by-slot arrays (`kernel/src/user.rs`,
-  `kernel/src/user/reap.rs`, `kernel/src/user/construction.rs`), with no parent, exit status or
-  child observation. Phase 7 needs a counted process object owned by its world.
+  `kernel/src/user/reap.rs`, `kernel/src/user/construction.rs`), with no parent or child
+  observation; an exit status reaches only the boot log. Phase 7 needs a counted process object owned by its world.
 - Kernel memory comes from one heap that never shrinks and one handle arena behind one lock
   (`wost/src/mm/heap.rs`, `kernel/src/handle.rs`), so handle values reveal the shared arena's
   allocation order across processes. Worlds need a handle table per process carved from their
@@ -203,10 +203,8 @@ Phase 7:
   (`kernel/src/queue.rs`, `kernel/src/timepage.rs`): every process reads the one root world clock.
   Channels need their own transport, and time needs a clock per world, the recorded mode and the raw
   time right.
-- The ring 3 witness reports only by faulting or exiting, `Exit` carries no status, and the
-  kernel keeps no record of how a program ended (`witness/ring3`, `kernel/src/user/reap.rs`). No
-  ring 3 program reads a kernel address to witness isolation, issues `RingWait` or `ThreadBase`,
-  or executes `syscall`, so those witnesses must cover all three.
+- No ring 3 program reads a kernel address to witness isolation, issues `RingWait` or
+  `ThreadBase`, or executes `syscall` (`witness/ring3`), so those witnesses must cover all three.
 - Collection searches zombies from slot 0, so one whose reclaim is refused blocks every later
   one, and a refused loader rollback drops its ledger, so spawn cleanup then panics
   (`kernel/src/user/reap.rs`, `kernel/src/user/load.rs`). Neither refusal has a known trigger.

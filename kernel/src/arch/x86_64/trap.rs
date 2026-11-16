@@ -2,6 +2,7 @@ use core::fmt;
 #[cfg(feature = "selftest")]
 use core::sync::atomic::Ordering;
 
+use boot_record::Fault;
 use trap_cause::TrapCause;
 use wost::arch::current::apic;
 use wost::arch::current::cpu;
@@ -38,9 +39,15 @@ fn on_user_entry(context: &mut ThreadContext, registers: &mut UserRegisters<'_>,
             observe_syscall_entry(registers);
             crate::user::call(context, registers);
         }
-        UserEntry::Fault(_) => {
+        UserEntry::Fault(_, address) => {
             #[cfg(feature = "selftest")]
             LAST_USER_FAULT.record(registers);
+            crate::user::record_ending(boot_record::Record::Fault(Fault {
+                vector: u64::from(registers.vector()),
+                error: registers.error_code(),
+                address,
+                rip: registers.instruction_pointer(),
+            }));
             thread::retire()
         }
         UserEntry::Interrupted => thread::preempt(context),

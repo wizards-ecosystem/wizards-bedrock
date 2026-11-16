@@ -2,7 +2,7 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail, ensure};
-use boot_record::{Fact, Record};
+use boot_record::{Exit, Fact, Record};
 use panic_record::OPEN_PREFIX;
 
 use crate::cargo::Profile;
@@ -138,8 +138,10 @@ pub(crate) fn qualify(paths: &Paths, kernel: Kernel) -> Result<()> {
             );
         }
         Kernel::Shipped => {
-            for fact in [Fact::Settled, Fact::UserCall] {
-                let record = Record::Fact(fact);
+            for record in [
+                Record::Fact(Fact::Settled),
+                Record::Exit(Exit { status: 0 }),
+            ] {
                 ensure!(
                     records.contains(&record),
                     "the VMware transcript never writes `{record}`"
@@ -199,7 +201,7 @@ fn print_checklist(kernel: Kernel) {
     match kernel {
         Kernel::SelfTest => {
             println!("[xtask] this is the self-test kernel; it needs no input:");
-            println!("        look for `record v2 verdict` in the fresh serial log");
+            println!("        look for `record v3 verdict` in the fresh serial log");
         }
         Kernel::Shipped => {
             println!("[xtask] this is the shipped kernel, verify its fresh serial log:");

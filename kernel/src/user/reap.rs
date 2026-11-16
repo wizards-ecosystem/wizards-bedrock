@@ -1,9 +1,10 @@
+use boot_record::Record;
 use wost::arch::current::paging::{MapError, ReclaimError};
 use wost::arch::current::task;
 use wost::sync::{Leaf, SpinLock};
 
 use super::{BOOTSTRAPS, Bootstrap, BootstrapAuthority, LAUNCHES};
-use crate::{queue, thread, warn};
+use crate::{info, queue, thread, warn};
 
 #[derive(Debug)]
 enum ReclaimRefusal {
@@ -59,9 +60,20 @@ impl CollectOutcome {
     }
 }
 
+// How each running program ended, set by its own thread just before it retires.
+static ENDINGS: SpinLock<Leaf, [Option<Record>; thread::CAPACITY]> =
+    SpinLock::new([None; thread::CAPACITY]);
+
+pub(crate) fn record_ending(ending: Record) {
+    if let Some(room) = ENDINGS.lock_leaf().get_mut(task::current()) {
+        *room = Some(ending);
+    }
+}
+
 #[derive(Debug)]
 struct ZombieTable {
     owners: [Option<Bootstrap>; thread::CAPACITY],
+    endings: [Option<Record>; thread::CAPACITY],
     settling: [bool; thread::CAPACITY],
     collecting: [bool; thread::CAPACITY],
 }
@@ -70,6 +82,7 @@ impl ZombieTable {
     const fn new() -> Self {
         Self {
             owners: [const { None }; thread::CAPACITY],
+            endings: [None; thread::CAPACITY],
             settling: [false; thread::CAPACITY],
             collecting: [false; thread::CAPACITY],
         }
@@ -84,6 +97,7 @@ pub(crate) struct LastRites {
     pub(crate) table: u64,
     pub(crate) handles: usize,
     pub(crate) served: usize,
+    pub(crate) ending: Option<Record>,
 }
 
 #[cfg(feature = "selftest")]
@@ -99,6 +113,7 @@ pub(crate) fn last_rites_of(slot: usize) -> Option<LastRites> {
 pub(crate) fn orphan(slot: usize) {
     let taken = BOOTSTRAPS.lock_leaf().get_mut(slot).and_then(Option::take);
     let stored = taken.is_some();
+    let ending = ENDINGS.lock_leaf().get_mut(slot).and_then(Option::take);
     if let Some(bootstrap) = taken {
         #[cfg(feature = "selftest")]
         {
@@ -106,6 +121,7 @@ pub(crate) fn orphan(slot: usize) {
                 table: bootstrap.table.identity_for_test(),
                 handles: bootstrap.table.live(),
                 served: bootstrap.ring.served_count(),
+                ending,
             };
             let mut rites_table = RITES.lock_leaf();
             let Some(room) = rites_table.get_mut(slot) else {
@@ -125,6 +141,7 @@ pub(crate) fn orphan(slot: usize) {
             "a process slot cannot orphan twice"
         );
         *room = Some(bootstrap);
+        zombies.endings[slot] = ending;
     }
     // Cleared, so a slot reused by a later program never finds the previous one's entry point.
     let mut launches = LAUNCHES.lock_leaf();
@@ -262,6 +279,12 @@ fn settle(slot: usize, mut bootstrap: Bootstrap) -> CollectOutcome {
         CollectOutcome::Reclaimed
     };
     let mut zombies = ZOMBIES.lock_leaf();
+    // Written once, when the program is gone, and from this thread, which may take the console.
+    let ending = if outcome.is_reclaimed() {
+        zombies.endings[slot].take()
+    } else {
+        None
+    };
     let collecting = zombies.collecting.get(slot).copied().unwrap_or(false);
     let Some(room) = zombies.owners.get_mut(slot) else {
         panic!("a collected zombie's slot remains in range");
@@ -272,6 +295,10 @@ fn settle(slot: usize, mut bootstrap: Bootstrap) -> CollectOutcome {
     );
     *room = retained;
     zombies.collecting[slot] = false;
+    drop(zombies);
+    if let Some(ending) = ending {
+        info!("{ending}");
+    }
     outcome
 }
 

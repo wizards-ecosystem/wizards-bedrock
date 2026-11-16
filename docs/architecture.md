@@ -419,7 +419,7 @@ The `0x80` gate dispatches on `rax` (`kernel/src/user/call.rs`, numbers in `nati
 
 | `rax` | Call | Effect |
 |---:|---|---|
-| 0 | `Exit` | ends the thread; the only call that does not return |
+| 0 | `Exit` | ends the thread with the status in `rdi`; the only call that does not return |
 | 1 | `RingEnter` | reaps up to the completion head, expires due timers, serves submissions; returns how many completions it posted |
 | 2 | `ThreadBase` | sets `FS_BASE` to `rdi`; `-EINVAL` outside user space |
 | 3 | `RingWait` | returns at once when nothing is in flight, else sleeps until an operation is due and serves it |
@@ -431,9 +431,10 @@ worker (section 9).
 
 ### Entry block and time page
 
-A program starts at its ELF entry with `RSP` 16-byte aligned on a 24-byte entry block: version
-(`u64` at 0, value `1`), the launcher's argument (`u64` at 8) and the bootstrap handle (`u64` at
-16). The argument is also in `rdi`; every other general register is zero.
+A program starts at its ELF entry with `RSP` 16-byte aligned on a 32-byte entry block: version
+(`u64` at 0, value `2`), the launcher's argument (`u64` at 8), the bootstrap handle (`u64` at 16)
+and the launcher's operand (`u64` at 24). The argument is also in `rdi`; every other general
+register is zero.
 
 The time page is mapped read-only at `0x0000100000000000` in every program
 (`kernel/src/timepage.rs`, layout in `native_abi::timepage`). Version 2 holds constants written
@@ -464,7 +465,11 @@ every mapped range until the thread is published, so any refusal rolls back thro
 
 A process today is a thread slot. Its record (`Bootstrap` in `kernel/src/user.rs`) is one thread,
 one address space, one ring and one handle table, in global arrays indexed by slot. There is no
-parent, no exit status and no fork; the kernel spawns one program at boot.
+parent and no fork; the kernel spawns one program at boot. How a program ended is kept by slot
+when it retires: `Exit` stores its status, and a fault stores the vector, error code, `CR2` (for a
+page fault, read before interrupts reopen; zero otherwise) and `RIP`. The service worker writes it
+as an `exit` or `fault` boot record once the program's memory is reclaimed. Nothing yet reads it
+back into ring 3.
 
 The loader (`kernel/src/user/load.rs`, over `libs/elf64`) maps the Limine module. It refuses a
 segment that is writable and executable, runs past the file, overlaps another, is misaligned or
@@ -475,17 +480,19 @@ Phase 7 user-space loader replaces it.
 `witness.elf` is the ring 3 witness, the Rust program `witness/ring3` over the runtime
 `witness/rt`, which alone outside `wost` may write `unsafe`. Its entry block argument picks a
 behaviour: an `Echo` or a `Duplicate` through the ring, an unserved call, a fault, a jump into the
-kernel half, a direct counter read, or an invalid return stack or flags. It checks the entry block and ring versions, and
-every wrong answer reaches `ud2`. It is a boundary check, not a userland. The runtime sets `AC` only
-across `int 0x80`, so no program access runs under alignment checking.
+kernel half, a direct counter read, or an invalid return stack or flags. It checks the entry block
+and ring versions, and it reports by how it ends: exit status 0 is agreement, a nonzero status
+names the first wrong answer, and a behaviour built to fault ends in that fault. It is a boundary
+check, not a userland. The runtime sets `AC` only across `int 0x80`, so no program access runs
+under alignment checking.
 
 `xtask` builds it always in release, in `target/witness`, with `-C code-model=small` appended to
 the kernel target's flags and no LTO. It links a static `ET_EXEC` at `0x400000` through
 `witness/ring3/link.ld`. Its text, read-only and writable loads are page aligned, and program
 header 0 is the text load. `xtask/src/image/witness.rs` refuses an image with a dynamic section or
 interpreter, an empty, misaligned or writable and executable load, more than 8 loads, or a load
-past 2 GiB. The loader maps each segment at its `p_vaddr`; only stacks move per program. The idle thread
-logs `user: ring 3 call observed` once after the first call from CPL 3.
+past 2 GiB. The loader maps each segment at its `p_vaddr`; only stacks move per program. The
+idle thread logs `user: ring 3 call observed` once after the first call from CPL 3.
 
 `copy_from_user` and `copy_to_user` (`wost/src/arch/x86_64/usercopy.rs`) are the only code that
 opens the SMAP window, for one copy. Each first walks every page and requires effective `USER`
@@ -617,16 +624,19 @@ Checks that need a machine are compiled into the kernel under the `selftest` fea
 (`kernel/src/selftest.rs`) and report a verdict through QEMU's `isa-debug-exit` port. The feature
 never ships in an image. `cargo xtask ci` is the gate: formatting, clippy, host tests, the supply
 chain and vendored digests, the self-test kernel in release and debug, a shipped boot that must
-settle with no panic, record the ring 3 call and consume an injected key, and degraded boots
+settle with no panic, record the witness's exit with status 0 and consume an injected key, and
+degraded boots
 without x2APIC and without an IOMMU. `README.md` lists the steps and the tasks outside the gate.
 
 The gate judges a boot only by boot records (`libs/boot-record`), the panic record and the exit
-code. A boot record is one serial line, `[info ] record v2 <kind> <key>=<value>...`, that the
+code. A boot record is one serial line, `[info ] record v3 <kind> <key>=<value>...`, that the
 kernel writes beside the sentence a person reads. The kinds are `verdict` (`passed`, `failed`,
 `expected`), `fact` (`name`, from a closed list), `protections` (`wp`, `smep`, `smap`, `umip`,
-`nx`, each `0` or `1`) and `memory` (`colours`, the cache colour count). The self-test boot
+`nx`, each `0` or `1`), `memory` (`colours`, the cache colour count), `exit` (`status`) and
+`fault` (`vector`, `error`, `address`, `rip`). The self-test boot
 requires more than one colour: its `-cpu` line sets `x-vendor-cpuid-only=off`, so QEMU's
-AMD-branded TCG processor answers `CPUID` leaf 4. Every field is required and in order, and numbers are canonical decimal.
+AMD-branded TCG processor answers `CPUID` leaf 4. Every field is required and in order, and
+numbers are canonical decimal.
 A line that opens as a record but has an unknown version, kind, field or fact fails the boot.
 Each boot names the records it requires (`xtask/src/qemu/boot.rs`, `xtask/src/qemu/serial.rs`),
 and `qualify-vmware` reads a VMware transcript the same way. The `FAILED` sentences of a

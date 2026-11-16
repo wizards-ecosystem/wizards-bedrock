@@ -11,35 +11,35 @@ const INVALID_RETURN_FLAGS: u64 = 7;
 const READ_COUNTER: u64 = 8;
 
 pub(crate) fn spawn_faulting() -> Result<Spawned, SpawnError> {
-    spawn("user-fault", 2, FAULT)
+    spawn("user-fault", 2, FAULT, 0)
 }
 
 pub(crate) fn spawn_for_bootstrap() -> Result<Spawned, SpawnError> {
-    spawn("user-bootstrap", 3, BEHAVE)
+    spawn("user-bootstrap", 3, BEHAVE, 0)
 }
 
 pub(crate) fn spawn_probing() -> Result<Spawned, SpawnError> {
-    spawn("user-probe", 4, PROBE)
+    spawn("user-probe", 4, PROBE, 0)
 }
 
 // A negative argument is a kernel address the witness jumps to from ring 3.
 pub(crate) fn spawn_into_the_copy_window() -> Result<Spawned, SpawnError> {
     let (start, _) = usercopy::fault_window();
-    spawn("user-window", 5, start)
+    spawn("user-window", 5, start, 0)
 }
 
 pub(crate) fn spawn_duplicating() -> Result<Spawned, SpawnError> {
-    spawn("user-duplicate", 6, DUPLICATE)
+    spawn("user-duplicate", 6, DUPLICATE, 0)
 }
 
 pub(crate) fn spawn_with_invalid_return_stack() -> Result<Spawned, SpawnError> {
-    spawn("user-invalid-rsp", 10, INVALID_RETURN_STACK)
+    spawn("user-invalid-rsp", 10, INVALID_RETURN_STACK, 0)
 }
 
 pub(crate) fn spawn_with_invalid_return_flags() -> Result<Spawned, SpawnError> {
-    spawn("user-invalid-flags", 11, INVALID_RETURN_FLAGS)
+    spawn("user-invalid-flags", 11, INVALID_RETURN_FLAGS, 0)
 }
 
 pub(crate) fn spawn_reading_the_counter() -> Result<Spawned, SpawnError> {
-    spawn("user-rdtsc", 12, READ_COUNTER)
+    spawn("user-rdtsc", 12, READ_COUNTER, 0)
 }

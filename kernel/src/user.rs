@@ -23,7 +23,9 @@ use load::MAX_SEGMENTS;
 pub(crate) use load::keep;
 #[cfg(feature = "selftest")]
 pub(crate) use load::{LoadError, image, load_image};
-pub(crate) use reap::{CollectOutcome, collect, has_zombies, orphan, zombie_slots_for_spawn};
+pub(crate) use reap::{
+    CollectOutcome, collect, has_zombies, orphan, record_ending, zombie_slots_for_spawn,
+};
 #[cfg(feature = "selftest")]
 pub(crate) use reap::{LastRites, last_rites_of};
 #[cfg(feature = "selftest")]
@@ -46,6 +48,7 @@ struct Launch {
     entry: u64,
     stack: u64,
     argument: u64,
+    operand: u64,
     bootstrap_handle: u32,
     which: u64,
     root: PhysicalAddress,
@@ -128,7 +131,7 @@ pub(crate) struct Spawned {
 }
 
 pub(crate) fn run() -> Result<Spawned, SpawnError> {
-    spawn("user", 0, BEHAVE)
+    spawn("user", 0, BEHAVE, 0)
 }
 
 const BEHAVE: u64 = 0;

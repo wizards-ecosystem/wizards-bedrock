@@ -8,7 +8,7 @@
 use core::fmt;
 
 // Bumped with any change to the grammar, the kinds, their fields or the fact names.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 // The kernel writes each record as one `info` line, and nothing else it logs opens this way.
 const LEVEL: &str = "[info ] ";
@@ -21,6 +21,8 @@ pub enum Record {
     Fact(Fact),
     Protections(Protections),
     Memory(Memory),
+    Exit(Exit),
+    Fault(Fault),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -50,6 +52,20 @@ pub struct Memory {
     pub colours: usize,
 }
 
+// How a program ended, written when it is collected.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Exit {
+    pub status: u64,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Fault {
+    pub vector: u64,
+    pub error: u64,
+    pub address: u64,
+    pub rip: u64,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Fact {
     DmaFenceStrict,
@@ -68,13 +84,12 @@ pub enum Fact {
     X2apicAbsent,
     ExtendedStateAbsent,
     RingThreeClosedToInterrupts,
-    UserCall,
     Settled,
     KeyConsumed,
 }
 
 impl Fact {
-    const ALL: [Self; 19] = [
+    const ALL: [Self; 18] = [
         Self::DmaFenceStrict,
         Self::IsolationShared,
         Self::IsolationPairedForced,
@@ -91,7 +106,6 @@ impl Fact {
         Self::X2apicAbsent,
         Self::ExtendedStateAbsent,
         Self::RingThreeClosedToInterrupts,
-        Self::UserCall,
         Self::Settled,
         Self::KeyConsumed,
     ];
@@ -114,7 +128,6 @@ impl Fact {
             Self::X2apicAbsent => "x2apic-absent",
             Self::ExtendedStateAbsent => "extended-state-absent",
             Self::RingThreeClosedToInterrupts => "ring3-closed-to-interrupts",
-            Self::UserCall => "user-call",
             Self::Settled => "settled",
             Self::KeyConsumed => "key-consumed",
         }
@@ -181,6 +194,15 @@ impl Record {
             "memory" => Self::Memory(Memory {
                 colours: words.count("colours")?,
             }),
+            "exit" => Self::Exit(Exit {
+                status: words.count("status")?,
+            }),
+            "fault" => Self::Fault(Fault {
+                vector: words.count("vector")?,
+                error: words.count("error")?,
+                address: words.count("address")?,
+                rip: words.count("rip")?,
+            }),
             _ => return Err(Error::UnknownKind),
         };
         words.end()?;
@@ -211,6 +233,16 @@ impl fmt::Display for Record {
                 u8::from(protections.nx)
             ),
             Self::Memory(Memory { colours }) => write!(formatter, "memory colours={colours}"),
+            Self::Exit(Exit { status }) => write!(formatter, "exit status={status}"),
+            Self::Fault(Fault {
+                vector,
+                error,
+                address,
+                rip,
+            }) => write!(
+                formatter,
+                "fault vector={vector} error={error} address={address} rip={rip}"
+            ),
         }
     }
 }
@@ -232,7 +264,7 @@ impl<'a> Words<'a> {
         }
     }
 
-    fn count(&mut self, key: &str) -> Result<usize, Error> {
+    fn count<T: core::str::FromStr>(&mut self, key: &str) -> Result<T, Error> {
         decimal(self.value(key)?).ok_or(Error::Malformed)
     }
 

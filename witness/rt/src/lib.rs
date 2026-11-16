@@ -30,6 +30,7 @@ pub struct Entry {
     pub version: u64,
     pub argument: u64,
     pub bootstrap_handle: u64,
+    pub operand: u64,
 }
 
 impl Entry {
@@ -47,6 +48,7 @@ impl Entry {
             version: word(entry::offset::VERSION),
             argument: word(entry::offset::ARGUMENT),
             bootstrap_handle: word(entry::offset::BOOTSTRAP_HANDLE),
+            operand: word(entry::offset::OPERAND),
         }
     }
 }
@@ -54,7 +56,7 @@ impl Entry {
 #[macro_export]
 macro_rules! entry {
     ($main:path) => {
-        const __WITNESS_MAIN: fn(&$crate::Entry) = $main;
+        const __WITNESS_MAIN: fn(&$crate::Entry) -> u64 = $main;
 
         // `allow`, since `expect` never fires in a macro; the caller must `deny`, not `forbid`.
         #[allow(unsafe_code, reason = "witness-rt code expanding under the caller's deny")]
@@ -73,8 +75,7 @@ macro_rules! entry {
         extern "C" fn __witness_start(block: *const u64) -> ! {
             // SAFETY: `_start` passes the stack pointer it was entered with and pushed nothing.
             let entry = unsafe { $crate::Entry::read(block) };
-            __WITNESS_MAIN(&entry);
-            $crate::exit()
+            $crate::exit(__WITNESS_MAIN(&entry))
         }
     };
 }
@@ -103,8 +104,8 @@ pub fn call(call: Call, argument: u64) -> u64 {
     answer
 }
 
-pub fn exit() -> ! {
-    call(Call::Exit, 0);
+pub fn exit(status: u64) -> ! {
+    call(Call::Exit, status);
     fault_with(Call::Exit.number())
 }
 

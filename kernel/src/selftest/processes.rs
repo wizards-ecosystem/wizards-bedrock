@@ -1,6 +1,7 @@
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 
+use boot_record::{Exit, Record};
 use wost::arch::current::interrupt;
 use wost::arch::current::paging::AddressSpace;
 use wost::arch::current::usercopy;
@@ -21,7 +22,7 @@ pub(super) fn an_unserved_call_is_refused_without_stopping_the_machine() -> bool
     let Ok(spawned) = user::spawn_probing() else {
         return false;
     };
-    let exited = last_rites_for(&spawned, 2_000).is_some();
+    let exited = last_rites_for(&spawned, 2_000).is_some_and(|rites| agreed(&rites));
     let (refused, number) = user::refusals();
 
     exited
@@ -273,7 +274,11 @@ pub(super) fn last_rites_for(spawned: &user::Spawned, ms: u64) -> Option<user::L
     user::last_rites_of(spawned.slot).filter(|rites| rites.table == table)
 }
 
-// The witness executes `ud2` on any wrong answer, so a clean exit is its agreement.
+// The witness exits 0 only when every answer it checked agreed.
+fn agreed(rites: &user::LastRites) -> bool {
+    rites.ending == Some(Record::Exit(Exit { status: 0 }))
+}
+
 pub(super) fn a_program_drives_its_own_ring() -> bool {
     const ACCESS_CHECK: u64 = 1 << 18;
 
@@ -302,6 +307,8 @@ pub(super) fn a_program_drives_its_own_ring() -> bool {
 
     crossed
         && smap_held
+        && agreed(&echoed)
+        && agreed(&duplicated)
         && echoed.served == 1
         && duplicated.served == 1
         && duplicated.handles == 2

@@ -171,7 +171,12 @@ impl fmt::Display for SpawnError {
 
 impl core::error::Error for SpawnError {}
 
-pub(crate) fn spawn(name: &'static str, which: u64, argument: u64) -> Result<Spawned, SpawnError> {
+pub(crate) fn spawn(
+    name: &'static str,
+    which: u64,
+    argument: u64,
+    operand: u64,
+) -> Result<Spawned, SpawnError> {
     // The one world every process belongs to until worlds are objects.
     let clock = crate::timepage::root();
     let mut construction = ProcessConstruction::new(admitted_space()?);
@@ -201,6 +206,7 @@ pub(crate) fn spawn(name: &'static str, which: u64, argument: u64) -> Result<Spa
             entry,
             stack,
             argument,
+            operand,
             bootstrap_handle: handle,
             which,
             root,

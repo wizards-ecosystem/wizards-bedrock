@@ -1,6 +1,6 @@
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use boot_record::{Fact, Record};
+use boot_record::{Exit, Record};
 use native_abi::Call;
 use native_abi::entry::{self, offset};
 use native_abi::error::{EINVAL, ENOSYS};
@@ -29,7 +29,6 @@ pub(crate) fn report_execution() -> bool {
         return false;
     }
     info!("user: ring 3 call observed");
-    info!("{}", Record::Fact(Fact::UserCall));
     true
 }
 
@@ -56,7 +55,12 @@ pub(crate) fn call(context: &mut thread::ThreadContext, registers: &mut UserRegi
     let slot = task::current();
     EXECUTED.store(true, Ordering::Release);
     match Call::decode(registers.rax()) {
-        Call::Exit => thread::retire(),
+        Call::Exit => {
+            super::record_ending(Record::Exit(Exit {
+                status: registers.rdi(),
+            }));
+            thread::retire()
+        }
         Call::RingEnter => registers.set_return(serve_ring(slot)),
         Call::RingWait => registers.set_return(wait_ring(context, slot)),
         Call::ThreadBase => {
@@ -142,6 +146,8 @@ pub(super) fn cross(context: &mut thread::ThreadContext, _: usize) {
             &u64::from(launch.bootstrap_handle).to_le_bytes(),
         )
         .is_err()
+        || usercopy::copy_to_user(top + offset::OPERAND as u64, &launch.operand.to_le_bytes())
+            .is_err()
     {
         warn!("user {which}: could not write its entry block");
         thread::retire();
