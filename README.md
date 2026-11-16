@@ -100,7 +100,7 @@ docs/            architecture, conventions, roadmap and decisions
 | `boot-record` | the versioned one-line records a boot is judged by |
 | `channel-state` | inbox rings, the call cell machine, receiver queues and the peer check |
 | `eevdf` | virtual-deadline scheduling arithmetic |
-| `elf64` | ELF64 headers and loadable segments |
+| `elf64` | ELF64 headers, loadable segments and static position-independent images with relative relocations |
 | `entropy` | ChaCha20, BLAKE2s and the seeded random generator state |
 | `fat32` | a read-only FAT32 reader over any sector source |
 | `frame-space` | the physical frame bitmap |

@@ -82,3 +82,38 @@ fn a_table_that_runs_past_the_image_is_refused() {
         "an offset near the top of the range wrapped into looking valid"
     );
 }
+
+#[test]
+fn a_relocation_that_is_not_relative_is_refused() {
+    let mut bytes = image(&[
+        (1, 5, 0, 0, 320, 320),
+        (1, 6, 0x1000, 0x1000, 8, 8),
+        (2, 6, 232, 232, 64, 64),
+    ]);
+    bytes.resize(0x1008, 0);
+    bytes[16..18].copy_from_slice(&SHARED.to_le_bytes());
+    bytes[24..32].copy_from_slice(&0x40u64.to_le_bytes());
+    let dynamic: [(u64, u64); 4] = [
+        (DT_RELA, 296),
+        (DT_RELASZ, 24),
+        (DT_RELAENT, 24),
+        (DT_NULL, 0),
+    ];
+    for (index, (tag, value)) in dynamic.into_iter().enumerate() {
+        let at = 232 + index * DYNAMIC_ENTRY_BYTES;
+        bytes[at..at + 8].copy_from_slice(&tag.to_le_bytes());
+        bytes[at + 8..at + 16].copy_from_slice(&value.to_le_bytes());
+    }
+    bytes[296..304].copy_from_slice(&0x1000u64.to_le_bytes());
+    bytes[304..312].copy_from_slice(&R_X86_64_RELATIVE.to_le_bytes());
+    bytes[312..320].copy_from_slice(&0x2000u64.to_le_bytes());
+
+    let pie = Pie::parse(&bytes).expect("the relative image is valid");
+    assert_eq!(pie.relocation_count(), 1);
+
+    bytes[304..312].copy_from_slice(&1u64.to_le_bytes());
+    assert_eq!(
+        Pie::parse(&bytes).err(),
+        Some(ElfError::UnsupportedRelocation(1))
+    );
+}
