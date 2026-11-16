@@ -1,9 +1,13 @@
+use vstd::prelude::{verus_spec, verus_verify};
+
+#[verus_verify]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Progress {
     Done,
     Pending,
 }
 
+#[verus_verify]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ProcessStep {
     Exit,
@@ -15,10 +19,19 @@ pub enum ProcessStep {
     Released,
 }
 
+#[verus_verify]
 impl ProcessStep {
     #[must_use]
+    #[verus_spec(r =>
+        ensures
+            crate::proof::each_step_moves_toward_the_end(
+                crate::proof::process_steps_left(self),
+                crate::proof::process_steps_left(r),
+                progress,
+            ),
+    )]
     pub fn next(self, progress: Progress) -> Self {
-        if progress == Progress::Pending {
+        if matches!(progress, Progress::Pending) {
             return self;
         }
         match self {
@@ -32,6 +45,7 @@ impl ProcessStep {
     }
 }
 
+#[verus_verify]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum WorldStep {
     Kill,
@@ -48,10 +62,19 @@ pub enum WorldStep {
     Finished,
 }
 
+#[verus_verify]
 impl WorldStep {
     #[must_use]
+    #[verus_spec(r =>
+        ensures
+            crate::proof::each_step_moves_toward_the_end(
+                crate::proof::world_steps_left(self),
+                crate::proof::world_steps_left(r),
+                progress,
+            ),
+    )]
     pub fn next(self, progress: Progress) -> Self {
-        if progress == Progress::Pending {
+        if matches!(progress, Progress::Pending) {
             return self;
         }
         match self {

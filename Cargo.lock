@@ -604,6 +604,9 @@ dependencies = [
 [[package]]
 name = "world-tree"
 version = "0.3.1"
+dependencies = [
+ "vstd",
+]
 
 [[package]]
 name = "wost"

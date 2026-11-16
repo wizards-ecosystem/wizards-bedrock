@@ -1,5 +1,10 @@
+#[cfg(verus_only)]
+use vstd::prelude::*;
+use vstd::prelude::{proof, verus_spec, verus_verify};
+
 use crate::{Path, Unexpected};
 
+#[verus_verify]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CreationRefusal {
     Budget,
@@ -7,6 +12,7 @@ pub enum CreationRefusal {
     Dead,
 }
 
+#[verus_verify]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CreationEvent {
     Done,
@@ -15,6 +21,7 @@ pub enum CreationEvent {
 }
 
 // Each distance names an ancestor of the child: 0 is the parent.
+#[verus_verify]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CreationStep {
     Debit,
@@ -32,37 +39,68 @@ pub enum CreationStep {
 }
 
 // An ancestor found Dying after the publish skipped the child in its kill, so the creator kills it.
+#[verus_verify]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Creation {
-    ancestors: u8,
-    step: CreationStep,
+    pub(crate) ancestors: u8,
+    pub(crate) step: CreationStep,
 }
 
+#[verus_verify]
 impl Creation {
+    #[verus_spec(r =>
+        ensures
+            match r {
+                Some(creation) => child.ancestors().len() > 0
+                    && creation.spec_ancestors() == child.ancestors().len()
+                    && creation.spec_step() == CreationStep::Debit,
+                None => child.ancestors().len() == 0,
+            },
+    )]
     pub fn new(child: &Path) -> Option<Self> {
-        if child.depth() == 0 {
+        let ancestors = child.depth();
+        if ancestors == 0 {
             return None;
         }
         Some(Self {
-            ancestors: child.depth(),
+            ancestors,
             step: CreationStep::Debit,
         })
     }
 
+    #[verus_spec(r =>
+        ensures
+            r == self.spec_step(),
+            crate::proof::names_an_ancestor(r, self.spec_ancestors()),
+    )]
     pub fn step(self) -> CreationStep {
+        proof! {
+            use_type_invariant(self);
+        }
         self.step
     }
 
+    #[verus_spec(r =>
+        ensures
+            match r {
+                Ok(next) => crate::proof::enters_every_ancestor_or_none(self, event, next)
+                    && crate::proof::credits_what_it_debited(self, event, next)
+                    && crate::proof::published_after_every_confirm(self, event, next),
+                Err(_) => true,
+            },
+    )]
     pub fn next(self, event: CreationEvent) -> Result<Self, Unexpected> {
+        proof! {
+            use_type_invariant(self);
+        }
         let step = match (self.step, event) {
             (CreationStep::Debit, CreationEvent::Done) => CreationStep::Build,
             (CreationStep::Debit, CreationEvent::Halted(cause)) => CreationStep::Refused(cause),
             (CreationStep::Build, CreationEvent::Done) => CreationStep::Insert(0),
             (CreationStep::Build, CreationEvent::Halted(cause)) => CreationStep::Credit(cause),
             (CreationStep::Insert(distance), CreationEvent::Done) => {
-                let further = distance.saturating_add(1);
-                if further < self.ancestors {
-                    CreationStep::Insert(further)
+                if distance + 1 < self.ancestors {
+                    CreationStep::Insert(distance + 1)
                 } else {
                     CreationStep::Publish
                 }
@@ -82,9 +120,8 @@ impl Creation {
             (CreationStep::Dissolve(cause), CreationEvent::Done) => CreationStep::Unwound(cause),
             (CreationStep::Publish, CreationEvent::Done) => CreationStep::Confirm(0),
             (CreationStep::Confirm(distance), CreationEvent::Done) => {
-                let further = distance.saturating_add(1);
-                if further < self.ancestors {
-                    CreationStep::Confirm(further)
+                if distance + 1 < self.ancestors {
+                    CreationStep::Confirm(distance + 1)
                 } else {
                     CreationStep::Published
                 }
