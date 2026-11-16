@@ -46,11 +46,12 @@ pub(super) fn the_image_obeys_write_xor_execute() -> bool {
                 let Some((alias_physical, alias_flags)) = paging::translate(alias) else {
                     return false;
                 };
-                [flags, alias_flags].into_iter().all(|flags| {
-                    !flags.is_write_execute()
-                        && flags.contains(Flags::WRITABLE) == writable
-                        && !flags.contains(Flags::NO_EXECUTE) == executable
-                }) && alias_physical == physical
+                !flags.is_write_execute()
+                    && flags.contains(Flags::WRITABLE) == writable
+                    && !flags.contains(Flags::NO_EXECUTE) == executable
+                    && alias_flags.contains(Flags::WRITABLE) == writable
+                    && alias_flags.contains(Flags::NO_EXECUTE)
+                    && alias_physical == physical
             })
     });
 

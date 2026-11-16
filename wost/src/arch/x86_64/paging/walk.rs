@@ -173,7 +173,6 @@ struct ImagePhysicalExtent {
     start: u64,
     end: u64,
     writable: bool,
-    executable: bool,
 }
 
 fn image_physical_extents(
@@ -183,9 +182,8 @@ fn image_physical_extents(
         start: 0,
         end: 0,
         writable: false,
-        executable: false,
     }; IMAGE_SECTIONS];
-    for (slot, (section, writable, executable)) in extents.iter_mut().zip(image_sections()?) {
+    for (slot, (section, writable, _)) in extents.iter_mut().zip(image_sections()?) {
         let start = translate_in(current_root, section.start)?.0.get();
         let end = start.checked_add(section.mapped_len())?;
         let mut offset = 0;
@@ -200,7 +198,6 @@ fn image_physical_extents(
             start,
             end,
             writable,
-            executable,
         };
     }
     Some(extents)
@@ -249,7 +246,7 @@ pub(super) fn direct_map_gap(root: PhysicalAddress, current_root: PhysicalAddres
                     false,
                     extent.cache() == crate::boot::DirectMapCache::Framebuffer,
                 ),
-                |section| (section.writable, section.executable, false),
+                |section| (section.writable, false, false),
             );
             match walk(root, virtual_address) {
                 Some((mapped, flags, span))
@@ -259,7 +256,8 @@ pub(super) fn direct_map_gap(root: PhysicalAddress, current_root: PhysicalAddres
                         && !flags.contains(Flags::NO_CACHE)
                         && flags.contains(Flags::WRITE_THROUGH) == write_through
                         && flags.contains(Flags::WRITABLE) == writable
-                        && !flags.contains(Flags::NO_EXECUTE) == executable =>
+                        && !flags.contains(Flags::NO_EXECUTE) == executable
+                        && (span == PAGE_SIZE || !extent.is_allocatable()) =>
                 {
                     let Some(mapped_end) =
                         physical.checked_add(span - (virtual_address & (span - 1)))

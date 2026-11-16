@@ -502,7 +502,7 @@ fn map_direct(
                 (*start <= cursor && cursor < image_end).then_some((image_end, *flags))
             });
             let (next, flags) = match image_range {
-                Some((image_end, flags)) => (end.min(image_end), flags),
+                Some((image_end, flags)) => (end.min(image_end), flags.union(Flags::NO_EXECUTE)),
                 None => {
                     let next_image = image_ranges
                         .iter()
@@ -524,9 +524,10 @@ fn map_direct(
         }
     }
     info!(
-        "paging: direct map covers {} MiB at {:#x}",
+        "paging: direct map covers {} MiB at {:#x}; kernel tables use {} frames",
         mapped / (1 << 20),
-        direct.offset()
+        direct.offset(),
+        space.table_frames()
     );
     Ok(())
 }

@@ -322,12 +322,18 @@ impl AddressSpace {
         {
             return Err(MapError::WriteExecute(virtual_base));
         }
+        // Allocatable RAM gets one leaf per frame, so sealing a frame rewrites only its own leaf.
+        let grain = if mm::is_allocatable(region.base.get(), region.len) {
+            Grain::Pages
+        } else {
+            Grain::Largest
+        };
         self.map_range(
             virtual_base,
             region.base.get(),
             region.len,
             flags.difference(NOT_THE_CALLERS),
-            Grain::Largest,
+            grain,
         )
     }
 

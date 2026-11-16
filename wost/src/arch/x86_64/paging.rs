@@ -1,6 +1,8 @@
 mod activation;
 mod device;
+mod direct;
 mod error;
+mod flush;
 mod map;
 mod reclaim;
 mod roots;
@@ -13,7 +15,9 @@ pub use device::{
     AdmittedDeviceRange, BarMapFailure, BarUnmapFailure, BarUnmapOutcome, DeviceMapping,
     DeviceUnmapFailure, ReleasableDevice, admit_device_range,
 };
+pub(crate) use direct::{DirectAccess, set_direct_access};
 pub use error::{ActivateError, MapError, ReclaimError, ReclaimFailure, UserMapError};
+pub use flush::Flush;
 pub use map::{BootRegion, Unmapped};
 pub(crate) use stack::{KernelStackTop, TaskStackPin};
 pub use stack::{MappedStack, PinnedStack, StackArena};
@@ -174,6 +178,10 @@ impl AddressSpace {
             Some(roots) => roots.full_root(),
             None => panic!("a reclaimed address space has no root"),
         }
+    }
+
+    pub fn table_frames(&self) -> usize {
+        self.roots.map_or(0, AddressSpaceRoots::frames) + self.tables.len()
     }
 
     const fn roots(&self) -> AddressSpaceRoots {
