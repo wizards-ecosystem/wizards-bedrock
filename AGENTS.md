@@ -48,8 +48,9 @@ cargo xtask help               every task
 - `cargo build --workspace` does not work: the kernel crates build only for `x86_64-unknown-none`.
   Bare `cargo check`, `clippy` and `test` cover the host crates; `cargo kcheck`, `kclippy` and
   `kbuild` reach the kernel.
-- `model-check`, `vmware`, `qualify-vmware` and `debug` are outside `ci` because each needs a tool
-  or a person. Run `model-check` when a file in `models/` changes.
+- `model-check`, `verify`, `vmware`, `qualify-vmware` and `debug` are outside `ci` because each
+  needs a tool or a person. Run `model-check` when a file in `models/` changes, and `verify` when a
+  proven crate changes and at every milestone.
 - Hardware behaviour is verified by booting, not by tests. QEMU is the loop; a VMware boot of the
   self-test and shipped machines closes a phase.
 - A release is `cargo xtask ci` green on the exact commit, a VMware boot of both generated machines

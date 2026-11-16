@@ -5,9 +5,13 @@ bitflags 1.3.2 MIT
 bitflags 2.13.1 MIT
 byteorder 1.5.0 MIT
 cfg-if 1.0.4 MIT
+convert_case 0.4.0 MIT
+equivalent 1.0.3 MIT
 fatfs 0.3.6 MIT
 fscommon 0.1.1 MIT
 getrandom 0.3.1 MIT
+hashbrown 0.17.1 MIT
+indexmap 2.14.2 MIT
 libc 0.2.189 MIT
 limine 0.5.0 MIT
 log 0.4.33 MIT
@@ -23,8 +27,15 @@ rand_core 0.9.5 MIT
 rand_xorshift 0.4.0 MIT
 regex-syntax 0.8.11 MIT
 syn 2.0.119 MIT
+synstructure 0.13.2 MIT
 unarray 0.1.4 MIT
 unicode-ident 1.0.24 MIT AND Unicode-3.0
+verus_builtin 0.0.0-2026-11-01-0251 MIT
+verus_builtin_macros 0.0.0-2026-11-01-0251 MIT
+verus_prettyplease 0.0.0-2026-11-01-0251 MIT
+verus_state_machines_macros 0.0.0-2026-11-01-0251 MIT
+verus_syn 0.0.0-2026-11-01-0251 MIT
+vstd 0.0.0-2026-11-01-0251 MIT
 wasi 0.13.3+wasi-0.2.2 MIT
 windows-targets 0.52.6 MIT
 windows_aarch64_gnullvm 0.52.6 MIT

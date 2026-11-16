@@ -614,6 +614,19 @@ number and is added here, as one entry or as an amending id on the entry it chan
   or types, never tests that read source text. A release is `cargo xtask ci` green, a VMware boot
   of both images read by `cargo xtask qualify-vmware`, and a person reading the release diff;
   `cargo mutants` and fuzzing are on-demand laptop work that never blocks a commit.
+- **D-473** Proofs are Verus over the shipped `libs/` source, so the checked code is the built code.
+  Exec functions carry `#[verus_spec]` attributes, a function with a loop sits whole in `verus! {}`
+  because stable Rust refuses attributes on loops, and specifications and lemmas sit in one
+  `verus! {}` module per crate. `vstd` is an exact-version, always-on dependency of proven crates
+  only, since a feature gate would let the checked and the built code drift unseen; a plain build
+  erases every ghost item. `cargo xtask verify` runs `cargo verus verify` outside the gate with
+  `--no-cheating`, which refuses `assume`, `admit` and `external_body`, and
+  `--no-external-by-default`, so no function is skipped for lacking an attribute; a crate's only
+  exclusion is its `fmt` module. The Verus build is the one `tools/verus/VERSION` pins, made by
+  `tools/verus/build.sh` from source at the pinned commits, because the published binaries need a
+  newer glibc than the test host has. That host's g++ 12 has no `<format>` header, so Z3 is
+  compiled with `tools/verus/format`, a stand-in that renders the `{}` fields of Z3's error
+  messages; the Z3 tree itself is the pinned commit, unmodified.
 
 ## Conventions
 

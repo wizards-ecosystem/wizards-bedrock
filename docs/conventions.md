@@ -177,6 +177,53 @@ A check that cannot fail still reads as evidence. Four rules keep a check able t
 - If its name says "every", "all" or "no", the body enumerates the domain rather than naming its
   members.
 
+## Proofs
+
+A proven crate is a `libs/` crate that Verus checks in place. Its `Cargo.toml` takes
+`vstd.workspace = true` and sets `[package.metadata.verus] verify = true`. `cargo xtask verify`
+checks every such crate with the build `tools/verus/VERSION` pins, and a plain build erases all
+ghost code.
+
+How a proof is laid out:
+
+- `src/proof.rs`, reached as `pub mod proof`, holds the crate's one `verus! {}` module of
+  specifications: the type invariant, the spec functions, each named for the statement it serves,
+  and the lemmas. Exec code names them as `proof::name`. A public function's `ensures` names only public
+  specs and constants, so a private constant appears there as its literal value.
+- A loop-free function stays plain Rust under `#[verus_spec(...)]`, with proof steps in `proof!`.
+  Types, constants and impl blocks carry `#[verus_verify]`; on a type it makes Verus handle the
+  derived `Debug`, which it cannot check.
+- Proofs hold for a 32-bit and a 64-bit `usize`, so `bit_vector` steps state their shift bounds
+  with `usize::BITS`. The `global size_of usize` directive is not used: its erased form fails
+  `unused_braces`.
+- A function with a loop is written whole inside `verus! {}` beside its plain siblings, because
+  stable Rust refuses an attribute on a loop. `cargo fmt` does not format a macro body, so code
+  there is formatted by hand in rustfmt's style: four-space indent, 100 columns, trailing commas in
+  clause lists, and `requires`, `ensures`, `invariant` and `decreases` each on its own line.
+- Every function in a proven crate is verified: `cargo xtask verify` passes
+  `--no-external-by-default`, so an item outside `verus! {}` with no attribute is still checked.
+  The one exclusion is `mod fmt;`, marked `#[cfg_attr(verus_only, verifier::external)]` in the
+  crate root, which holds the `Display` and `Error` impls Verus cannot check. Nothing else in a
+  proven crate is marked external. `--no-cheating` refuses `assume`, `admit` and `external_body`.
+- A `use` that only ghost code needs, such as `use vstd::prelude::*;` for `int` and
+  `use_type_invariant`, carries `#[cfg(verus_only)]`; a plain build would find it unused.
+
+The coding rules a provable crate follows:
+
+1. State is fixed arrays and integers in private fields. Records name each other by index and
+   generation; no reference is stored and nothing allocates.
+2. Every public function is total, with no `requires`: it returns `Option` or `Result`, and a
+   refusal changes no state. Unverified callers in `kernel/` and `wost` cannot meet a precondition.
+3. Loops are `while` loops bounded by a length or a constant. No iterator adapters, closures or
+   `impl IntoIterator` parameters; take slices.
+4. No trait objects or generic traits on the proven surface. Formatting impls live in `fmt.rs`.
+5. Overflow is explicit: `checked_*`, `wrapping_*`, `saturating_*` and `is_multiple_of` have
+   specifications. `div_ceil`, `next_power_of_two`, `is_power_of_two`, `usize::trailing_zeros`,
+   `abs_diff` and `div_euclid` have none, so the crate writes a local function.
+6. Each bit trick sits in one small function. No `assert!`, unchecked indexing or `unwrap`.
+7. One lock guards one state: no invariant of a proven crate spans two locks. A relation across
+   locks is modelled in TLA+.
+
 ## Building
 
 - Set `CARGO_TARGET_DIR` to put artifacts elsewhere; `xtask` does not read `build.target-dir` from

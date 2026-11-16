@@ -75,8 +75,9 @@ lint flags after `--` instead.
 | 9 | `degraded-check --release` | a machine without x2APIC and one without an IOMMU each refuse what they must |
 
 Outside the gate, because each needs a tool or a person: `model-check` (TLC over `models/`, needs
-Java; run it when a model changes), `vmware` and `qualify-vmware` (a VMware boot, then a check of
-its serial transcript), and `debug`. The hosted workflow in `.github/workflows/` runs a subset of
+Java; run it when a model changes), `verify` (Verus over the proven `libs/` crates, needs the build
+`tools/verus/VERSION` pins; run it when a proven crate changes), `vmware` and `qualify-vmware` (a
+VMware boot, then a check of its serial transcript), and `debug`. The hosted workflow in `.github/workflows/` runs a subset of
 the gate and boots nothing.
 
 ## Layout
@@ -90,6 +91,7 @@ witness/         the ring 3 witness program and its runtime, the one other crate
 boot/            limine.conf and the digest-pinned Limine UEFI binary
 models/          TLA+ models of the ring, call, wakeup, shootdown and pin protocols
 tools/tla/       the digest-pinned TLC jar
+tools/verus/     the Verus pin `cargo xtask verify` checks and the recipe that builds it from source
 supply-chain/    license inventory, third-party notices and license texts
 docs/            architecture, conventions, roadmap and decisions
 ```

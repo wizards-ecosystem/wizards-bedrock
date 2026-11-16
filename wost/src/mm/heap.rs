@@ -74,13 +74,15 @@ impl Heap {
             return false;
         }
 
-        for slot in 0..class.slots_per_frame() {
-            let address = base.wrapping_add(class.offset_of(slot));
+        let mut slot = 0;
+        while let Some(offset) = class.offset_of(slot) {
+            let address = base.wrapping_add(offset);
             let link = address.cast::<usize>();
             // SAFETY: the caller's uniquely owned direct-mapped frame holds `offset_of`'s slot, and
             // writing the link is that slot's first use; forming the pointer proved no coverage.
             unsafe { ptr::write(link, self.free[class.index()]) };
             self.free[class.index()] = address as usize;
+            slot += 1;
         }
         true
     }

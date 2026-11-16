@@ -32,6 +32,7 @@ CHECK TASKS:
 
 NOT IN CI:
     model-check       run TLC over the models (needs java)
+    verify            run Verus over the proven crates (needs verus)
     qualify-vmware    check the serial log of a VMware boot of the generated machine
     debug             open the debug kernel at kmain in GDB
     clean             remove build output
@@ -83,6 +84,7 @@ pub enum Task {
     VerifyVendor,
     SupplyChain,
     ModelCheck,
+    Verify,
     Debug,
     Ci,
     Clean(CleanScope),
@@ -199,6 +201,7 @@ fn task_named(name: &str, options: Options) -> Result<Task> {
         "supply-chain" => Task::SupplyChain,
         "verify-vendor" => Task::VerifyVendor,
         "model-check" => Task::ModelCheck,
+        "verify" => Task::Verify,
         "debug" => Task::Debug,
         "ci" => Task::Ci,
         "clean" if options.all => Task::Clean(CleanScope::Everything),

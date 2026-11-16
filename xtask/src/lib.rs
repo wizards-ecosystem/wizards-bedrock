@@ -16,6 +16,7 @@ mod sha256;
 mod supply_chain;
 mod tasks;
 mod vendor;
+mod verify;
 mod vmware;
 
 use anyhow::Result;
@@ -50,6 +51,7 @@ pub fn run(task: Task) -> Result<()> {
         Task::VerifyVendor => vendor::verify(&paths),
         Task::SupplyChain => supply_chain::verify(&paths),
         Task::ModelCheck => model::verify(&paths),
+        Task::Verify => verify::verify(&paths),
         Task::Debug => debugger::run(&paths),
         Task::Ci => tasks::ci(&paths),
         Task::Clean(scope) => tasks::clean(&paths, scope),

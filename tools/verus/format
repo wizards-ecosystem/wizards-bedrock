@@ -1,0 +1,27 @@
+// g++ 12 ships no <format>; Z3 4.16.0 uses std::format only with "{}" fields in error messages.
+#pragma once
+#include <sstream>
+#include <string>
+#include <string_view>
+
+namespace std {
+inline void format_rest(ostringstream& out, string_view text) { out << text; }
+
+template <typename First, typename... Rest>
+void format_rest(ostringstream& out, string_view text, const First& first, const Rest&... rest) {
+    size_t field = text.find("{}");
+    if (field == string_view::npos) {
+        out << text;
+        return;
+    }
+    out << text.substr(0, field) << first;
+    format_rest(out, text.substr(field + 2), rest...);
+}
+
+template <typename... Args>
+string format(string_view text, const Args&... args) {
+    ostringstream out;
+    format_rest(out, text, args...);
+    return out.str();
+}
+}
