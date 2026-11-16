@@ -136,6 +136,11 @@ capability word never counts as immunity. Boot enables enhanced IBRS where it is
 return to ring 3 executes `VERW` unless the capability word reports immunity to every flaw it
 clears: MDS, TAA (or no TSX), the MMIO stale-data classes and RFDS.
 
+Where CPUID enumerates IBPB (leaf 7 `EDX[26]` or leaf `0x80000008` `EBX[12]`), `task::prepare`
+issues it whenever the arriving thread's user root differs from the last user root this CPU ran.
+A kernel-only thread leaves that record alone, and releasing an address space clears it, so a
+recycled root frame still counts as a new space.
+
 `apply_speculation_controls` in `kernel/src/interrupts.rs` chooses one user isolation mode per boot:
 
 - Shared: a user address space copies the kernel's top-level entries. This needs an affirmative

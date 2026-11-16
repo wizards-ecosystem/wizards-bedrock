@@ -215,7 +215,6 @@ Phase 7:
   records both sides share. No ring 3 program faults on a kernel address to witness isolation,
   issues `RingWait` or `ThreadBase`, or executes `syscall`, so those witnesses must cover all
   three.
-- `task::prepare` issues no IBPB when it changes address space, which world isolation needs.
 - Collection searches zombies from slot 0, so one whose reclaim is refused blocks every later
   one, and a refused loader rollback drops its ledger, so spawn cleanup then panics
   (`kernel/src/user/reap.rs`, `kernel/src/user/load.rs`). Neither refusal has a known trigger.

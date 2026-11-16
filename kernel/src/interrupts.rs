@@ -84,6 +84,13 @@ pub(crate) fn start(external_controllers: Option<&ExternalControllersMasked>) {
 fn apply_speculation_controls() {
     let speculation = cpu::enable_speculation_controls();
     info!("cpu: {speculation}");
+    if speculation.has_predictor_barrier() {
+        info!("cpu: branch predictions cleared on every change of user address space");
+    } else {
+        info!(
+            "cpu: no predictor barrier (ibpb); one user address space can train another's branch predictions"
+        );
+    }
     match cpu::shared_kernel_mapping_reason(&speculation) {
         Some(reason) => {
             let isolation = if cfg!(feature = "selftest") {

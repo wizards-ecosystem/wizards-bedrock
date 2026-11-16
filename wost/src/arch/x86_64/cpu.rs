@@ -25,6 +25,10 @@ const EFER_SYSCALL: u64 = 1 << 0;
 
 const SYSENTER_CS: u32 = 0x174;
 
+const PRED_CMD: u32 = 0x49;
+
+const PRED_CMD_IBPB: u64 = 1 << 0;
+
 const EFER_NO_EXECUTE: u64 = 1 << 11;
 
 const CR0_EM: u64 = 1 << 2;
@@ -384,10 +388,27 @@ fn speculation_posture() -> Speculation {
     } else {
         CpuidResult::default()
     };
+    let sizes = if max_leaf(0x8000_0000) >= ADDRESS_SIZE_LEAF {
+        cpuid(ADDRESS_SIZE_LEAF, 0)
+    } else {
+        CpuidResult::default()
+    };
     Speculation::read(
         CpuidLeaf::new(leaf.eax, leaf.ebx, leaf.ecx, leaf.edx),
+        CpuidLeaf::new(sizes.eax, sizes.ebx, sizes.ecx, sizes.edx),
         msr::read,
     )
+}
+
+pub(super) fn has_predictor_barrier() -> bool {
+    speculation_posture().has_predictor_barrier()
+}
+
+// Executes only where `has_predictor_barrier` holds; elsewhere the write raises #GP.
+pub(super) fn barrier_predictions() {
+    // SAFETY: `IA32_PRED_CMD` is a write-only command register; `IBPB` discards indirect branch
+    // predictions and changes nothing any instruction means, and the caller saw it enumerated.
+    unsafe { msr::write(PRED_CMD, PRED_CMD_IBPB) };
 }
 
 // QEMU TCG's answer is trusted host configuration; elsewhere only `RDCL_NO` admits sharing.

@@ -10,6 +10,7 @@ use super::msr;
 use super::paging::{
     self, AddressSpaceRoots, Binding, KernelStackTop, MappedStack, StackArena, TaskStackPin,
 };
+use super::percpu;
 use super::xstate;
 use crate::cell::HardwareCell;
 use crate::panic::PanicToken;
@@ -104,6 +105,7 @@ struct Table {
     slots: [Slot; MAX_TASKS],
     count: usize,
     stacks: Option<TaskStackPin>,
+    predictor_barrier: bool,
 }
 
 impl Table {
@@ -117,6 +119,7 @@ static TABLE: SpinLock<Table> = SpinLock::new(Table {
     slots: [Slot::VACANT; MAX_TASKS],
     count: 0,
     stacks: None,
+    predictor_barrier: false,
 });
 
 // Switch-assembly state, touched only with interrupts clear and the slot settled under `TABLE`.
@@ -173,6 +176,7 @@ pub fn init(arena: StackArena) -> Result<usize, InitFailure> {
     }
     table.count = layout.slots() + 1;
     table.stacks = Some(pin);
+    table.predictor_barrier = cpu::has_predictor_barrier();
     drop(table);
     saved.restore();
     Ok(layout.slots())
@@ -384,6 +388,13 @@ fn prepare(slot: usize, leaving: State) -> Result<(*mut u64, u64), TaskError> {
         // activation so device maps stay under shared entries; IF is clear and the lock held.
         unsafe { cpu::set_page_table_base(wanted) };
     }
+    // Kernel-only slots leave the predictor's user history as it was.
+    if let Some(roots) = roots
+        && percpu::current().enter_user_root(roots.full_root())
+        && table.predictor_barrier
+    {
+        cpu::barrier_predictions();
+    }
     if paired {
         let Some(roots) = roots else {
             panic!("a paired task lost its root identity after activation");
@@ -544,6 +555,7 @@ pub fn release_address_space(bound: Bound) -> Result<Released, Bound> {
         .iter()
         .any(|slot| slot.state == State::Alive && slot.page_table == Some(roots));
     if !live {
+        percpu::current().forget_user_root(roots.full_root());
         for slot in &mut table.slots {
             if slot.page_table == Some(roots) {
                 slot.page_table = None;

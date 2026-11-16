@@ -98,6 +98,10 @@ number and is added here, as one entry or as an amending id on the entry it chan
 - **D-91** `libs/x86-cpuid` decodes `IA32_ARCH_CAPABILITIES` and decides the speculation posture,
   and `wost` keeps only the `cpuid` and MSR reads; an absent capability word is never read as
   immunity.
+- **D-465** Where the processor enumerates IBPB, `task::prepare` issues it on every change of user
+  root, with no per-process opt-in, because worlds are mutually hostile by default and a selective
+  barrier would make isolation a policy setting. Kernel-only threads do not count as a root, and a
+  released root is forgotten so a recycled root frame is a new space.
 - **D-96** Ring 3 enters the kernel through one DPL-3 interrupt gate at vector `0x80`, not
   `syscall`, which would need `swapgs` and a per-CPU block. `EFER.SCE` and `IA32_SYSENTER_CS` are
   cleared and `enter_user` refuses while either is set (D-139); `enter_user` walks every

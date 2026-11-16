@@ -10,6 +10,10 @@ const ARCH_CAPABILITIES_BIT: u32 = 1 << 29;
 
 const RTM_BIT: u32 = 1 << 11;
 
+const IBRS_IBPB_BIT: u32 = 1 << 26;
+
+const AMD_IBPB_BIT: u32 = 1 << 12;
+
 const ARCH_CAPABILITIES_MSR: u32 = 0x0000_010A;
 
 pub const SPEC_CTRL_MSR: u32 = 0x0000_0048;
@@ -208,16 +212,27 @@ impl FrequencyHints {
 pub struct Speculation {
     capabilities: Option<u64>,
     transactional_memory: bool,
+    predictor_barrier: bool,
 }
 
 impl Speculation {
     // The MSR read faults unless the feature bit says it exists.
-    pub fn read(leaf_7: CpuidLeaf, read_msr: impl FnOnce(u32) -> u64) -> Self {
+    pub fn read(
+        leaf_7: CpuidLeaf,
+        address_size_leaf: CpuidLeaf,
+        read_msr: impl FnOnce(u32) -> u64,
+    ) -> Self {
         Self {
             capabilities: (leaf_7.edx & ARCH_CAPABILITIES_BIT != 0)
                 .then(|| read_msr(ARCH_CAPABILITIES_MSR)),
             transactional_memory: leaf_7.ebx & RTM_BIT != 0,
+            predictor_barrier: leaf_7.edx & IBRS_IBPB_BIT != 0
+                || address_size_leaf.ebx & AMD_IBPB_BIT != 0,
         }
+    }
+
+    pub const fn has_predictor_barrier(&self) -> bool {
+        self.predictor_barrier
     }
 
     const fn rdcl_no(&self) -> bool {

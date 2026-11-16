@@ -8,7 +8,11 @@ const IMMUNE: u64 = capability::MDS_NO
     | capability::RFDS_NO;
 
 fn posture(ebx: u32, edx: u32, capabilities: u64) -> Speculation {
-    Speculation::read(CpuidLeaf::new(0, ebx, 0, edx), |_| capabilities)
+    Speculation::read(
+        CpuidLeaf::new(0, ebx, 0, edx),
+        CpuidLeaf::new(0, 0, 0, 0),
+        |_| capabilities,
+    )
 }
 
 #[test]
