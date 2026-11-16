@@ -9,6 +9,7 @@ hardware, memory, scheduling, storage and the native capability ABI.
 - `docs/conventions.md`: crate boundaries, naming, errors, comments, tests and doc style.
 - `docs/roadmap.md`: the order of work and where the code stands against it.
 - `docs/decisions.md`: the decisions that still govern the kernel.
+- `docs/statements.md`: what must be true of each core piece; code, audits and proofs work against it.
 
 ## Crates and unsafe
 
