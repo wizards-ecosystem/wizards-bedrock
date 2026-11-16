@@ -317,7 +317,7 @@ dissolves. Every path ends in
 `map_range`, which refuses a writable and executable flag set and preflights the whole range,
 refusing it before any write unless every target is absent. It then links every table the range
 needs before it writes any leaf, so a refusal for want of a table leaves only empty tables, which
-stay with the space until reclaim, and no translation another processor could hold. `map_user` and the shared doors also refuse a range outside the user half in
+stay with the space until reclaim, and no translation another processor could hold. `map_user` also refuses a range outside the user half in
 every space. RAM mappings keep the direct map's
 write-back type.
 
@@ -607,7 +607,11 @@ each segment of the image into its own sealable object, seals it read-only or ex
 the world's code quota (65536 pages for the root), then maps it by record; the stack is a writable
 object. A refused spawn and a process teardown clear the records, wait for that flush, release
 each record's references and then reclaim the tables. The ring, buffer 0 and time page are
-recorded too, but stay shared mappings that the address space keeps until it is reclaimed.
+arena data frames the kernel also reads through a shared view (`mm::SharedRing`,
+`mm::SharedBytes`). Each has a shared record, and `Space::share` maps it by `map_frame` and keeps
+a `SharedFrame` reference to it, so the frame outlives every leaf naming it whatever order the queue
+and the space go in; `clear` drops those references only after its flush. The time page is a frame
+of the root world, made when the root world starts.
 
 The time page is mapped read-only at its placed address (`kernel/src/timepage.rs`, layout and
 field widths in `native_abi::timepage`, whose `Constants::encode` writes the constants). Version 2 holds constants written

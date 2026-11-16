@@ -606,6 +606,13 @@ number and is added here, as one entry or as an amending id on the entry it chan
   that cannot pay is refused before any table or record changes. The space holds the tokens and
   returns them at reclaim; one dropped unreclaimed surrenders them to its arena's dissolve rather
   than freeing tables a processor may still walk.
+- **D-539** The ring, buffer 0 and time page are mapped by record through `map_frame`, and the
+  space keeps its own `SharedFrame` reference to each until it has cleared their leaves and waited
+  for the flush, rather than reordering process teardown so the queue outlives the space: the
+  frame's lifetime then follows its leaves, the queue may go first in teardown and in a refused
+  spawn alike, and `libs/world-tree`'s proven step order stays as it is. The shared mapping doors
+  and their keepalives are deleted. The time page is an arena frame of the root world, made when
+  the root world starts, since no arena exists when the clock starts.
 - **D-481** The ring 3 witness is a cargo-built static `ET_EXEC` linked at `0x400000`, and the
   loader maps each segment at its `p_vaddr` with no per-program shift, because a position-dependent
   image holds absolute addresses that a shift breaks and the in-kernel loader takes no `ET_DYN`;

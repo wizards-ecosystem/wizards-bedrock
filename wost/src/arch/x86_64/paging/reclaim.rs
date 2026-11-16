@@ -70,7 +70,6 @@ impl AddressSpace {
         self.arena_tables.clear();
         if self.reach == Reach::UserHalfOnly {
             self.roots = None;
-            self.shared.clear();
             return Ok(returned);
         }
         if let Some(stripped) = roots.stripped_root() {
@@ -82,7 +81,6 @@ impl AddressSpace {
         // could record it, and the active-root refusal covers it too.
         drop(unsafe { mm::Frame::from_raw(root) });
         self.roots = None;
-        self.shared.clear();
 
         Ok(returned)
     }

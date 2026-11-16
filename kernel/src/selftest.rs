@@ -143,10 +143,6 @@ const CHECKS: &[Check] = &[
         address_spaces::a_refused_mapping_leaves_no_trace,
     ),
     (
-        "a shared mapping keeps its frame",
-        address_spaces::a_shared_mapping_keeps_its_frame,
-    ),
-    (
         "a user space cannot reach the kernel half",
         address_spaces::a_user_space_cannot_reach_the_kernel_half,
     ),

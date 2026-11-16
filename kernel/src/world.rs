@@ -7,7 +7,7 @@ use entropy::NotReady;
 use handle_space::Mixer;
 use world_tree::NodeRef;
 use wost::mm;
-use wost::mm::pool::{self, ArenaId, Refused};
+use wost::mm::pool::{self, ArenaId, FrameKind, Refused};
 use wost::sync::{Leaf, SpinLock};
 
 use crate::arena::Pool;
@@ -17,7 +17,7 @@ use crate::object::Channel;
 use crate::process::{Observation, Process};
 use crate::queue::Queue;
 use crate::thread::ThreadContext;
-use crate::{info, random, warn};
+use crate::{info, random, timepage, warn};
 
 // The kernel keeps 1/32 of each colour for its heap, page tables and threads.
 const MARGIN_DIVISOR: u32 = 32;
@@ -160,4 +160,21 @@ pub(crate) fn start_root(context: &mut ThreadContext) {
         usage.reserved(),
         usage.used()
     );
+    publish_time_page(context, root);
+}
+
+// A program reading its time page must find the mode word, not a page fault.
+fn publish_time_page(context: &mut ThreadContext, root: NodeRef) {
+    let frame = registry::hold(root)
+        .and_then(|world| pool::earmark(context, world.arena, 1).ok())
+        .and_then(|mut earmark| earmark.take(FrameKind::ArenaData));
+    match frame.map(|frame| timepage::root().start(frame)) {
+        Some(Ok(())) => info!(
+            "time: world clock page v{}, world time from 0 in steps of {} ns",
+            native_abi::timepage::VERSION,
+            timepage::PRECISION_NS
+        ),
+        Some(Err(reason)) => warn!("time: {reason}; ring 3 stays closed"),
+        None => warn!("time: the root world has no frame for its time page; ring 3 stays closed"),
+    }
 }

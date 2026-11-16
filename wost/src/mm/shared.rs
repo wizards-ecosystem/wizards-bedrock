@@ -7,7 +7,7 @@ use super::direct::DirectSpan;
 use super::frame::{Segment, release_sealed_run, seal_run};
 use super::pool::ArenaFrame;
 use super::{PhysicalAddress, direct_pointer};
-use crate::arch::current::paging::Flush;
+use crate::arch::current::paging::{Flush, FrameRef};
 use crate::arch::current::shared_memory;
 
 #[derive(PartialEq, Eq, Debug)]
@@ -39,12 +39,6 @@ impl USegment {
 
     pub(crate) fn len(&self) -> u64 {
         self.segment.len()
-    }
-
-    // `map_shared` writes no `OWNED` and `map_user` takes a `USegment`: one mapping path per run.
-    #[must_use]
-    pub fn share(self) -> Shared {
-        Shared(Arc::new(SharedAllocation::Run(self)))
     }
 
     pub(crate) fn commit_mapping(self) {
@@ -131,38 +125,32 @@ impl Drop for SealedSegment {
 
 // Ring 3 may write these bytes through its mapping, so the kernel reaches them only by copies.
 #[derive(Debug)]
-pub(super) enum SharedAllocation {
-    Run(USegment),
-    Arena(ArenaFrame),
-}
+pub(super) struct SharedAllocation(ArenaFrame);
 
 impl SharedAllocation {
-    pub(super) fn address(&self) -> PhysicalAddress {
-        match self {
-            Self::Run(run) => run.address(),
-            Self::Arena(frame) => frame.address(),
-        }
+    pub(super) const fn address(&self) -> PhysicalAddress {
+        self.0.address()
     }
 
-    pub(super) fn len(&self) -> u64 {
-        match self {
-            Self::Run(run) => run.len(),
-            Self::Arena(_) => frame_space::FRAME_SIZE,
-        }
-    }
+    pub(super) const LEN: u64 = frame_space::FRAME_SIZE;
 }
 
 impl ArenaFrame {
     // Zeroed when taken, so ring 3 sees only zeros and what the kernel writes afterwards.
     #[must_use]
     pub fn share(self) -> Shared {
-        Shared(Arc::new(SharedAllocation::Arena(self)))
+        Shared(Arc::new(SharedAllocation(self)))
     }
 }
 
+// Keeps a shared frame for a space that maps it, so the frame outlives every leaf naming it.
 #[derive(Debug)]
-pub(crate) struct SharedKeepalive {
-    _allocation: Arc<SharedAllocation>,
+pub struct SharedFrame(Arc<SharedAllocation>);
+
+impl SharedFrame {
+    pub fn frame(&self) -> FrameRef<'_> {
+        FrameRef::Writable(&self.0.0)
+    }
 }
 
 #[derive(Debug)]
@@ -177,7 +165,7 @@ impl Shared {
         self,
         layout: SharedLayout<WORDS>,
     ) -> Result<SharedRing<WORDS>, Self> {
-        if usize::try_from(self.0.len()).ok() != Some(layout.bytes()) {
+        if usize::try_from(SharedAllocation::LEN).ok() != Some(layout.bytes()) {
             return Err(self);
         }
         Ok(SharedRing {
@@ -200,7 +188,7 @@ impl SharedBytes {
         reason = "shared allocations cannot contain zero frames"
     )]
     pub fn len(&self) -> u64 {
-        self.0.len()
+        SharedAllocation::LEN
     }
 
     #[must_use = "a refused shared-memory write changed no bytes"]
@@ -213,10 +201,8 @@ impl SharedBytes {
         read_shared(&self.0, offset, into)
     }
 
-    pub(crate) fn keepalive(&self) -> SharedKeepalive {
-        SharedKeepalive {
-            _allocation: Arc::clone(&self.0),
-        }
+    pub fn frame(&self) -> SharedFrame {
+        SharedFrame(Arc::clone(&self.0))
     }
 }
 
@@ -236,7 +222,7 @@ impl<const WORDS: usize> SharedRing<WORDS> {
         reason = "shared allocations cannot contain zero frames"
     )]
     pub fn len(&self) -> u64 {
-        self.allocation.len()
+        SharedAllocation::LEN
     }
 
     #[must_use = "a refused ring-payload write changed no bytes"]
@@ -337,10 +323,8 @@ impl<const WORDS: usize> SharedRing<WORDS> {
         Some(address)
     }
 
-    pub(crate) fn keepalive(&self) -> SharedKeepalive {
-        SharedKeepalive {
-            _allocation: Arc::clone(&self.allocation),
-        }
+    pub fn frame(&self) -> SharedFrame {
+        SharedFrame(Arc::clone(&self.allocation))
     }
 }
 

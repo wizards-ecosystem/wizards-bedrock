@@ -3,10 +3,10 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use native_abi::timepage::{Constants, NOW_NS, mode};
 use ring_proto::SharedLayout;
-use wost::arch::current::paging::{AddressSpace, MapError};
-use wost::mm::{self, SharedRing, USegment};
+use wost::mm::pool::ArenaFrame;
+use wost::mm::{SharedFrame, SharedRing};
 use wost::sync::{Leaf, SpinLock};
-use x86_paging::{Flags, PAGE_SIZE};
+use x86_paging::PAGE_SIZE;
 
 use crate::time;
 
@@ -45,13 +45,11 @@ impl WorldClock {
         }
     }
 
-    pub(crate) fn start(&self) -> Result<(), Error> {
+    // The page is a frame of the world it serves.
+    pub(crate) fn start(&self, frame: ArenaFrame) -> Result<(), Error> {
         let layout = SharedLayout::new(PAGE_SIZE as usize, [NOW_NS, NOW_NS + 4])
             .map_err(|_| Error::Absent)?;
-        let run = mm::allocate_contiguous(1, 1)
-            .and_then(USegment::zeroed)
-            .ok_or(Error::Absent)?;
-        let mut page = run.share().into_ring(layout).map_err(|_| Error::Absent)?;
+        let mut page = frame.share().into_ring(layout).map_err(|_| Error::Absent)?;
 
         let mode = if time::is_calibrated() {
             mode::NORMAL
@@ -115,16 +113,9 @@ impl WorldClock {
         self.precision_ns
     }
 
-    // Mapped `USER` with no owned bit, so a program cannot free the frame and no unmap returns it.
-    pub(crate) fn install(&self, space: &mut AddressSpace, at: u64) -> Result<(), Error> {
-        // Shared rather than held, because mapping may allocate, which no leaf guard may span.
-        let shared = self.page.lock_leaf().as_ref().map(Arc::clone);
-        let Some(shared) = shared else {
-            return Err(Error::Absent);
-        };
-        space
-            .map_shared_ring(at, &shared, Flags::NO_EXECUTE)
-            .map_err(Error::Map)
+    // A space keeps its own reference, so the page outlives every leaf naming it.
+    pub(crate) fn frame(&self) -> Option<SharedFrame> {
+        self.page.lock_leaf().as_ref().map(|page| page.frame())
     }
 
     #[cfg(feature = "selftest")]
@@ -133,7 +124,7 @@ impl WorldClock {
     }
 
     #[cfg(feature = "selftest")]
-    pub(crate) fn page_address(&self) -> Option<mm::PhysicalAddress> {
+    pub(crate) fn page_address(&self) -> Option<wost::mm::PhysicalAddress> {
         Some(self.page.lock_leaf().as_ref()?.address())
     }
 }
@@ -141,14 +132,12 @@ impl WorldClock {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Error {
     Absent,
-    Map(MapError),
 }
 
 impl core::fmt::Display for Error {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::Absent => formatter.write_str("no time page was built"),
-            Self::Map(error) => write!(formatter, "{error}"),
         }
     }
 }

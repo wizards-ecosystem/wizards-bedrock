@@ -1,10 +1,10 @@
 use core::hint::spin_loop;
 
-use wost::arch::current::paging::MapError;
+use wost::arch::current::paging::{MapError, UserAccess};
 use wost::sync::{Leaf, SpinLock};
 use x86_paging::{Flags, PAGE_SIZE};
 
-use super::address_spaces::{in_reclaimed_space, user_space};
+use super::address_spaces::{root_earmark, user_space};
 use crate::thread::ThreadContext;
 use crate::time;
 use crate::timepage::{self, WorldClock};
@@ -23,25 +23,36 @@ pub(super) fn a_program_reads_served_time_from_a_page_it_cannot_write(
     context: &mut ThreadContext,
 ) -> bool {
     let clock = timepage::root();
-    in_reclaimed_space(context, user_space, |space| {
-        if clock.install(space, TIME).is_err() {
-            return false;
-        }
-        let Some((frame, flags)) = space.lookup(TIME) else {
-            return false;
-        };
-
-        flags.contains(Flags::USER)
-            && !flags.contains(Flags::WRITABLE)
-            && flags.contains(Flags::NO_EXECUTE)
-            && clock.page_address() == Some(frame)
-            && page_time_is_served_time(clock)
-            // The frame is the kernel's, so an unmap must not hand it to the allocator.
-            && matches!(
-                space.unmap(TIME, PAGE_SIZE),
-                Err(MapError::NotOwned(_))
-            )
-    })
+    let tables = u32::try_from(x86_paging::tables_for(1)).ok();
+    let (Some(mut space), Some(page), Some(mut tables)) = (
+        user_space(context),
+        clock.frame(),
+        tables.and_then(|frames| root_earmark(context, frames)),
+    ) else {
+        return false;
+    };
+    let mapped = space
+        .map_frame(TIME, page.frame(), UserAccess::Read, &mut tables)
+        .is_ok();
+    let checked = mapped
+        && space.lookup(TIME).is_some_and(|(frame, flags)| {
+            flags.contains(Flags::USER)
+                && !flags.contains(Flags::WRITABLE)
+                && flags.contains(Flags::NO_EXECUTE)
+                && clock.page_address() == Some(frame)
+        })
+        && page_time_is_served_time(clock)
+        // The frame is the world's, so an unmap must not hand it to the allocator.
+        && matches!(
+            space.unmap(TIME, PAGE_SIZE),
+            Err(MapError::NotOwned(_))
+        );
+    let cleared = !mapped
+        || space.clear_frame(TIME, page.frame()).is_ok_and(|flush| {
+            flush.wait(context);
+            true
+        });
+    checked && cleared && space.reclaim(None).is_ok()
 }
 
 // Read through the kernel's view of the frame the program maps; `Uptime` serves `now_ns`.

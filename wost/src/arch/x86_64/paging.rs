@@ -38,7 +38,7 @@ use super::kpti;
 use super::percpu;
 use super::task::Released;
 use crate::mm::pool::{ArenaFrame, Earmark, FrameKind};
-use crate::mm::{self, PhysicalAddress, SharedKeepalive};
+use crate::mm::{self, PhysicalAddress};
 use crate::sync::{Leaf, SpinLock};
 use device::{DEVICE_WINDOW_END, DEVICE_WINDOW_START, DeviceExtent};
 use map::Grain;
@@ -58,7 +58,6 @@ pub struct AddressSpace {
     reach: Reach,
     bound: bool,
     entry_enclave_ready: bool,
-    shared: Vec<SharedKeepalive>,
     owned_pages: usize,
     referenced_pages: usize,
 }
@@ -169,7 +168,6 @@ impl AddressSpace {
             bound: false,
             entry_enclave_ready: true,
             reach: Reach::Everywhere,
-            shared: Vec::new(),
             owned_pages: 0,
             referenced_pages: 0,
         })
@@ -277,7 +275,6 @@ impl AddressSpace {
             reach: Reach::UserHalfOnly,
             bound: false,
             entry_enclave_ready: kind == UserRootKind::Shared,
-            shared: Vec::new(),
             owned_pages: 0,
             referenced_pages: 0,
         })
@@ -328,13 +325,6 @@ impl AddressSpace {
 
 impl Drop for AddressSpace {
     fn drop(&mut self) {
-        if self.roots.is_some_and(|roots| {
-            self.bound || Self::roots_are_active(roots, cpu::page_table_base())
-        }) && !self.shared.is_empty()
-        {
-            let keepalives = core::mem::take(&mut self.shared);
-            core::mem::forget(keepalives);
-        }
         // Unreclaimed tables may still be walked, so they stay charged until the arena dissolves.
         for table in self.arena_tables.drain(..) {
             table.surrender();

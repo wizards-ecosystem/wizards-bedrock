@@ -14,7 +14,7 @@ use crate::handle::{HandleError, Table, TableRef};
 use crate::memory::{Kind, MemoryObject};
 use crate::process::{Authority, Objects, ObservationRef, Process, ProcessRef, Space};
 use crate::queue::{self, Queue, QueueRef};
-use crate::space::{self, Mapping, Target};
+use crate::space::{self, Mapping, Page, Target};
 use crate::world::{self, World, registry};
 use crate::{object, thread};
 
@@ -192,13 +192,17 @@ fn build(
         data,
         time,
     } = layout;
-    clock
-        .install(construction.address()?, time)
-        .map_err(SpawnError::NoTimePage)?;
+    let time_page = clock
+        .frame()
+        .ok_or(SpawnError::NoTimePage(crate::timepage::Error::Absent))?;
     let mut queue = Queue::new(clock, &mut earmark).ok_or(SpawnError::NoRing)?;
-    queue
-        .install(construction.address()?, ring, data)
-        .map_err(SpawnError::NoSpace)?;
+    let (ring_page, data_page) = queue.frames();
+    for (at, frame) in [(time, time_page), (ring, ring_page), (data, data_page)] {
+        construction
+            .space()?
+            .share(&mut earmark, at, frame)
+            .map_err(SpawnError::NoSpace)?;
+    }
     let root = construction.address()?.root();
 
     let objects = Objects {
@@ -298,19 +302,19 @@ fn lay_out(
     construction.space = Some(space::Space::new(address, seed, &mut earmark));
     let space = construction.space()?;
     let stack = place_stack(context, world, &mut earmark, space)?;
-    let mut place = |access| {
+    let mut place = |access, page| {
         let mapping = Mapping {
             access,
-            target: Target::Kernel,
+            target: Target::Shared(page),
         };
         space
             .place(world, 1, 0, mapping)
             .ok_or(SpawnError::NoAddress)
     };
     let (ring, data, time) = (
-        place(UserAccess::Write)?,
-        place(UserAccess::Write)?,
-        place(UserAccess::Read)?,
+        place(UserAccess::Write, Page::Ring)?,
+        place(UserAccess::Write, Page::Data)?,
+        place(UserAccess::Read, Page::Time)?,
     );
     let entry = plan
         .load(context, world_ref, world, &mut earmark, space)
@@ -338,6 +342,7 @@ fn earmark(
         .zip(world::ObservationPool::frames_for(1))
         .and_then(|(process, observation)| process.checked_add(observation));
     let stack_tables = u32::try_from(x86_paging::tables_for(u64::from(STACK_PAGES))).ok();
+    let shared_tables = u32::try_from(3 * x86_paging::tables_for(1)).ok();
     let stack = world::MemoryPool::frames_for(1)
         .zip(MemoryObject::frames_for(STACK_PAGES))
         .zip(stack_tables)
@@ -356,7 +361,8 @@ fn earmark(
                 .checked_add(stack)?
                 .checked_add(image)?
                 .checked_add(space::Space::frames_for())?
-                .checked_add(AddressSpace::user_root_tables(isolated)?)
+                .checked_add(AddressSpace::user_root_tables(isolated)?)?
+                .checked_add(shared_tables?)
         })
         .ok_or(SpawnError::NoMemory(Refused::NoMemory))?;
     frames::earmark(context, world.arena(), frames).map_err(SpawnError::NoMemory)

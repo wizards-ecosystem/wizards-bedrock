@@ -1,6 +1,7 @@
-use memory_object::{Extent, PLACEMENT_SAMPLES, RecordRefusal, Records, place};
+use memory_object::{Extent, PLACEMENT_SAMPLES, Record, RecordRefusal, Records, place};
 use native_abi::limits::PLACEMENT_START;
 use wost::arch::current::paging::{AddressSpace, Flush, MapError, UserAccess};
+use wost::mm::SharedFrame;
 use wost::mm::pool::Earmark;
 use x86_paging::{PAGE_SIZE, USER_END};
 
@@ -22,9 +23,16 @@ pub(crate) enum Target {
         memory: Local<MemoryObject>,
         first: u32,
     },
-    // A ring, buffer 0 or time page, which the address space keeps alive until it is reclaimed.
-    Kernel,
+    // A ring, buffer 0 or time page, whose frame the space keeps while it maps it.
+    Shared(Page),
     Guard,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Page {
+    Ring,
+    Data,
+    Time,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -53,6 +61,7 @@ pub(crate) struct Space {
     seed: [u8; 32],
     counter: u64,
     records: Pages<Records<Mapping>>,
+    shared: [Option<SharedFrame>; 3],
 }
 
 impl Space {
@@ -67,6 +76,7 @@ impl Space {
             seed,
             counter: 0,
             records: Pages::build(earmark, 1, || Records::EMPTY),
+            shared: [const { None }; 3],
         }
     }
 
@@ -205,6 +215,34 @@ impl Space {
         filled
     }
 
+    // Maps the one page of the shared record at `at`, its table taken from `tables`; the space keeps
+    // the frame until it clears.
+    pub(crate) fn share(
+        &mut self,
+        tables: &mut Earmark,
+        at: u64,
+        frame: SharedFrame,
+    ) -> Result<(), MapError> {
+        let record = Extent::new(at / PAGE_SIZE, 1)
+            .and_then(|extent| self.records().covering(extent))
+            .filter(|record| record.extent.first() * PAGE_SIZE == at && record.extent.pages() == 1);
+        let Some(Record {
+            value:
+                Mapping {
+                    access,
+                    target: Target::Shared(page),
+                },
+            ..
+        }) = record
+        else {
+            panic!("a space shared a page at {at:#x} with no shared record there");
+        };
+        let slot = &mut self.shared[page as usize];
+        assert!(slot.is_none(), "a shared record was mapped twice");
+        let frame = slot.insert(frame);
+        self.address.map_frame(at, frame.frame(), access, tables)
+    }
+
     // Whole object records only; the record's references go after the flush completes.
     pub(crate) fn unmap(
         &mut self,
@@ -241,6 +279,7 @@ impl Space {
             }
         }
         flush.wait(context);
+        self.shared = [const { None }; 3];
         while let Some(record) = self.records().get(0) {
             let removed = self.records().remove(record.extent);
             assert!(removed.is_ok(), "a cleared record vanished");
@@ -256,13 +295,24 @@ impl Space {
         extent: Extent,
         mapping: Mapping,
     ) -> Flush {
-        let Target::Object { memory, first } = mapping.target else {
-            return Flush::none();
+        let at = extent.first() * PAGE_SIZE;
+        let (memory, first) = match mapping.target {
+            Target::Object { memory, first } => (memory, first),
+            Target::Shared(page) => {
+                let Some(frame) = &self.shared[page as usize] else {
+                    return Flush::none();
+                };
+                return match self.address.clear_frame(at, frame.frame()) {
+                    Ok(flush) => flush,
+                    Err(MapError::NotMapped(_)) => Flush::none(),
+                    Err(reason) => panic!("a shared page refused to clear: {reason}"),
+                };
+            }
+            Target::Guard => return Flush::none(),
         };
         let Some(object) = world.memories.hold(memory) else {
             panic!("a mapping record outlived the object it holds");
         };
-        let at = extent.first() * PAGE_SIZE;
         let mut flush = Flush::none();
         let cleared = object.frames(context, first, extent.pages(), |page, frame| {
             match self.address.clear_frame(at + page * PAGE_SIZE, frame) {
@@ -284,7 +334,7 @@ impl Space {
             Target::Object { memory, first } => {
                 Some((record.extent, record.value.access, memory, first))
             }
-            Target::Kernel | Target::Guard => None,
+            Target::Shared(_) | Target::Guard => None,
         }
     }
 }

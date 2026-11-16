@@ -24,8 +24,7 @@ pub use frame::{Frame, Segment, allocate, allocate_contiguous};
 pub(crate) use frame::{allocate_table, is_sealed, release_sealed_run};
 #[cfg(feature = "selftest")]
 pub use selftest::{free_frames, is_freed_run_zero};
-pub(crate) use shared::SharedKeepalive;
-pub use shared::{SealedSegment, Sealing, Shared, SharedBytes, SharedRing, USegment};
+pub use shared::{SealedSegment, Sealing, Shared, SharedBytes, SharedFrame, SharedRing, USegment};
 
 use crate::arch::current::cache;
 use crate::boot::{BootMemory, DirectMap, MemoryKind, MemoryMap};

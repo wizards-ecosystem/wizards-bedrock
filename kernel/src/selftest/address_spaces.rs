@@ -89,9 +89,12 @@ pub(super) fn in_reclaimed_space(
 
 // A user space whose root is a frame of the root world, as a spawned program's is.
 pub(super) fn user_space(context: &mut ThreadContext) -> Option<AddressSpace> {
+    AddressSpace::for_user(&mut root_earmark(context, 1)?).ok()
+}
+
+pub(super) fn root_earmark(context: &mut ThreadContext, frames: u32) -> Option<pool::Earmark> {
     let world = registry::hold(world::root()?)?;
-    let mut tables = pool::earmark(context, world.arena(), 1).ok()?;
-    AddressSpace::for_user(&mut tables).ok()
+    pool::earmark(context, world.arena(), frames).ok()
 }
 
 pub(super) fn two_spaces_map_one_address_to_different_memory(context: &mut ThreadContext) -> bool {
@@ -176,11 +179,6 @@ pub(super) fn a_user_page_comes_back_cleared(context: &mut ThreadContext) -> boo
         mm::is_freed_run_zero(address, 1)
     });
 
-    let shared = marked_page(0xb2).is_some_and(|(run, address)| {
-        drop(run.share());
-        mm::is_freed_run_zero(address, 1)
-    });
-
     let refused = in_reclaimed_space(context, user_space, |space| {
         let Some((run, address)) = marked_page(0xc3) else {
             return false;
@@ -197,7 +195,7 @@ pub(super) fn a_user_page_comes_back_cleared(context: &mut ThreadContext) -> boo
         reason == MapError::NotYours(OUTSIDE_USER_HALF) && mm::is_freed_run_zero(address, 1)
     });
 
-    unmapped && direct && shared && refused
+    unmapped && direct && refused
 }
 
 pub(super) fn an_active_unmap_exposes_only_its_replacement(context: &mut ThreadContext) -> bool {
@@ -340,33 +338,6 @@ pub(super) fn a_refused_mapping_leaves_no_trace(context: &mut ThreadContext) -> 
     })
 }
 
-pub(super) fn a_shared_mapping_keeps_its_frame(context: &mut ThreadContext) -> bool {
-    const PROBE: u64 = 0x0000_3500_0000_0000;
-    in_reclaimed_space(context, user_space, |space| {
-        let Some(run) = user_page() else {
-            return false;
-        };
-        let physical = run.address();
-        let mut shared = run.share().into_bytes();
-        if !shared.write_at(0, &[0xC7]) {
-            return false;
-        }
-        let flags = Flags::NO_EXECUTE;
-        if space.map_shared(PROBE, &shared, flags).is_err() {
-            return false;
-        }
-        let held = mm::free_frames();
-
-        drop(shared);
-        let withheld = mm::free_frames() == held;
-        let expected = flags.union(Flags::PRESENT).union(Flags::USER);
-        let mapping_intact = space.lookup(PROBE) == Some((physical, expected));
-
-        withheld && mapping_intact
-    })
-}
-
-// The loader refuses write-and-execute first; only the doors a program image reaches are tried.
 pub(super) fn a_user_space_cannot_reach_the_kernel_half(context: &mut ThreadContext) -> bool {
     const KERNEL: u64 = 0xffff_8000_0010_0000;
     const TOP: u64 = native_abi::limits::USER_MAPPING_END;
@@ -375,7 +346,6 @@ pub(super) fn a_user_space_cannot_reach_the_kernel_half(context: &mut ThreadCont
     const SUPERVISOR: u64 = 0x0000_0000_4000_0000;
     const BESIDE_SUPERVISOR: u64 = SUPERVISOR + PAGE_SIZE;
     const WRITE_EXECUTE_USER: u64 = 0x0000_0700_0000_0000;
-    const WRITE_EXECUTE_SHARED: u64 = 0x0000_0800_0000_0000;
 
     in_reclaimed_space(context, user_space, |space| {
         let page = || mm::allocate_contiguous(1, 1);
@@ -421,21 +391,14 @@ pub(super) fn a_user_space_cannot_reach_the_kernel_half(context: &mut ThreadCont
             .is_some_and(|error| error.reason() == MapError::Conflict(BESIDE_SUPERVISOR));
         let supervisor_removed = space.unmap(SUPERVISOR, PAGE_SIZE).map(drop).is_ok();
 
-        let (Some(executable), Some(shared)) = (user_page(), user_page()) else {
+        let Some(executable) = user_page() else {
             return false;
         };
         let user_write_execute_refused = space
             .map_user(WRITE_EXECUTE_USER, executable, Flags::WRITABLE)
             .err()
             .is_some_and(|error| error.reason() == MapError::WriteExecute(WRITE_EXECUTE_USER));
-        let shared = shared.share().into_bytes();
-        let shared_write_execute_refused =
-            space.map_shared(WRITE_EXECUTE_SHARED, &shared, Flags::WRITABLE)
-                == Err(MapError::WriteExecute(WRITE_EXECUTE_SHARED));
-        drop(shared);
-        let write_execute_left_nothing = [WRITE_EXECUTE_USER, WRITE_EXECUTE_SHARED]
-            .into_iter()
-            .all(|at| space.lookup(at).is_none());
+        let write_execute_left_nothing = space.lookup(WRITE_EXECUTE_USER).is_none();
 
         kernel_half
             && top_refused
@@ -444,7 +407,6 @@ pub(super) fn a_user_space_cannot_reach_the_kernel_half(context: &mut ThreadCont
             && table_not_widened
             && supervisor_removed
             && user_write_execute_refused
-            && shared_write_execute_refused
             && write_execute_left_nothing
     })
 }

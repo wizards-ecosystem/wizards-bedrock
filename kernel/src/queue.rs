@@ -9,12 +9,10 @@ use native_abi::ring::{
 };
 use ring_proto::{Capacity, Queues, SharedLayout};
 use world_tree::NodeRef;
-use wost::arch::current::paging::{AddressSpace, MapError};
 use wost::mm::pool::{Earmark, FrameKind};
 use wost::mm::slab::{Hold, Refusal, Removal};
-use wost::mm::{SharedBytes, SharedRing};
+use wost::mm::{SharedBytes, SharedFrame, SharedRing};
 use wost::sync::{Leaf, SpinLock};
-use x86_paging::Flags;
 
 use crate::arena::Local;
 use crate::handle::{Table, TableRef};
@@ -197,7 +195,7 @@ impl Queue {
     pub(crate) fn new(clock: &'static WorldClock, earmark: &mut Earmark) -> Option<Self> {
         let ring = earmark.take(FrameKind::ArenaData)?;
         let data = earmark.take(FrameKind::ArenaData)?;
-        // Shared, never mapped as owned, so no unmap frees them while a program uses them.
+        // Shared, so a space mapping them keeps them until its leaves are gone.
         let layout = SharedLayout::new(
             native_abi::ring::BYTES,
             [
@@ -232,17 +230,10 @@ impl Queue {
         })
     }
 
-    // `&mut self` skips the leaf guard, which may not span the mapper's allocation.
-    pub(crate) fn install(
-        &mut self,
-        space: &mut AddressSpace,
-        ring: u64,
-        data: u64,
-    ) -> Result<(), MapError> {
+    // The ring page and buffer 0, for the space that maps them.
+    pub(crate) fn frames(&mut self) -> (SharedFrame, SharedFrame) {
         let shared = self.ring.get_mut();
-        let flags = Flags::WRITABLE.union(Flags::NO_EXECUTE);
-        space.map_shared_ring(ring, &shared.pages, flags)?;
-        space.map_shared(data, &shared.data, flags)
+        (shared.pages.frame(), shared.data.frame())
     }
 
     pub(crate) fn serve(

@@ -12,10 +12,7 @@ use super::{
     protected_stack_overlap, ram_cache_policy,
 };
 use crate::mm::pool::Earmark;
-use crate::mm::{
-    self, PhysicalAddress, SealedSegment, Segment, SharedBytes, SharedKeepalive, SharedRing,
-    USegment,
-};
+use crate::mm::{self, PhysicalAddress, SealedSegment, Segment, USegment};
 
 impl AddressSpace {
     pub fn unmap(&mut self, virtual_base: u64, len: u64) -> Result<Unmapped, MapError> {
@@ -361,71 +358,6 @@ impl AddressSpace {
             flags.union(Flags::USER),
         )?;
         run.commit_mapping();
-        Ok(())
-    }
-
-    pub fn map_shared(
-        &mut self,
-        virtual_base: u64,
-        run: &SharedBytes,
-        flags: Flags,
-    ) -> Result<(), MapError> {
-        self.map_shared_allocation(
-            virtual_base,
-            run.address(),
-            run.len(),
-            run.keepalive(),
-            flags,
-        )
-    }
-
-    pub fn map_shared_ring<const WORDS: usize>(
-        &mut self,
-        virtual_base: u64,
-        run: &SharedRing<WORDS>,
-        flags: Flags,
-    ) -> Result<(), MapError> {
-        self.map_shared_allocation(
-            virtual_base,
-            run.address(),
-            run.len(),
-            run.keepalive(),
-            flags,
-        )
-    }
-
-    fn map_shared_allocation(
-        &mut self,
-        virtual_base: u64,
-        physical_base: PhysicalAddress,
-        len: u64,
-        keepalive: SharedKeepalive,
-        flags: Flags,
-    ) -> Result<(), MapError> {
-        ram_cache_policy(virtual_base, flags)?;
-        if !user_mapping_fits(virtual_base, len) {
-            return Err(MapError::NotYours(virtual_base));
-        }
-        self.may_reach(virtual_base, len)?;
-        if flags.contains(Flags::WRITABLE) && !flags.contains(Flags::NO_EXECUTE) {
-            return Err(MapError::WriteExecute(virtual_base));
-        }
-        self.shared
-            .try_reserve(1)
-            .map_err(|_| MapError::OutOfMemory)?;
-        // Shared bytes are never executed: another alias may write them.
-        self.map_range(
-            virtual_base,
-            physical_base.get(),
-            len,
-            flags
-                .difference(NOT_THE_CALLERS)
-                .union(Flags::USER)
-                .union(Flags::NO_EXECUTE),
-            Grain::Pages,
-            None,
-        )?;
-        self.shared.push(keepalive);
         Ok(())
     }
 

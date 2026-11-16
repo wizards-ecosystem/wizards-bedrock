@@ -6,7 +6,7 @@ use wost::sync::{Leaf, SpinLock};
 
 use crate::arch::current::vector;
 use crate::routing::ExternalControllersMasked;
-use crate::{info, iommu, time, timepage, warn};
+use crate::{info, iommu, time, warn};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum UserIsolation {
@@ -74,7 +74,6 @@ pub(crate) fn start(external_controllers: Option<&ExternalControllersMasked>) {
     }
 
     start_clock();
-    publish_time_page();
 
     if external_controllers.is_none() {
         warn!("ioapic: complete mask proof missing; interrupts stay off");
@@ -161,18 +160,6 @@ fn start_clock() {
             }
         }
         Err(reason) => warn!("clock: {reason}; uptime stays at zero, nothing preempts"),
-    }
-}
-
-// A program reading its time page must find the mode word, not a page fault.
-fn publish_time_page() {
-    match timepage::root().start() {
-        Ok(()) => info!(
-            "time: world clock page v{}, world time from 0 in steps of {} ns",
-            native_abi::timepage::VERSION,
-            timepage::PRECISION_NS
-        ),
-        Err(reason) => warn!("time: {reason}; ring 3 stays closed"),
     }
 }
 

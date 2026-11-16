@@ -205,8 +205,6 @@ Phase 7:
   (`kernel/src/queue.rs`, `kernel/src/timepage.rs`): every process reads the one root world clock.
   Channels need their own transport, and time needs a clock per world, the recorded mode and the raw
   time right.
-- The ring, buffer 0 and time page are shared mappings kept alive by the address space rather
-  than leaves by reference (`kernel/src/queue.rs`, `kernel/src/timepage.rs`).
 - No space holds a reservation, so a `Map` with `EXECUTE` answers `NO_ADDRESS`, and no program
   holds a code quota handle (`kernel/src/queue/memory.rs`). C9's `Reserve` and bootstrap roles
   need both.
