@@ -309,6 +309,12 @@ number and is added here, as one entry or as an amending id on the entry it chan
 - **D-348** User mappings end at `USER_MAPPING_END`, one page below `USER_END`, in
   `AddressSpace::may_reach` and the loader, because an instruction on the last canonical page would
   push a non-canonical return address.
+- **D-512** `memory_object::place` takes the caller's random words, one per counter value from the
+  counter it is given, rather than calling `entropy::derive`, because a proven crate calls only
+  verified code and `entropy` is not proven. The caller derives `PLACEMENT_SAMPLES` words before
+  the call, so a placement costs that many derivations, not one per sample tried. Proving `entropy`,
+  or one call per sample with the counter and loop in the kernel, would keep the lazy draw at the
+  cost of a ChaCha and BLAKE2s proof or of unverified placement logic.
 
 ## Scheduling, locks and time
 

@@ -5,18 +5,17 @@ use crate::{Extent, Records};
 
 pub const PLACEMENT_SAMPLES: u32 = 8;
 
-const DOMAIN: &[u8] = b"placement";
-
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Placed {
     pub first: u64,
     pub counter: u64,
 }
 
-// Each sample consumes one counter value, so a stored counter replays the same placements.
+// `samples[i]` is the caller's random word for counter value `counter + i`; each sample tried
+// consumes one, so a stored counter replays the same placements.
 pub fn place<T: Copy>(
     records: &Records<T>,
-    seed: &[u8; 32],
+    samples: &[u64],
     counter: u64,
     range: Extent,
     pages: u64,
@@ -36,30 +35,26 @@ pub fn place<T: Copy>(
         return Err(NoAddress);
     }
     let starts = (highest - lowest) / align + 1;
-    let mut counter = counter;
+    let mut used = counter;
     let mut sample = 0;
-    while sample < PLACEMENT_SAMPLES {
-        let Some(next) = counter.checked_add(1) else {
-            break;
-        };
-        let drawn = entropy::derive(seed, DOMAIN, counter);
-        counter = next;
-        let mut word = [0u8; 8];
-        let mut at = 0;
-        while at < word.len() {
-            word[at] = drawn[at];
-            at += 1;
-        }
-        let first = lowest + (u64::from_le_bytes(word) % starts) * align;
+    while sample < samples.len() && used < u64::MAX {
+        used += 1;
+        let first = lowest + (samples[sample] % starts) * align;
         if let Some(extent) = Extent::new(first, pages)
             && records.is_free(extent)
         {
-            return Ok(Placed { first, counter });
+            return Ok(Placed {
+                first,
+                counter: used,
+            });
         }
         sample += 1;
     }
     match records.first_fit(range, pages, align) {
-        Some(first) => Ok(Placed { first, counter }),
+        Some(first) => Ok(Placed {
+            first,
+            counter: used,
+        }),
         None => Err(NoAddress),
     }
 }
