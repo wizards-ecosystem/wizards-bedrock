@@ -74,8 +74,10 @@ impl AddressSpace {
         released: Option<&Released>,
     ) -> Option<ReclaimError> {
         let root = roots.full_root();
-        if self.owned_pages != 0 {
-            return Some(ReclaimError::Mapped(self.owned_pages));
+        if self.owned_pages != 0 || self.referenced_pages != 0 {
+            return Some(ReclaimError::Mapped(
+                self.owned_pages + self.referenced_pages,
+            ));
         }
         let devices = self.devices.iter().flatten().count();
         if devices != 0 {

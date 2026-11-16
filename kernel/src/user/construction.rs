@@ -1,61 +1,53 @@
 use core::fmt;
 
 use native_abi::Rights;
-use wost::arch::current::paging::{ActivateError, AddressSpace, MapError};
+use world_tree::NodeRef;
+use wost::arch::current::paging::{ActivateError, AddressSpace, MapError, UserAccess};
 use wost::arch::current::{cpu, xstate};
 use wost::mm::pool::{self as frames, Earmark, Refused};
 use x86_paging::PAGE_SIZE;
 
 use super::call::cross;
-use super::load::{LoadError, load, place_stack};
-use super::{Launch, Regions, STACK_BYTES, Spawned};
+use super::load::{self, LoadError, Plan};
+use super::{Launch, STACK_BYTES, Spawned};
 use crate::handle::{HandleError, Table, TableRef};
+use crate::memory::{Kind, MemoryObject};
 use crate::process::{Authority, Objects, ObservationRef, Process, ProcessRef, Space};
 use crate::queue::{self, Queue, QueueRef};
-use crate::space::Placer;
-use crate::world::{self, registry};
+use crate::space::{self, Mapping, Target};
+use crate::world::{self, World, registry};
 use crate::{object, thread};
 
 #[derive(Debug)]
 struct ProcessConstruction {
-    space: Option<AddressSpace>,
+    space: Option<space::Space>,
     authority: thread::SpaceAuthority,
-    regions: Regions,
 }
 
 impl ProcessConstruction {
-    fn new(space: AddressSpace) -> Self {
-        Self {
-            space: Some(space),
-            authority: thread::SpaceAuthority::None,
-            regions: Regions::new(),
-        }
+    fn space(&mut self) -> Result<&mut space::Space, SpawnError> {
+        self.space.as_mut().ok_or(SpawnError::Incomplete)
     }
 
-    fn space(&mut self) -> Result<&mut AddressSpace, SpawnError> {
-        self.space.as_mut().ok_or(SpawnError::Incomplete)
+    fn address(&mut self) -> Result<&mut AddressSpace, SpawnError> {
+        Ok(self.space()?.address())
     }
 
     fn retain_authority(&mut self, authority: thread::SpaceAuthority) {
         self.authority = authority;
     }
-}
 
-impl Drop for ProcessConstruction {
-    fn drop(&mut self) {
+    // A refused spawn's records are cleared and its tables reclaimed; a committed one left none.
+    fn dismantle(&mut self, context: &mut thread::ThreadContext, world: &World) {
         let released = match core::mem::replace(&mut self.authority, thread::SpaceAuthority::None) {
             thread::SpaceAuthority::None => None,
             thread::SpaceAuthority::Released(released) => Some(released),
         };
-        let Some(space) = self.space.as_mut() else {
+        let Some(mut space) = self.space.take() else {
             return;
         };
-
-        if let Err(refusal) = self.regions.unmap(space) {
-            panic!("failed-spawn mapping cleanup refused: {}", refusal.reason);
-        }
-
-        if let Err(reason) = space.reclaim(released) {
+        space.clear(context, world);
+        if let Err(reason) = space.address().reclaim(released) {
             panic!("failed-spawn table cleanup refused: {reason}");
         }
     }
@@ -74,7 +66,6 @@ pub(crate) enum SpawnError {
     UnguardedBootStack,
     NoSpace(MapError),
     Load(LoadError),
-    NoStack,
     NotBindable(ActivateError),
     NoThread(thread::SpawnError),
     Incomplete,
@@ -114,7 +105,6 @@ impl fmt::Display for SpawnError {
             }
             Self::NoSpace(reason) => write!(formatter, "no address space: {reason}"),
             Self::Load(reason) => write!(formatter, "{reason}"),
-            Self::NoStack => formatter.write_str("no memory for a stack"),
             Self::NotBindable(reason) => {
                 write!(formatter, "the space cannot be installed: {reason}")
             }
@@ -139,44 +129,94 @@ pub(crate) fn spawn(
     argument: u64,
     operand: u64,
 ) -> Result<Spawned, SpawnError> {
+    let mut address = admitted_space()?;
     // The one world every process belongs to until worlds are objects.
+    let Some((world_ref, world)) =
+        world::root().and_then(|root| registry::hold(root).map(|world| (root, world)))
+    else {
+        if let Err(reason) = address.reclaim(None) {
+            panic!("an unused space's table cleanup refused: {reason}");
+        }
+        return Err(SpawnError::NoWorld);
+    };
+    let mut construction = ProcessConstruction {
+        space: None,
+        authority: thread::SpaceAuthority::None,
+    };
+    let spawned = build(
+        context,
+        world_ref,
+        &world,
+        &mut construction,
+        address,
+        Named {
+            name,
+            which,
+            argument,
+            operand,
+        },
+    );
+    construction.dismantle(context, &world);
+    spawned
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Named {
+    name: &'static str,
+    which: u64,
+    argument: u64,
+    operand: u64,
+}
+
+fn build(
+    context: &mut thread::ThreadContext,
+    world_ref: NodeRef,
+    world: &World,
+    construction: &mut ProcessConstruction,
+    address: AddressSpace,
+    named: Named,
+) -> Result<Spawned, SpawnError> {
+    let Named {
+        name,
+        which,
+        argument,
+        operand,
+    } = named;
     let clock = crate::timepage::root();
-    let mut construction = ProcessConstruction::new(admitted_space()?);
-    let world_ref = world::root().ok_or(SpawnError::NoWorld)?;
-    let world = registry::hold(world_ref).ok_or(SpawnError::NoWorld)?;
-    let mut earmark = earmark(context, &world)?;
-    let mut placer = Placer::new(world.placement_seed());
-    // The stack keeps one unmapped page below it, so a run-off faults.
-    let mut place = |pages, guard| placer.place(pages, guard).ok_or(SpawnError::NoAddress);
-    let stack_at = place(STACK_BYTES / PAGE_SIZE, 1)?;
-    let (ring, data, time) = (place(1, 0)?, place(1, 0)?, place(1, 0)?);
-    let (entry, stack) = map_program(context, &mut construction, stack_at)?;
+    let (mut earmark, layout) = lay_out(context, world_ref, world, construction, address)?;
+    let Layout {
+        entry,
+        stack,
+        ring,
+        data,
+        time,
+    } = layout;
     clock
-        .install(construction.space()?, time)
+        .install(construction.address()?, time)
         .map_err(SpawnError::NoTimePage)?;
     let mut queue = Queue::new(clock, &mut earmark).ok_or(SpawnError::NoRing)?;
     queue
-        .install(construction.space()?, ring, data)
+        .install(construction.address()?, ring, data)
         .map_err(SpawnError::NoSpace)?;
-    let root = construction.space()?.root();
+    let root = construction.address()?.root();
 
     let objects = Objects {
-        ring: QueueRef::create(&mut earmark, world_ref, &world, queue),
-        table: TableRef::create(&mut earmark, world_ref, &world),
+        ring: QueueRef::create(&mut earmark, world_ref, world, queue),
+        table: TableRef::create(&mut earmark, world_ref, world),
     };
     // Created before the thread can observe the table it names.
-    let bootstrap = object::bootstrap_identity(&mut earmark, &world);
+    let bootstrap = object::bootstrap_identity(&mut earmark, world);
     let (_, table) = objects.table.hold().ok_or(SpawnError::NoWorld)?;
     let handle = match table.insert(context, bootstrap, Rights::UNIVERSAL) {
         Ok(handle) => handle,
         Err(reason) => {
-            bootstrap.release(&world);
+            bootstrap.release(world);
             return Err(SpawnError::NoBootstrap(reason));
         }
     };
     drop(table);
     let binding = construction
-        .space()?
+        .address()?
         .bind()
         .map_err(SpawnError::NotBindable)?;
 
@@ -192,11 +232,11 @@ pub(crate) fn spawn(
         data,
         time,
     };
-    let observation = ObservationRef::create(&mut earmark, world_ref, &world);
+    let observation = ObservationRef::create(&mut earmark, world_ref, world);
     let process = ProcessRef::create(
         &mut earmark,
         world_ref,
-        &world,
+        world,
         Process::new(launch, observation.local(), objects),
     );
     // The process takes the space only once its thread is bound to it.
@@ -213,7 +253,6 @@ pub(crate) fn spawn(
             Space {
                 space,
                 authority: Some(Authority::Bound(bound)),
-                regions: core::mem::replace(&mut construction.regions, Regions::new()),
             },
         );
         Ok(())
@@ -230,24 +269,95 @@ pub(crate) fn spawn(
     Ok(Spawned { slot, observation })
 }
 
+#[derive(Clone, Copy, Debug)]
+struct Layout {
+    entry: u64,
+    stack: u64,
+    ring: u64,
+    data: u64,
+    time: u64,
+}
+
+// Apart from `build`, so the record sets it works on are off the stack before the process is.
+fn lay_out(
+    context: &mut thread::ThreadContext,
+    world_ref: NodeRef,
+    world: &World,
+    construction: &mut ProcessConstruction,
+    address: AddressSpace,
+) -> Result<(Earmark, Layout), SpawnError> {
+    let prepared = load::plan()
+        .map_err(SpawnError::Load)
+        .and_then(|plan| Ok((earmark(context, world, &plan)?, plan)));
+    let (mut earmark, plan) = match prepared {
+        Ok(prepared) => prepared,
+        Err(reason) => {
+            let mut address = address;
+            if let Err(cleanup) = address.reclaim(None) {
+                panic!("an unused space's table cleanup refused: {cleanup}");
+            }
+            return Err(reason);
+        }
+    };
+    let seed = world.placement_seed();
+    construction.space = Some(space::Space::new(address, seed, &mut earmark));
+    let space = construction.space()?;
+    let stack = place_stack(context, world, &mut earmark, space)?;
+    let mut place = |access| {
+        let mapping = Mapping {
+            access,
+            target: Target::Kernel,
+        };
+        space
+            .place(world, 1, 0, mapping)
+            .ok_or(SpawnError::NoAddress)
+    };
+    let (ring, data, time) = (
+        place(UserAccess::Write)?,
+        place(UserAccess::Write)?,
+        place(UserAccess::Read)?,
+    );
+    let entry = plan
+        .load(context, world_ref, world, &mut earmark, space)
+        .map_err(SpawnError::Load)?;
+    Ok((
+        earmark,
+        Layout {
+            entry,
+            stack,
+            ring,
+            data,
+            time,
+        },
+    ))
+}
+
 // Every arena frame the process's kernel objects can need, taken before anything is built.
 fn earmark(
     context: &mut thread::ThreadContext,
-    world: &world::World,
+    world: &World,
+    plan: &Plan<'_>,
 ) -> Result<Earmark, SpawnError> {
     let records = world::ProcessPool::frames_for(1)
         .zip(world::ObservationPool::frames_for(1))
         .and_then(|(process, observation)| process.checked_add(observation));
+    let stack = world::MemoryPool::frames_for(1)
+        .zip(MemoryObject::frames_for(STACK_PAGES))
+        .and_then(|(record, contents)| record.checked_add(contents));
     let frames = world::TablePool::frames_for(1)
         .zip(QueueRef::frames_for())
         .zip(world::ChannelPool::frames_for(1))
         .zip(records)
-        .and_then(|(((table, queue), channel), records)| {
+        .zip(stack.zip(plan.frames()))
+        .and_then(|((((table, queue), channel), records), (stack, image))| {
             table
                 .checked_add(Table::frames_for(world.handles()))?
                 .checked_add(queue)?
                 .checked_add(channel)?
-                .checked_add(records)
+                .checked_add(records)?
+                .checked_add(stack)?
+                .checked_add(image)?
+                .checked_add(space::Space::frames_for())
         })
         .ok_or(SpawnError::NoMemory(Refused::NoMemory))?;
     frames::earmark(context, world.arena(), frames).map_err(SpawnError::NoMemory)
@@ -287,18 +397,30 @@ fn admitted_space() -> Result<AddressSpace, SpawnError> {
     .map_err(SpawnError::NoSpace)
 }
 
-fn map_program(
-    context: &mut thread::ThreadContext,
-    construction: &mut ProcessConstruction,
-    stack_at: u64,
-) -> Result<(u64, u64), SpawnError> {
-    let image = load(context, construction.space()?).map_err(SpawnError::Load)?;
-    construction.regions = image.regions;
+const STACK_PAGES: u32 = (STACK_BYTES / PAGE_SIZE) as u32;
 
-    let stack = place_stack(construction.space()?, stack_at).ok_or(SpawnError::NoStack)?;
+// A writable object one unmapped page above the next record below, so a run-off faults.
+fn place_stack(
+    context: &mut thread::ThreadContext,
+    world: &World,
+    earmark: &mut Earmark,
+    space: &mut space::Space,
+) -> Result<u64, SpawnError> {
+    let object = MemoryObject::new(earmark, Kind::Sealable, STACK_PAGES);
     assert!(
-        construction.regions.record(stack, STACK_BYTES),
-        "the region ledger keeps one range beyond the loader's for the stack"
+        object.acquire_writer().is_ok(),
+        "a fresh stack object refused its writer"
     );
-    Ok((image.entry, stack))
+    let memory = world.memories.insert(earmark, object);
+    let mapping = Mapping {
+        access: UserAccess::Write,
+        target: Target::Object { memory, first: 0 },
+    };
+    let at = space
+        .place(world, u64::from(STACK_PAGES), 1, mapping)
+        .ok_or(SpawnError::NoAddress)?;
+    space
+        .fill(context, world, at)
+        .map_err(SpawnError::NoSpace)?;
+    Ok(at)
 }

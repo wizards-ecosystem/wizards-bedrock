@@ -313,6 +313,8 @@ impl Queue {
             Opcode::MemoryCreate => memory::create(process, submission),
             Opcode::MemoryCopy => memory::copy(process, submission),
             Opcode::MemorySeal => memory::seal(process, submission),
+            Opcode::Map => memory::map(process, submission),
+            Opcode::Unmap => memory::unmap(process, submission),
             Opcode::Unknown(_) => refuse(token, status::UNKNOWN_OPCODE),
         })
     }
@@ -605,6 +607,21 @@ impl Fields {
                 handle: true,
                 second: true,
                 flags: flags::SEAL_READ,
+                ..none
+            },
+            Opcode::Map => Self {
+                handle: true,
+                second: true,
+                offset: true,
+                argument: true,
+                length: true,
+                flags: flags::MAP_WRITE | flags::MAP_EXECUTE,
+                ..none
+            },
+            Opcode::Unmap => Self {
+                handle: true,
+                argument: true,
+                length: true,
                 ..none
             },
             Opcode::Unknown(_) => return None,

@@ -39,6 +39,14 @@ impl Flush {
         }
     }
 
+    // Every other processor past the newest shootdown requested so far, so past every earlier one.
+    pub(crate) fn barrier() -> Self {
+        Self {
+            cpus: everywhere_else(),
+            generation: REQUESTED.load(Ordering::Acquire),
+        }
+    }
+
     pub fn is_complete(&self) -> bool {
         self.laggards() == 0
     }

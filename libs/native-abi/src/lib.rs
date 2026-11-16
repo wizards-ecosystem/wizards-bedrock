@@ -19,6 +19,8 @@ pub const GATE_VECTOR: u8 = 0x80;
 pub mod limits {
     // Registered buffers per process; index 0 is the data page.
     pub const BUFFERS: u32 = 16;
+    // Mapping records per address space, the kernel's own placements included.
+    pub const SPACE_RECORDS: u32 = 64;
 }
 
 pub mod entry {

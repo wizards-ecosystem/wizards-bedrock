@@ -3,7 +3,6 @@ mod teardown;
 
 use boot_record::Record;
 use world_tree::{NodeRef, ProcessState, ProcessStep, Status};
-use wost::arch::current::paging::AddressSpace;
 use wost::arch::current::task;
 use wost::mm::pool::Earmark;
 use wost::mm::slab::{Hold, Refusal, Removal};
@@ -12,7 +11,7 @@ use wost::sync::{Leaf, SpinLock};
 use crate::arena::Local;
 use crate::handle::TableRef;
 use crate::queue::QueueRef;
-use crate::user::{Launch, Regions};
+use crate::user::Launch;
 use crate::world::{World, registry};
 
 #[cfg(feature = "selftest")]
@@ -56,9 +55,8 @@ pub(crate) enum Authority {
 // The address space and everything mapped in it, owned by the process until its teardown clears it.
 #[derive(Debug)]
 pub(crate) struct Space {
-    pub(crate) space: AddressSpace,
+    pub(crate) space: crate::space::Space,
     pub(crate) authority: Option<Authority>,
-    pub(crate) regions: Regions,
 }
 
 #[derive(Debug)]
@@ -114,6 +112,20 @@ impl Process {
         let mut held = self.space.lock_leaf();
         assert!(held.is_none(), "a process was given a second address space");
         *held = Some(space);
+    }
+
+    // The space leaves the process for one operation, so no lock is held while it maps or waits;
+    // the caller is the process's one thread, and the teardown takes the space only after it.
+    pub(crate) fn with_space<R>(
+        &self,
+        operate: impl FnOnce(&mut crate::space::Space) -> R,
+    ) -> Option<R> {
+        let mut space = self.space.lock_leaf().take()?;
+        let result = operate(&mut space.space);
+        let mut held = self.space.lock_leaf();
+        assert!(held.is_none(), "a process was given a second address space");
+        *held = Some(space);
+        Some(result)
     }
 
     pub(crate) fn record_ending(&self, ending: Record) {

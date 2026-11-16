@@ -2,7 +2,7 @@ use world_tree::Progress;
 use wost::sync::{Leaf, SpinLock};
 
 use crate::process::{self, ProcessRef};
-use crate::thread;
+use crate::thread::{self, ThreadContext};
 
 // Every process here holds a thread slot until its last step, so the ring cannot overflow.
 const DEPTH: usize = thread::CAPACITY;
@@ -53,14 +53,14 @@ pub(crate) fn submit(process: ProcessRef) {
 }
 
 // One round in submission order: each process runs until a step must wait, then rejoins the tail.
-pub(crate) fn run() -> bool {
+pub(crate) fn run(context: &mut ThreadContext) -> bool {
     let round = PENDING.lock_leaf().len;
     for _ in 0..round {
         let Some(process) = PENDING.lock_leaf().pop() else {
             break;
         };
         loop {
-            match process::step(process) {
+            match process::step(process, context) {
                 Progress::Done if process.hold().is_none() => {
                     PENDING.lock_leaf().stepping -= 1;
                     break;

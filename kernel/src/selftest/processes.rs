@@ -5,7 +5,6 @@ use boot_record::{Exit, Fault, Record};
 use native_abi::witness::{self, AGREED, behaviour};
 use world_tree::Status;
 use wost::arch::current::interrupt;
-use wost::arch::current::paging::AddressSpace;
 use wost::arch::current::usercopy;
 use wost::mm;
 use x86_tables::exception;
@@ -241,7 +240,7 @@ pub(super) fn memory_refusals_name_their_rule(context: &mut ThreadContext) -> bo
         return false;
     };
     last_rites_for(&spawned, 2_000)
-        .is_some_and(|rites| agreed(&rites) && rites.served == 10 && rites.handles == 4)
+        .is_some_and(|rites| agreed(&rites) && rites.served == 16 && rites.handles == 5)
 }
 
 // A user base is read back through `fs`, and a kernel-half or noncanonical one is refused.
@@ -270,15 +269,12 @@ fn relocated(original: &[u8], address: u64) -> Vec<u8> {
     copy
 }
 
-fn refusal(context: &mut ThreadContext, bytes: &[u8]) -> Option<user::LoadError> {
-    let mut space = AddressSpace::for_user().ok()?;
-    let refused = user::load_image(context, &mut space, bytes).err();
-    space.reclaim(None).ok()?;
-    refused
+fn refusal(bytes: &[u8]) -> Option<user::LoadError> {
+    user::plan_image(bytes).err()
 }
 
 // Code on the topmost user page could trap with a non-canonical return address.
-pub(super) fn the_loader_refuses_what_it_may_not_map(context: &mut ThreadContext) -> bool {
+pub(super) fn the_loader_refuses_what_it_may_not_map(_: &mut ThreadContext) -> bool {
     let Some(original) = user::image() else {
         return false;
     };
@@ -286,19 +282,19 @@ pub(super) fn the_loader_refuses_what_it_may_not_map(context: &mut ThreadContext
     write_execute[SEGMENT_FLAGS..SEGMENT_FLAGS + 4].copy_from_slice(&0b111u32.to_le_bytes());
 
     let write_execute_refused = matches!(
-        refusal(context, &write_execute),
+        refusal(&write_execute),
         Some(user::LoadError::WriteExecute(_))
     );
     let kernel_half_refused = matches!(
-        refusal(context, &relocated(original, 0xffff_8000_0000_0000)),
+        refusal(&relocated(original, 0xffff_8000_0000_0000)),
         Some(user::LoadError::NotUserMemory(_))
     );
     let topmost_refused = matches!(
-        refusal(context, &relocated(original, x86_paging::USER_MAPPING_END)),
+        refusal(&relocated(original, x86_paging::USER_MAPPING_END)),
         Some(user::LoadError::NotUserMemory(_))
     );
     let entry_refused = matches!(
-        refusal(context, &doctored(original, ELF_ENTRY, 0)),
+        refusal(&doctored(original, ELF_ENTRY, 0)),
         Some(user::LoadError::InvalidEntry(0))
     );
 

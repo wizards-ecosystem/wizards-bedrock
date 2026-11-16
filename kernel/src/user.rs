@@ -1,6 +1,5 @@
 use boot_record::Record;
 use native_abi::witness::behaviour;
-use wost::arch::current::paging::{AddressSpace, MapError};
 use wost::mm::PhysicalAddress;
 use x86_paging::PAGE_SIZE;
 
@@ -17,10 +16,9 @@ mod selftest;
 pub(crate) use call::refusals;
 pub(crate) use call::{call, report_execution, report_refusals};
 pub(crate) use construction::{SpawnError, spawn};
-use load::MAX_SEGMENTS;
 pub(crate) use load::keep;
 #[cfg(feature = "selftest")]
-pub(crate) use load::{LoadError, image, load_image};
+pub(crate) use load::{LoadError, image, plan_image};
 #[cfg(feature = "selftest")]
 pub(crate) use selftest::{
     spawn_duplicating, spawn_executing_syscall, spawn_faulting, spawn_for_bootstrap,
@@ -47,54 +45,6 @@ pub(crate) struct Launch {
     ring: u64,
     data: u64,
     time: u64,
-}
-
-const MAX_REGIONS: usize = MAX_SEGMENTS + 1;
-
-#[derive(Debug)]
-pub(crate) struct Regions {
-    ranges: [(u64, u64); MAX_REGIONS],
-    len: usize,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) struct UnmapRefusal {
-    pages: usize,
-    pub(crate) reason: MapError,
-}
-
-impl Regions {
-    const fn new() -> Self {
-        Self {
-            ranges: [(0, 0); MAX_REGIONS],
-            len: 0,
-        }
-    }
-
-    #[must_use = "a full ledger recorded nothing"]
-    fn record(&mut self, at: u64, len: u64) -> bool {
-        let Some(slot) = self.ranges.get_mut(self.len) else {
-            return false;
-        };
-        *slot = (at, len);
-        self.len += 1;
-        true
-    }
-
-    // Last mapped first; a refused range and every one below it stay recorded for a retry.
-    pub(crate) fn unmap(&mut self, space: &mut AddressSpace) -> Result<usize, UnmapRefusal> {
-        let mut pages = 0usize;
-        while self.len != 0 {
-            let (at, len) = self.ranges[self.len - 1];
-            let returned = space
-                .unmap(at, len)
-                .map_err(|reason| UnmapRefusal { pages, reason })?;
-            pages = pages.saturating_add(returned.pages() as usize);
-            drop(returned);
-            self.len -= 1;
-        }
-        Ok(pages)
-    }
 }
 
 #[derive(Debug)]

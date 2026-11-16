@@ -12,7 +12,7 @@ use wost::sync::{Leaf, SpinLock};
 
 use crate::arena::Pool;
 use crate::handle::Table;
-use crate::memory::MemoryObject;
+use crate::memory::{CodeQuota, MemoryObject};
 use crate::object::Channel;
 use crate::process::{Observation, Process};
 use crate::queue::Queue;
@@ -23,6 +23,8 @@ use crate::{info, random, warn};
 const MARGIN_DIVISOR: u32 = 32;
 
 const ROOT_HANDLES: u32 = 64;
+
+const ROOT_CODE_PAGES: u32 = 65536;
 
 struct WorldKey([u8; 32]);
 
@@ -38,6 +40,7 @@ pub(crate) struct World {
     handles: u32,
     ordinals: AtomicU64,
     spaces: AtomicU64,
+    pub(crate) code: CodeQuota,
     pub(crate) tables: TablePool,
     pub(crate) queues: QueuePool,
     pub(crate) channels: ChannelPool,
@@ -61,6 +64,7 @@ impl World {
             handles,
             ordinals: AtomicU64::new(0),
             spaces: AtomicU64::new(0),
+            code: CodeQuota::new(ROOT_CODE_PAGES),
             tables: Pool::new(),
             queues: Pool::new(),
             channels: Pool::new(),

@@ -501,7 +501,7 @@ fn work_forever(context: &mut ThreadContext, _: usize) {
             }
         }
         if retry_reap || take_reap_request(&REAP_REQUESTS) {
-            retry_reap = crate::reaper::run();
+            retry_reap = crate::reaper::run(context);
         }
         if let Some(work) = FILE_WORK.take() {
             service(context, work);

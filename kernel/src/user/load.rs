@@ -1,23 +1,17 @@
 use elf64::{Elf, ElfError, SegmentKind};
-use wost::arch::current::paging::{AddressSpace, Flush, MapError};
+use memory_object::Seal;
+use world_tree::NodeRef;
+use wost::arch::current::paging::{MapError, UserAccess};
 use wost::boot::HandoffError;
-use wost::mm::{self, USegment};
+use wost::mm::pool::Earmark;
 use wost::sync::{Leaf, SpinLock};
-use x86_paging::{Flags, PAGE_SIZE};
+use x86_paging::PAGE_SIZE;
 
-use super::{Regions, STACK_BYTES};
+use crate::memory::{Kind, MemoryObject, Payer, SealRefusal};
+use crate::space::{MapRefusal, Mapping, Space, Target};
 use crate::thread::ThreadContext;
+use crate::world::{MemoryPool, World};
 use crate::{info, warn};
-
-pub(super) fn place_stack(space: &mut AddressSpace, at: u64) -> Option<u64> {
-    let stack = mm::allocate_contiguous((STACK_BYTES / PAGE_SIZE) as usize, 1)?;
-    // Untyped from here: nothing the kernel later reads from the program's stack may be believed.
-    let stack = USegment::zeroed(stack)?;
-    space
-        .map_user(at, stack, Flags::WRITABLE.union(Flags::NO_EXECUTE))
-        .ok()?;
-    Some(at)
-}
 
 static IMAGE: SpinLock<Leaf, Option<&'static [u8]>> = SpinLock::new(None);
 
@@ -49,8 +43,8 @@ pub(crate) enum LoadError {
     WriteExecute(u64),
     NotUserMemory(u64),
     OutOfMemory,
+    NoQuota(u64),
     NotMapped(MapError),
-    Rollback { reason: MapError, pages: usize },
     InvalidEntry(u64),
     Empty,
 }
@@ -84,13 +78,11 @@ impl core::fmt::Display for LoadError {
                 write!(formatter, "the segment at {at:#x} is not user memory")
             }
             Self::OutOfMemory => formatter.write_str("no memory for the program"),
+            Self::NoQuota(at) => write!(
+                formatter,
+                "the code quota cannot cover the segment at {at:#x}"
+            ),
             Self::NotMapped(reason) => write!(formatter, "{reason}"),
-            Self::Rollback { reason, pages } => {
-                write!(
-                    formatter,
-                    "loader rollback refused after {pages} page(s): {reason}"
-                )
-            }
             Self::InvalidEntry(at) => {
                 write!(
                     formatter,
@@ -104,74 +96,120 @@ impl core::fmt::Display for LoadError {
 
 impl core::error::Error for LoadError {}
 
-pub(super) fn load(
-    context: &mut ThreadContext,
-    space: &mut AddressSpace,
-) -> Result<LoadedImage, LoadError> {
+pub(super) fn plan() -> Result<Plan<'static>, LoadError> {
     let bytes = (*IMAGE.lock_leaf()).ok_or(LoadError::Missing)?;
-    load_image(context, space, bytes)
+    plan_image(bytes)
 }
 
-#[derive(Debug)]
-pub(crate) struct LoadedImage {
-    pub(super) entry: u64,
-    pub(super) regions: Regions,
-}
-
-// Written, then sealed if executable, then mapped, so no frame is ever writable and executable.
-fn place(
-    context: &mut ThreadContext,
-    space: &mut AddressSpace,
-    bytes: &[u8],
-    placement: &Placement,
-) -> Result<(), LoadError> {
-    let run = mm::allocate_contiguous(placement.pages, 1).ok_or(LoadError::OutOfMemory)?;
-    let mut run = USegment::zeroed(run).ok_or(LoadError::OutOfMemory)?;
-    let Some(contents) = bytes.get(placement.from..placement.from + placement.len) else {
-        return Err(LoadError::Truncated(placement.at));
-    };
-    if !run.write_at(0, contents) {
-        return Err(LoadError::Truncated(placement.at));
-    }
-    if placement.flags.contains(Flags::NO_EXECUTE) {
-        return space
-            .map_user(placement.at, run, placement.flags)
-            .map_err(|reason| LoadError::NotMapped(reason.reason()));
-    }
-    let mut flush = Flush::none();
-    let sealing = run.seal(&mut flush);
-    // No processor may keep a writable translation of code it could later run.
-    flush.wait(context);
-    let Ok(sealed) = sealing.finish() else {
-        panic!("a sealed run awaited its flush and still holds a writable translation");
-    };
-    space
-        .map_user_sealed(placement.at, sealed, placement.flags)
-        .map_err(LoadError::NotMapped)
-}
-
-fn overlaps(first: &Placement, second: &Placement) -> bool {
-    first.at < second.mapped_end && second.at < first.mapped_end
-}
-
-pub(super) const MAX_SEGMENTS: usize = 8;
+const MAX_SEGMENTS: usize = 8;
 
 #[derive(Clone, Copy, Debug)]
 struct Placement {
     at: u64,
     end: u64,
     mapped_end: u64,
-    pages: usize,
+    pages: u32,
     from: usize,
     len: usize,
-    flags: Flags,
+    access: UserAccess,
 }
 
-pub(crate) fn load_image(
-    context: &mut ThreadContext,
-    space: &mut AddressSpace,
-    bytes: &[u8],
-) -> Result<LoadedImage, LoadError> {
+// A validated image: what each segment needs, known before anything is taken for it.
+#[derive(Debug)]
+pub(crate) struct Plan<'image> {
+    bytes: &'image [u8],
+    entry: u64,
+    placements: [Option<Placement>; MAX_SEGMENTS],
+}
+
+impl Plan<'_> {
+    // The arena frames each segment's object and its pool record need.
+    pub(super) fn frames(&self) -> Option<u32> {
+        self.placements
+            .iter()
+            .flatten()
+            .try_fold(0u32, |sum, placement| {
+                sum.checked_add(MemoryPool::frames_for(1)?)?
+                    .checked_add(MemoryObject::frames_for(placement.pages)?)
+            })
+    }
+
+    // Each segment is written into its own object, sealed unless writable, then mapped by
+    // record, so no frame is ever writable and executable.
+    pub(super) fn load(
+        &self,
+        context: &mut ThreadContext,
+        world_ref: NodeRef,
+        world: &World,
+        earmark: &mut Earmark,
+        space: &mut Space,
+    ) -> Result<u64, LoadError> {
+        for placement in self.placements.iter().flatten() {
+            self.place(context, world_ref, world, earmark, space, placement)?;
+        }
+        Ok(self.entry)
+    }
+
+    fn place(
+        &self,
+        context: &mut ThreadContext,
+        world_ref: NodeRef,
+        world: &World,
+        earmark: &mut Earmark,
+        space: &mut Space,
+        placement: &Placement,
+    ) -> Result<(), LoadError> {
+        let at = placement.at;
+        let contents = self
+            .bytes
+            .get(placement.from..placement.from + placement.len)
+            .ok_or(LoadError::Truncated(at))?;
+        let object = MemoryObject::new(earmark, Kind::Sealable, placement.pages);
+        let written = object.acquire_writer().is_ok() && object.write(context, 0, contents);
+        assert!(written, "a fresh segment object refused its contents");
+        let sealed = match placement.access {
+            UserAccess::Write => Ok(()),
+            UserAccess::Read => {
+                object.release_writer();
+                object.seal(context, Seal::Read, None)
+            }
+            UserAccess::Execute => {
+                object.release_writer();
+                let payer = Payer {
+                    world: world_ref,
+                    quota: &world.code,
+                };
+                object.seal(context, Seal::Execute, Some(payer))
+            }
+        };
+        match sealed {
+            Ok(()) => {}
+            Err(SealRefusal::NoQuota) => return Err(LoadError::NoQuota(at)),
+            Err(SealRefusal::State(refusal)) => {
+                panic!("a segment object with no other reference refused its seal: {refusal}")
+            }
+        }
+        // A writable segment's writer becomes its record's.
+        let memory = world.memories.insert(earmark, object);
+        let mapping = Mapping {
+            access: placement.access,
+            target: Target::Object { memory, first: 0 },
+        };
+        space
+            .map(context, world, at, u64::from(placement.pages), mapping)
+            .map_err(|refusal| match refusal {
+                MapRefusal::Taken => LoadError::Overlapping(at),
+                MapRefusal::Full => LoadError::TooManySegments,
+                MapRefusal::Frames(reason) => LoadError::NotMapped(reason),
+            })
+    }
+}
+
+fn overlaps(first: &Placement, second: &Placement) -> bool {
+    first.at < second.mapped_end && second.at < first.mapped_end
+}
+
+pub(crate) fn plan_image(bytes: &[u8]) -> Result<Plan<'_>, LoadError> {
     let elf = Elf::parse(bytes).map_err(LoadError::NotAnElf)?;
 
     let mut placements = [None; MAX_SEGMENTS];
@@ -214,25 +252,26 @@ pub(crate) fn load_image(
         if !x86_paging::user_mapping_fits(at, mapped_len) || segment.memory_size() == 0 {
             return Err(LoadError::NotUserMemory(at));
         }
+        let pages = u32::try_from(mapped_len / PAGE_SIZE).map_err(|_| LoadError::OutOfMemory)?;
 
-        let mut flags = Flags::USER;
-        if segment.is_writable() {
-            flags = flags.union(Flags::WRITABLE);
-        }
-        if !segment.is_executable() {
-            flags = flags.union(Flags::NO_EXECUTE);
-        }
+        let access = if segment.is_writable() {
+            UserAccess::Write
+        } else if segment.is_executable() {
+            UserAccess::Execute
+        } else {
+            UserAccess::Read
+        };
         let placement = Placement {
             at,
             end,
             mapped_end,
-            pages: (mapped_len / PAGE_SIZE) as usize,
+            pages,
             from: segment.offset() as usize,
             len: segment.file_size() as usize,
-            flags,
+            access,
         };
 
-        // Two segments sharing a page would collide in `map_user`, so refuse before taking any.
+        // Two segments sharing a page would collide in their records, so refuse before taking any.
         if placements
             .iter()
             .flatten()
@@ -253,31 +292,15 @@ pub(crate) fn load_image(
 
     let entry = elf.entry();
     let entry_is_executable = placements.iter().flatten().any(|placement| {
-        !placement.flags.contains(Flags::NO_EXECUTE)
-            && entry >= placement.at
-            && entry < placement.end
+        placement.access == UserAccess::Execute && entry >= placement.at && entry < placement.end
     });
     if !entry_is_executable {
         return Err(LoadError::InvalidEntry(entry));
     }
 
-    let mut regions = Regions::new();
-    for placement in placements.iter().flatten() {
-        if let Err(reason) = place(context, space, bytes, placement) {
-            // Validation cannot rule out a frame shortage or a collision: undo what was mapped.
-            if let Err(refusal) = regions.unmap(space) {
-                return Err(LoadError::Rollback {
-                    reason: refusal.reason,
-                    pages: refusal.pages,
-                });
-            }
-            return Err(reason);
-        }
-        assert!(
-            regions.record(placement.at, placement.mapped_end - placement.at),
-            "the region ledger holds fewer ranges than the loader places"
-        );
-    }
-
-    Ok(LoadedImage { entry, regions })
+    Ok(Plan {
+        bytes,
+        entry,
+        placements,
+    })
 }

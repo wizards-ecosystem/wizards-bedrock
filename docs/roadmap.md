@@ -204,8 +204,13 @@ Phase 7:
   (`kernel/src/queue.rs`, `kernel/src/timepage.rs`): every process reads the one root world clock.
   Channels need their own transport, and time needs a clock per world, the recorded mode and the raw
   time right.
-- A refused loader rollback drops its ledger, so spawn cleanup then panics
-  (`kernel/src/user/load.rs`). The refusal has no known trigger.
+- User page tables are kernel frames, not arena `Table` frames, and the ring, buffer 0 and time
+  page are shared mappings kept alive by the address space rather than leaves by reference
+  (`wost/src/arch/x86_64/paging/reclaim.rs`, `kernel/src/queue.rs`, `kernel/src/timepage.rs`).
+  A world's space needs its tables charged to its arena.
+- No space holds a reservation, so a `Map` with `EXECUTE` answers `NO_ADDRESS`, and no program
+  holds a code quota handle (`kernel/src/queue/memory.rs`). C9's `Reserve` and bootstrap roles
+  need both.
 
 Phase 8:
 - Stack reuse is safe only on one processor: `exit` frees a slot still running on its stack

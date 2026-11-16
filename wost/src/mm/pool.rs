@@ -1,5 +1,6 @@
 use core::fmt;
 use core::mem::ManuallyDrop;
+use core::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 
 use frame_space::{Access, ArenaIndex, ColourCounts, MAX_COLOURS, Owner, Reservation};
 pub use frame_space::{ColourMask, FrameKind};
@@ -277,7 +278,82 @@ impl Earmark {
             frame,
             arena: self.arena,
             kind,
+            mappings: Mappings::new(),
         })
+    }
+}
+
+// User leaves that name a frame. Room in the token's padding only: tokens fill object pages.
+#[derive(Debug)]
+pub(crate) struct Mappings {
+    readable: AtomicU16,
+    writable: AtomicU16,
+    ever: AtomicBool,
+}
+
+impl Mappings {
+    const fn new() -> Self {
+        Self::carrying(0, false)
+    }
+
+    const fn carrying(readable: u16, ever: bool) -> Self {
+        Self {
+            readable: AtomicU16::new(readable),
+            writable: AtomicU16::new(0),
+            ever: AtomicBool::new(ever),
+        }
+    }
+
+    const fn count(&self, writable: bool) -> &AtomicU16 {
+        if writable {
+            &self.writable
+        } else {
+            &self.readable
+        }
+    }
+
+    #[must_use = "a refused count admits no leaf"]
+    pub(crate) fn add(&self, writable: bool) -> bool {
+        self.ever.store(true, Ordering::Release);
+        self.count(writable)
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                count.checked_add(1)
+            })
+            .is_ok()
+    }
+
+    pub(crate) fn remove(&self, writable: bool) {
+        let removed =
+            self.count(writable)
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                    count.checked_sub(1)
+                });
+        assert!(removed.is_ok(), "a frame lost a user mapping it never had");
+    }
+
+    // Read-only leaves stay valid over a seal; a writable one would break W^X. A frame ever
+    // mapped waits for every processor to pass the newest shootdown, which covers each clearing.
+    fn seal(&self) -> (u16, bool, Flush) {
+        assert!(
+            self.writable.load(Ordering::Acquire) == 0,
+            "a frame was sealed while a writable user mapping names it"
+        );
+        let ever = self.ever.load(Ordering::Acquire);
+        let awaited = if ever {
+            Flush::barrier()
+        } else {
+            Flush::none()
+        };
+        (self.readable.load(Ordering::Acquire), ever, awaited)
+    }
+
+    fn retire(&self) -> Flush {
+        let (readable, _, flush) = self.seal();
+        assert!(
+            readable == 0,
+            "a frame left its token while a user mapping still names it"
+        );
+        flush
     }
 }
 
@@ -298,6 +374,7 @@ pub struct ArenaFrame {
     frame: usize,
     arena: ArenaId,
     kind: FrameKind,
+    mappings: Mappings,
 }
 
 impl ArenaFrame {
@@ -330,28 +407,37 @@ impl ArenaFrame {
         self.span().read_at(at, into)
     }
 
+    pub(crate) const fn mappings(&self) -> &Mappings {
+        &self.mappings
+    }
+
     pub fn surrender(self) {
         let frame = ManuallyDrop::new(self);
+        frame.mappings.retire().settle();
         surrender(frame.arena);
     }
 
-    // Consuming the frame proves no writable mapping of it remains, since a mapping consumes it.
+    // A writable user mapping holds a count, so a frame with none left has only flushes to await.
     pub fn seal(self, flush: &mut Flush) -> Sealing<SealedFrame> {
         assert!(
             self.kind != FrameKind::Table,
             "a page-table frame is never sealed"
         );
         let frame = ManuallyDrop::new(self);
-        let own = {
+        let (readable, ever, awaited) = frame.mappings.seal();
+        let mut own = {
             let _guard = FRAMES.lock_leaf();
             table::seal(frame.frame);
             set_direct_access(frame.address(), DirectAccess::ReadOnly)
         };
+        own.merge(awaited);
         flush.merge(own.duplicate());
         Sealing::new(
             SealedFrame {
                 frame: frame.frame,
                 arena: frame.arena,
+                kind: frame.kind,
+                mappings: Mappings::carrying(readable, ever),
             },
             own,
         )
@@ -360,7 +446,9 @@ impl ArenaFrame {
 
 impl Drop for ArenaFrame {
     fn drop(&mut self) {
-        // SAFETY: this is the frame's only handle and its leaf is writable.
+        self.mappings.retire().settle();
+        // SAFETY: this is the frame's only handle, its leaf is writable, and no user leaf or TLB
+        // entry names it any more.
         unsafe { zero_frame(self.frame) };
         settle(self.frame, self.arena, Access::Writable);
     }
@@ -371,6 +459,8 @@ impl Drop for ArenaFrame {
 pub struct SealedFrame {
     frame: usize,
     arena: ArenaId,
+    kind: FrameKind,
+    mappings: Mappings,
 }
 
 impl SealedFrame {
@@ -380,6 +470,14 @@ impl SealedFrame {
 
     pub const fn arena(&self) -> ArenaId {
         self.arena
+    }
+
+    pub const fn kind(&self) -> FrameKind {
+        self.kind
+    }
+
+    pub(crate) const fn mappings(&self) -> &Mappings {
+        &self.mappings
     }
 
     #[must_use = "a refused frame read copied no bytes"]
@@ -392,18 +490,21 @@ impl SealedFrame {
 
     pub fn surrender(self) {
         let frame = ManuallyDrop::new(self);
+        frame.mappings.retire().settle();
         surrender(frame.arena);
     }
 
     // The caller must already have removed every mapping of the frame and waited for that flush.
     pub fn release(self, flush: &mut Flush) {
         let frame = ManuallyDrop::new(self);
+        frame.mappings.retire().settle();
         release_sealed(frame.frame, frame.arena, flush);
     }
 }
 
 impl Drop for SealedFrame {
     fn drop(&mut self) {
+        self.mappings.retire().settle();
         let mut flush = Flush::none();
         release_sealed(self.frame, self.arena, &mut flush);
         assert!(

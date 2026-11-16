@@ -578,6 +578,28 @@ number and is added here, as one entry or as an amending id on the entry it chan
   stack keeps an unmapped guard page. A seed per process ordinal shared with the handle mixer was
   the alternative; a space ordinal keeps the seed with the space that C9's `SpaceCreate` makes
   without a process.
+- **D-535** A user leaf names an arena data frame by reference: `AddressSpace::map_frame` counts
+  the leaf in the frame's own token, readable and writable apart, and `clear_frame` clears only a
+  leaf that names that frame and returns its `Flush`. A token with a writable leaf cannot seal, one
+  with any leaf cannot be released or surrendered, and a token that was ever mapped waits for every
+  other processor to pass the newest shootdown before it seals or frees, so no safe caller can free
+  or seal a frame ring 3 still reaches. The counts fit the token's padding because tokens fill
+  object pages; a per-frame pending flush did not fit. Read-only leaves stay counted over a seal.
+- **D-536** A space's mapping records are the placement records: a kernel placement records its
+  stack, ring, buffer 0 and time page (a guard page is a record of its own), `Map` records a range
+  of an object and `Unmap` removes a whole record. An object record holds a strong reference, and a
+  writer while it maps `WRITE`, released only after the flush that cleared its leaves has
+  completed. The records live in one arena page of the space's world, so the space is small to
+  move. A `Map` or `Unmap` takes the space out of its process for the operation, so no lock is held
+  while it maps or waits; the caller is the process's one thread. Page tables stay kernel frames,
+  and the ring, buffer 0 and time page stay shared mappings kept by the address space until
+  reclaim.
+- **D-537** The in-kernel loader validates the image first, so the spawn's one earmark covers each
+  segment's object, then writes each segment into a sealable object, seals it read-only or
+  executable against the world's code quota (65536 pages for the root), and maps it by record. A
+  refused spawn and a process teardown both clear by record and then reclaim, so there is no
+  region ledger and no rollback. A memory opcode holds a strong reference for its length, so a
+  close racing it leaves the last release to the opcode.
 - **D-481** The ring 3 witness is a cargo-built static `ET_EXEC` linked at `0x400000`, and the
   loader maps each segment at its `p_vaddr` with no per-program shift, because a position-dependent
   image holds absolute addresses that a shift breaks and the in-kernel loader takes no `ET_DYN`;

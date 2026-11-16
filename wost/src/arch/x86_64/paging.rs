@@ -7,6 +7,7 @@ mod map;
 mod reclaim;
 mod roots;
 mod stack;
+mod user;
 mod walk;
 
 pub use activation::activate;
@@ -22,6 +23,7 @@ pub(crate) use flush::answer as answer_shootdown;
 pub use map::{BootRegion, Unmapped};
 pub(crate) use stack::{KernelStackTop, TaskStackPin};
 pub use stack::{MappedStack, PinnedStack, StackArena};
+pub use user::{FrameRef, UserAccess};
 pub use walk::stale_kernel_write;
 pub use walk::translate;
 
@@ -55,6 +57,7 @@ pub struct AddressSpace {
     entry_enclave_ready: bool,
     shared: Vec<SharedKeepalive>,
     owned_pages: usize,
+    referenced_pages: usize,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -164,6 +167,7 @@ impl AddressSpace {
             reach: Reach::Everywhere,
             shared: Vec::new(),
             owned_pages: 0,
+            referenced_pages: 0,
         })
     }
 
@@ -247,6 +251,7 @@ impl AddressSpace {
             entry_enclave_ready: kind == UserRootKind::Shared,
             shared: Vec::new(),
             owned_pages: 0,
+            referenced_pages: 0,
         })
     }
 

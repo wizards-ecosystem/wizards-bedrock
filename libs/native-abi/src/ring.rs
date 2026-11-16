@@ -67,6 +67,11 @@ pub mod status {
     // The caller's arena cannot cover the frames the operation needs.
     pub const NO_MEMORY: u32 = 13;
     pub const BUSY: u32 = 14;
+    pub const NO_QUOTA: u32 = 15;
+    // The range is taken, or no gap fits a placement.
+    pub const NO_ADDRESS: u32 = 16;
+    // A world limit or a fixed per-object limit.
+    pub const LIMIT: u32 = 23;
 }
 
 // Submission flag bits, by the opcode that reads them.
@@ -75,6 +80,9 @@ pub mod flags {
     pub const SHAREABLE: u64 = 1 << 0;
     // `MemorySeal`: sealed read-only.
     pub const SEAL_READ: u64 = 1 << 0;
+    // `Map`: the mapping is writable, or executable; never both.
+    pub const MAP_WRITE: u64 = 1 << 0;
+    pub const MAP_EXECUTE: u64 = 1 << 1;
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -91,6 +99,8 @@ pub enum Opcode {
     MemoryCreate,
     MemoryCopy,
     MemorySeal,
+    Map,
+    Unmap,
     Unknown(u32),
 }
 
@@ -109,6 +119,8 @@ impl Opcode {
             11 => Self::MemoryCreate,
             12 => Self::MemoryCopy,
             13 => Self::MemorySeal,
+            16 => Self::Map,
+            17 => Self::Unmap,
             other => Self::Unknown(other),
         }
     }
@@ -127,6 +139,8 @@ impl Opcode {
             Self::MemoryCreate => 11,
             Self::MemoryCopy => 12,
             Self::MemorySeal => 13,
+            Self::Map => 16,
+            Self::Unmap => 17,
             Self::Unknown(other) => other,
         }
     }

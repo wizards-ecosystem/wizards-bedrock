@@ -186,7 +186,29 @@ fn memory(entry: &Entry) -> Result<(), Failure> {
         Submission::about(Opcode::Close, TOKEN, sealable, 0),
         status::BAD_HANDLE,
     )?;
+    let mapped = ring.expect(create(0), status::OK)?.value;
+    ring.expect(map(mapped, flags::MAP_WRITE), status::OK)?;
+    ring.expect(seal(mapped), status::BUSY)?;
+    ring.expect(map(sealed, flags::MAP_EXECUTE), status::DENIED)?;
+    let unmap = Submission {
+        length: 1,
+        ..Submission::about(Opcode::Unmap, TOKEN, 0, MAPPED_AT)
+    };
+    ring.expect(unmap, status::OK)?;
+    ring.expect(seal(mapped), status::OK)?;
     Ok(())
+}
+
+// Below the kernel's placements and above the image.
+const MAPPED_AT: u64 = 0x4000_0000;
+
+const fn map(object: u64, flags: u64) -> Submission {
+    Submission {
+        second: object,
+        length: 1,
+        flags,
+        ..Submission::about(Opcode::Map, TOKEN, 0, MAPPED_AT)
+    }
 }
 
 const fn create(flags: u64) -> Submission {

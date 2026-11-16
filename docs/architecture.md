@@ -304,7 +304,10 @@ to map them executable, `map_boot`
 takes a `BootRegion` the boot map covers, only before activation and, for allocatable memory, only
 at its direct-map address, `map_device` takes an admitted device range and
 `map_user` takes a `USegment`, which it refuses to map executable. Executable user bytes come
-only as a `SealedSegment` through `map_user_sealed`, which refuses `WRITABLE`. Every path ends in
+only as a `SealedSegment` through `map_user_sealed`, which refuses `WRITABLE`, or as a sealed arena
+frame through `map_frame` (`paging/user.rs`), which maps one arena data frame by reference: a
+writable one never executable and a sealed one never writable, counted in the frame's token until
+`clear_frame` removes that leaf. Programs load only through `map_frame`. Every path ends in
 `map_range`, which refuses a writable and executable flag set and preflights the whole range,
 refusing it before any write unless every target is absent. It then links every table the range
 needs before it writes any leaf, so a refusal for want of a table leaves only empty tables, which
@@ -543,12 +546,16 @@ kernel narrows it with `try_from` and refuses or saturates.
 | 9 | `Close` | ends `handle`; its object goes once no handle or kernel reference holds it |
 | 11 | `MemoryCreate` | makes an object of `argument` zeroed pages in the caller's world; flag bit 0 makes it shareable. Completes with a handle: sealable `TRANSFER READ WRITE MAP`, shareable adds `DUPLICATE` |
 | 12 | `MemoryCopy` | copies `length` bytes from object `second` at byte `argument` into object `handle` at byte `offset`; needs `READ` and `WRITE`, and both ranges inside their objects (`BAD_BUFFER` otherwise) |
-| 13 | `MemorySeal` | with flag bit 0, seals the sealable object `handle` read-only; needs `WRITE` and no writer (`BUSY`). Completes with the new handle `DUPLICATE TRANSFER READ MAP`; the old value is gone |
+| 13 | `MemorySeal` | with flag bit 0, seals the sealable object `handle` read-only; needs `WRITE` and no writer (`BUSY`), and a writable mapping is a writer. Completes with the new handle `DUPLICATE TRANSFER READ MAP`; the old value is gone |
+| 16 | `Map` | maps `length` pages of object `second` from byte `offset` (page aligned) at address `argument` in the caller's space (`handle` 0); flag bit 0 `WRITE` takes a writer, bit 1 `EXECUTE` needs a sealed executable object, its `EXECUTE` right and a reservation. Needs `MAP` and `READ`; rights are checked before state and address. Completes with the address, or `NO_ADDRESS` when the range is taken or not user memory, `LIMIT` past 64 records |
+| 17 | `Unmap` | removes the whole mapping record at `argument` of `length` pages (`NOT_FOUND` otherwise) and completes after the flush that cleared its translations; only then does a writable record's writer go |
 
 The statuses are `OK` (0), `UNKNOWN_OPCODE` (1), `NO_HANDLE_SLOT` (2), `BAD_HANDLE` (3), `DENIED`
 (4), `CANCELLED` (5), `NOT_FOUND` (6, a cancel that named nothing in flight), `NO_ROOM` (7),
 `BAD_BUFFER` (8), `NO_ENTRY` (9), `BAD_PATH` (10), `UNAVAILABLE` (11), `IO` (12, a device or
-volume failure), `NO_MEMORY` (13, the caller's arena cannot cover the operation) and `BUSY` (14). A pending operation stays
+volume failure), `NO_MEMORY` (13, the caller's arena cannot cover the operation), `BUSY` (14),
+`NO_QUOTA` (15, a code quota cannot cover an execute seal), `NO_ADDRESS` (16) and `LIMIT` (23, a
+world limit or a fixed per-object limit). A pending operation stays
 in its slot until its completion is posted, and ring pages are reclaimed only once the queue is
 quiet. Cancellation is advisory.
 
@@ -584,6 +591,17 @@ a placement seed the space stores, derived once from the world key (`kernel/src/
 is sampled up to eight times from the seed and a stored counter above 4 GiB and below the user
 end, then placed first fit, with no overlap; the stack keeps one unmapped page below it. No fixed
 user address remains in the ABI.
+
+Each placement and each `Map` is a mapping record of the space, at most 64 (`limits::SPACE_RECORDS`),
+and every user leaf the kernel writes for a memory object is the image of one. A leaf names its
+arena data frame by reference: the frame's token counts its readable and writable leaves, refuses
+to seal while a writable one remains and to be freed while any remains, and once mapped waits for
+every other processor to pass the newest shootdown before it seals or frees. The loader writes
+each segment of the image into its own sealable object, seals it read-only or executable against
+the world's code quota (65536 pages for the root), then maps it by record; the stack is a writable
+object. A refused spawn and a process teardown clear the records, wait for that flush, release
+each record's references and then reclaim the tables. The ring, buffer 0 and time page are
+recorded too, but stay shared mappings that the address space keeps until it is reclaimed.
 
 The time page is mapped read-only at its placed address (`kernel/src/timepage.rs`, layout and
 field widths in `native_abi::timepage`, whose `Constants::encode` writes the constants). Version 2 holds constants written

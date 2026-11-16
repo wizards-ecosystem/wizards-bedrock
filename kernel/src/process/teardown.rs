@@ -1,20 +1,20 @@
 use world_tree::{ProcessStep, Progress};
-use wost::arch::current::paging::{MapError, ReclaimError};
+use wost::arch::current::paging::ReclaimError;
 use wost::arch::current::task;
 
 use super::{Authority, Process, ProcessRef, Space, status_of};
+use crate::thread::ThreadContext;
 use crate::world::World;
 use crate::{info, thread, warn};
 
 #[derive(Debug)]
 enum ReclaimRefusal {
     TaskRelease,
-    Mapping(MapError),
     Tables(ReclaimError),
 }
 
 // One step of the process teardown; `Pending` leaves the process for the reaper's next round.
-pub(crate) fn step(here: ProcessRef) -> Progress {
+pub(crate) fn step(here: ProcessRef, context: &mut ThreadContext) -> Progress {
     let Some((world, process)) = here.hold() else {
         return Progress::Done;
     };
@@ -24,7 +24,7 @@ pub(crate) fn step(here: ProcessRef) -> Progress {
         ProcessStep::Quiesce => quiesce(&process),
         ProcessStep::AbandonQueue => abandon(&process),
         ProcessStep::DrainTable => drain(&process),
-        ProcessStep::ClearSpace => clear(&process),
+        ProcessStep::ClearSpace => clear(context, &world, &process),
         ProcessStep::ReleaseRecords => release(&process),
         ProcessStep::Released => Progress::Done,
     };
@@ -126,12 +126,13 @@ fn keep_rites(process: &Process) {
     });
 }
 
-// P4: the space is taken out of the process, cleared and reclaimed; a refusal puts it back.
-fn clear(process: &Process) -> Progress {
+// P4: the space is taken out of the process, cleared by record and reclaimed; a refusal puts it
+// back.
+fn clear(context: &mut ThreadContext, world: &World, process: &Process) -> Progress {
     let Some(mut space) = process.space.lock_leaf().take() else {
         return Progress::Done;
     };
-    match reclaim(&mut space) {
+    match reclaim(context, world, &mut space) {
         Ok(()) => {
             drop(space);
             Progress::Done
@@ -139,9 +140,6 @@ fn clear(process: &Process) -> Progress {
         Err(refusal) => {
             match refusal {
                 ReclaimRefusal::TaskRelease => warn!("process: task release refused; retrying"),
-                ReclaimRefusal::Mapping(reason) => {
-                    warn!("process: mapping cleanup refused: {reason}; retrying");
-                }
                 ReclaimRefusal::Tables(reason) => {
                     warn!("process: table cleanup refused: {reason}; retrying");
                 }
@@ -152,7 +150,11 @@ fn clear(process: &Process) -> Progress {
     }
 }
 
-fn reclaim(space: &mut Space) -> Result<(), ReclaimRefusal> {
+fn reclaim(
+    context: &mut ThreadContext,
+    world: &World,
+    space: &mut Space,
+) -> Result<(), ReclaimRefusal> {
     let Some(authority) = space.authority.take() else {
         panic!("a committed process always owns address-space authority");
     };
@@ -166,14 +168,11 @@ fn reclaim(space: &mut Space) -> Result<(), ReclaimRefusal> {
             }
         },
     };
-    space
-        .regions
-        .unmap(&mut space.space)
-        .map_err(|refusal| ReclaimRefusal::Mapping(refusal.reason))?;
+    space.space.clear(context, world);
     let Some(Authority::Released(released)) = space.authority.take() else {
         panic!("task release was established above");
     };
-    if let Err(failure) = space.space.reclaim(Some(released)) {
+    if let Err(failure) = space.space.address().reclaim(Some(released)) {
         let reason = failure.reason;
         let Some(released) = failure.released else {
             panic!("process cleanup lost its retry authority: {reason}");
