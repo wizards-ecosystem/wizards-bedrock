@@ -106,6 +106,7 @@ docs/            architecture, conventions, roadmap and decisions
 | `handle-space` | handle encoding and quotas |
 | `lock-order` | lock ranks checked by type, the equal-rank pair rule and the held-rank word |
 | `memory-map` | a bounded firmware memory map that refuses rather than truncates |
+| `memory-object` | memory object state words, code quotas, mapping records, mapper slots and placement |
 | `mmio-range` | checked offsets for repeated MMIO accesses |
 | `native-abi` | every value that crosses ring 3: calls, errors, the entry block, ring layout, rights, the time page and fixed addresses |
 | `nvme` | NVMe registers, queues and commands |

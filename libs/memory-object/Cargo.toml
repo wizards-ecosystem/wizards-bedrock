@@ -1,0 +1,14 @@
+[package]
+name = "memory-object"
+description = "Memory object state words, code quotas, mapping records, mapper slots and placement"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+entropy.workspace = true
+
+[lints]
+workspace = true

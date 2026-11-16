@@ -139,6 +139,13 @@ name = "memory-map"
 version = "0.3.1"
 
 [[package]]
+name = "memory-object"
+version = "0.3.1"
+dependencies = [
+ "entropy",
+]
+
+[[package]]
 name = "mmio-range"
 version = "0.3.1"
 
