@@ -9,7 +9,7 @@ use native_abi::witness::behaviour::{
     READ_COUNTER, READ_KERNEL, RING_WAIT, SYSCALL, THREAD_BASE,
 };
 use native_abi::witness::{self, AGREED};
-use native_abi::{Call, Rights, error};
+use native_abi::{Call, Rights, error, limits};
 use witness_rt::{Entry, Ring, fault_with};
 
 witness_rt::entry!(behave);
@@ -199,8 +199,8 @@ fn memory(entry: &Entry) -> Result<(), Failure> {
     Ok(())
 }
 
-// Below the kernel's placements and above the image.
-const MAPPED_AT: u64 = 0x4000_0000;
+// Below the kernel's placements and far above the image.
+const MAPPED_AT: u64 = limits::PLACEMENT_START / 4;
 
 const fn map(object: u64, flags: u64) -> Submission {
     Submission {

@@ -360,7 +360,7 @@ pub(super) fn a_shared_mapping_keeps_its_frame() -> bool {
 // The loader refuses write-and-execute first; only the doors a program image reaches are tried.
 pub(super) fn a_user_space_cannot_reach_the_kernel_half() -> bool {
     const KERNEL: u64 = 0xffff_8000_0010_0000;
-    const TOP: u64 = x86_paging::USER_MAPPING_END;
+    const TOP: u64 = native_abi::limits::USER_MAPPING_END;
     const LAST_USER: u64 = TOP - PAGE_SIZE;
     const OWNED: u64 = 0x0000_0600_0000_0000;
     const SUPERVISOR: u64 = 0x0000_0000_4000_0000;

@@ -21,6 +21,19 @@ pub mod limits {
     pub const BUFFERS: u32 = 16;
     // Mapping records per address space, the kernel's own placements included.
     pub const SPACE_RECORDS: u32 = 64;
+    // Bytes of an `OpenAt` path, far below a page, because the kernel copies it onto its stack.
+    pub const PATH_BYTES: usize = 256;
+    // Components of a path, fixed so the length of an argument cannot set the resolver's work.
+    pub const PATH_DEPTH: usize = 16;
+    // Bytes of one component; longer is refused rather than truncated, which would find another file.
+    pub const NAME_BYTES: usize = 255;
+    // Bytes one `Read` returns at most; a larger request gets a short read.
+    pub const READ_BYTES: usize = 512;
+    // The kernel's placements stay above the first 4 GiB, where position-dependent images link.
+    pub const PLACEMENT_START: u64 = 0x0000_0001_0000_0000;
+    // The end of what `Map` accepts: the last canonical user page stays unmapped, since a trap
+    // saving a RIP at the user end would fault on return.
+    pub const USER_MAPPING_END: u64 = 0x0000_7FFF_FFFF_F000;
 }
 
 pub mod entry {

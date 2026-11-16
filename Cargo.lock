@@ -235,6 +235,7 @@ name = "path-walk"
 version = "0.3.1"
 dependencies = [
  "getrandom",
+ "native-abi",
  "proptest",
 ]
 
@@ -673,6 +674,7 @@ version = "0.3.1"
 name = "x86-paging"
 version = "0.3.1"
 dependencies = [
+ "native-abi",
  "x86-cpuid",
 ]
 

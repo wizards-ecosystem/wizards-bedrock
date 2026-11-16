@@ -7,10 +7,9 @@
 
 use core::fmt;
 
-pub const SEPARATOR: u8 = b'/';
+use native_abi::limits::NAME_BYTES;
 
-// Longer is refused rather than truncated: a truncated name finds another file.
-pub const MAX_NAME: usize = 255;
+pub const SEPARATOR: u8 = b'/';
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PathError {
@@ -68,7 +67,7 @@ pub fn split<'path>(path: &'path [u8], into: &mut [&'path [u8]]) -> Result<usize
             continue;
         }
 
-        if component.len() > MAX_NAME {
+        if component.len() > NAME_BYTES {
             return Err(PathError::NameTooLong);
         }
         if !is_a_name(component) {

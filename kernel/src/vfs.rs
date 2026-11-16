@@ -1,10 +1,8 @@
 use core::fmt;
 
 use fat32::FatError;
+use native_abi::limits::PATH_DEPTH;
 use path_walk::PathError;
-
-// Fixed, so the length of a ring 3 argument cannot set the resolver's work.
-const MAX_DEPTH: usize = 16;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Directory {
@@ -81,7 +79,7 @@ pub(crate) const fn tmp_root() -> Directory {
 
 // Each step uses the node it judged and never looks a name up twice.
 pub(crate) fn resolve(at: Directory, path: &[u8]) -> Result<Node, Error> {
-    let mut components = [b"".as_slice(); MAX_DEPTH];
+    let mut components = [b"".as_slice(); PATH_DEPTH];
     let depth = path_walk::split(path, &mut components)?;
 
     // `.` and `a/..` name the starting directory, which only a rights-checked duplicate may copy.

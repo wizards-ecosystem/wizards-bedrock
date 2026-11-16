@@ -1,4 +1,5 @@
 use memory_object::{Extent, PLACEMENT_SAMPLES, RecordRefusal, Records, place};
+use native_abi::limits::PLACEMENT_START;
 use wost::arch::current::paging::{AddressSpace, Flush, MapError, UserAccess};
 use wost::mm::pool::Earmark;
 use x86_paging::{PAGE_SIZE, USER_END};
@@ -13,9 +14,6 @@ const _: () = assert!(
     native_abi::limits::SPACE_RECORDS as usize == memory_object::RECORDS,
     "the ABI's record limit is the record set's"
 );
-
-// Kernel placements stay above the first 4 GiB, where position-dependent images link.
-const PLACEMENT_START: u64 = 0x0000_0001_0000_0000;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Target {

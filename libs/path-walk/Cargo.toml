@@ -10,6 +10,9 @@ repository.workspace = true
 [lints]
 workspace = true
 
+[dependencies]
+native-abi.workspace = true
+
 [dev-dependencies]
 proptest.workspace = true
 getrandom.workspace = true

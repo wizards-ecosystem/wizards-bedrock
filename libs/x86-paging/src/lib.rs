@@ -6,6 +6,8 @@ pub mod kpti;
 
 use core::fmt;
 
+use native_abi::limits::USER_MAPPING_END;
+
 pub const PAGE_SIZE: u64 = 4096;
 
 pub const LARGE_PAGE_SIZE: u64 = 2 << 20;
@@ -18,8 +20,10 @@ pub const MAX_PHYSICAL: u64 = ADDRESS_MASK + PAGE_SIZE;
 
 pub const USER_END: u64 = 0x0000_8000_0000_0000;
 
-// The last canonical page stays unmapped: a trap saving a RIP of `USER_END` would #GP on return.
-pub const USER_MAPPING_END: u64 = USER_END - PAGE_SIZE;
+const _: () = assert!(
+    USER_MAPPING_END == USER_END - PAGE_SIZE,
+    "user mappings end one page below the user half"
+);
 
 pub const fn user_mapping_fits(at: u64, length: u64) -> bool {
     match at.checked_add(length) {

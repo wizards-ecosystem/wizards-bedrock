@@ -11,4 +11,5 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
+native-abi.workspace = true
 x86-cpuid.workspace = true

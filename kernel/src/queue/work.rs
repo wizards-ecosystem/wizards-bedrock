@@ -1,6 +1,7 @@
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use native_abi::Rights;
+use native_abi::limits::{PATH_BYTES, READ_BYTES};
 use native_abi::ring::{Completion, Submission, status};
 use wost::sync::{Leaf, SpinLock};
 
@@ -27,7 +28,7 @@ pub(super) struct Work {
 struct OpenRequest {
     directory: vfs::Directory,
     held: Rights,
-    path: [u8; MAX_PATH],
+    path: [u8; PATH_BYTES],
     len: usize,
     reservation: SlotReservation,
 }
@@ -338,7 +339,7 @@ impl Queue {
         let Ok(reservation) = process.table_ref.reserve_slot() else {
             return Some(refuse(token, status::NO_HANDLE_SLOT));
         };
-        let mut path = [0u8; MAX_PATH];
+        let mut path = [0u8; PATH_BYTES];
         let Some(len) = self.read_data(&submission, &mut path) else {
             return Some(refuse(token, status::BAD_BUFFER));
         };
@@ -396,7 +397,7 @@ impl Queue {
             return Some(refuse(token, status::BAD_BUFFER));
         };
 
-        let wanted = (bounds.1).min(MAX_READ);
+        let wanted = (bounds.1).min(READ_BYTES);
         // An offset past every possible file reads nothing; a cast would wrap it inside the file.
         let offset = u32::try_from(submission.offset).unwrap_or(u32::MAX);
         let request = ReadRequest {
@@ -532,7 +533,7 @@ fn service(context: &mut ThreadContext, mut running: RunningWork) {
                 "read file work carried an OpenAt payload"
             );
             let request = running.read_request();
-            let mut scratch = [0u8; MAX_READ];
+            let mut scratch = [0u8; READ_BYTES];
             match vfs::read(request.file, request.offset, &mut scratch[..request.wanted]) {
                 Ok(read) => {
                     assert!(
@@ -588,9 +589,3 @@ fn service(context: &mut ThreadContext, mut running: RunningWork) {
 
     running.finish(&queue, status, value);
 }
-
-// Far below a page, because the buffer is on a 32 KiB kernel stack.
-const MAX_PATH: usize = 256;
-
-// A larger request gets a short read, from a stack buffer.
-const MAX_READ: usize = 512;

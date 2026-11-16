@@ -290,7 +290,7 @@ pub(super) fn the_loader_refuses_what_it_may_not_map(_: &mut ThreadContext) -> b
         Some(user::LoadError::NotUserMemory(_))
     );
     let topmost_refused = matches!(
-        refusal(&relocated(original, x86_paging::USER_MAPPING_END)),
+        refusal(&relocated(original, native_abi::limits::USER_MAPPING_END)),
         Some(user::LoadError::NotUserMemory(_))
     );
     let entry_refused = matches!(
