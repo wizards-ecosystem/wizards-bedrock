@@ -1,5 +1,5 @@
 use world_tree::{Admission, Limits, NodeRef};
-use wost::mm::pool::{self, ArenaId, FrameKind, Usage};
+use wost::mm::pool::{self, ArenaId, FrameKind};
 
 use super::threads::yields_until;
 use crate::thread::ThreadContext;
@@ -28,16 +28,12 @@ fn arena(node: NodeRef) -> Option<ArenaId> {
     registry::pin(node, Admission::Live).map(|world| world.arena())
 }
 
-fn counts(usage: Usage) -> (usize, usize) {
-    (usage.reserved(), usage.used())
-}
-
 // The kill is done once the reaper is idle and the parent holds the given reservation again.
 fn killed(context: &mut ThreadContext, node: NodeRef, parent: NodeRef, reserved: usize) -> bool {
     world::kill(node)
         && yields_until(context, || {
             crate::reaper::is_idle()
-                && world::inspect(parent).is_some_and(|usage| usage.reserved() == reserved)
+                && world::inspect(parent).is_some_and(|(held, _)| held == reserved)
         })
 }
 
@@ -45,13 +41,13 @@ pub(super) fn a_world_past_its_reservation_is_refused_alone(context: &mut Thread
     let Some(root) = world::root() else {
         return false;
     };
-    let Some(initial) = world::inspect(root) else {
+    let Some((initial, _)) = world::inspect(root) else {
         return false;
     };
     let (Some(greedy), Some(sibling)) = (child(context, root, 0), child(context, root, 0)) else {
         return false;
     };
-    let (Some(parent), Some(own), Some(other), Some(arena)) = (
+    let (Some((parent, parent_used)), Some((reserved, used)), Some(other), Some(arena)) = (
         world::inspect(root),
         world::inspect(greedy),
         world::inspect(sibling),
@@ -59,18 +55,17 @@ pub(super) fn a_world_past_its_reservation_is_refused_alone(context: &mut Thread
     ) else {
         return false;
     };
-    let (reserved, used) = counts(own);
     let refused = match pool::earmark(context, arena, (reserved - used) as u32) {
         Ok(_whole) => pool::earmark(context, arena, 1).err() == Some(pool::Refused::NoMemory),
         Err(_) => false,
     };
-    let untouched = world::inspect(sibling).is_some_and(|usage| counts(usage) == counts(other));
+    let untouched = world::inspect(sibling) == Some(other);
     refused
         && untouched
-        && killed(context, greedy, root, parent.reserved() + reserved)
-        && world::inspect(root).is_some_and(|usage| usage.used() == parent.used())
-        && killed(context, sibling, root, initial.reserved())
-        && disjoint_colours_stay_apart(context, root, initial.reserved())
+        && killed(context, greedy, root, parent + reserved)
+        && world::inspect(root).is_some_and(|(_, root_used)| root_used == parent_used)
+        && killed(context, sibling, root, initial)
+        && disjoint_colours_stay_apart(context, root, initial)
 }
 
 // Each sibling's frames carry only the colours of its own mask.

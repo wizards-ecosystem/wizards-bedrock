@@ -100,9 +100,9 @@ pub(super) fn inspect(mut process: Process<'_, '_>, submission: Submission) -> C
         },
     };
     match crate::world::inspect(node) {
-        Some(usage) => Completion {
-            extra: usage.used() as u64,
-            ..answer(token, usage.reserved() as u64)
+        Some((reserved, used)) => Completion {
+            extra: used as u64,
+            ..answer(token, reserved as u64)
         },
         None => refuse(token, status::DEAD),
     }

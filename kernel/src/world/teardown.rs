@@ -1,11 +1,11 @@
 use world_tree::{Admission, MAX_DEPTH, NodeRef, Path, Progress, WorldState, WorldStep};
-use wost::mm::pool::{self, ArenaId, Dissolved, Usage};
+use wost::mm::pool::{self, ArenaId, Dissolved};
 
 use super::{DESCENDANTS, Killer, registry};
 use crate::{reaper, thread};
 
 // Frame records one dissolve call examines with interrupts off.
-pub(super) const DISSOLVE_CHUNK: u32 = 512;
+const DISSOLVE_CHUNK: u32 = 512;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum KillRefusal {
@@ -47,9 +47,10 @@ fn condemn(node: NodeRef, killer: Option<Killer>) -> Result<bool, KillRefusal> {
     Ok(killed)
 }
 
-pub(crate) fn inspect(node: NodeRef) -> Option<Usage> {
+// The frames the world reserves and the frames it uses.
+pub(crate) fn inspect(node: NodeRef) -> Option<(usize, usize)> {
     let world = registry::pin(node, Admission::Live)?;
-    pool::usage(world.arena)
+    pool::usage(world.arena).map(|usage| (usage.reserved(), usage.used()))
 }
 
 // One step of the world teardown; each waits only on its own threads, pins or the frame scan.
@@ -80,7 +81,7 @@ pub(crate) fn step(node: NodeRef, step: WorldStep) -> Progress {
             let Some(remains) = registry::remains(node) else {
                 panic!("world {} dissolved without its remains", node.node);
             };
-            let progress = dissolve(&remains.path, remains.arena, DISSOLVE_CHUNK);
+            let progress = dissolve(&remains.path, remains.arena);
             if progress == Progress::Done {
                 for killer in remains.killers.into_iter().flatten() {
                     killer.queue.complete_kill(killer.pending, killer.id);
@@ -148,8 +149,19 @@ fn detach(node: NodeRef) -> Progress {
     Progress::Done
 }
 
-// One chunk of frames, zeroed, to the nearest live ancestor, chosen again for every chunk.
-pub(super) fn dissolve(path: &Path, arena: ArenaId, chunk: u32) -> Progress {
+// Chunk by chunk, interrupts on between them; `Pending` only while no live heir could be pinned.
+pub(super) fn dissolve(path: &Path, arena: ArenaId) -> Progress {
+    loop {
+        match dissolve_chunk(path, arena) {
+            Some(Dissolved::Progress) => {}
+            Some(Dissolved::Done) => return Progress::Done,
+            None => return Progress::Pending,
+        }
+    }
+}
+
+// The heir is the nearest live ancestor, chosen again for every chunk.
+fn dissolve_chunk(path: &Path, arena: ArenaId) -> Option<Dissolved> {
     let mut states = [WorldState::Free; MAX_DEPTH as usize];
     for (distance, state) in (0..path.depth()).zip(&mut states) {
         *state = path
@@ -157,15 +169,11 @@ pub(super) fn dissolve(path: &Path, arena: ArenaId, chunk: u32) -> Progress {
             .and_then(registry::state)
             .unwrap_or(WorldState::Free);
     }
-    let Some(heir) = path
+    let heir = path
         .heir(&states)
-        .and_then(|heir| registry::pin(heir, Admission::Live))
-    else {
-        return Progress::Pending;
-    };
-    match pool::dissolve(arena, heir.arena, chunk) {
-        Ok(Dissolved::Progress) => Progress::Pending,
-        Ok(Dissolved::Done) => Progress::Done,
+        .and_then(|heir| registry::pin(heir, Admission::Live))?;
+    match pool::dissolve(arena, heir.arena, DISSOLVE_CHUNK) {
+        Ok(dissolved) => Some(dissolved),
         Err(refused) => panic!("a dead world's arena refused to dissolve: {refused}"),
     }
 }

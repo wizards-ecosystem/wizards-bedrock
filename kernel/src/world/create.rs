@@ -204,7 +204,7 @@ impl Child {
         let Some(arena) = self.arena else {
             panic!("a world creation dissolved an arena it never had");
         };
-        match teardown::dissolve(&self.path, arena, teardown::DISSOLVE_CHUNK) {
+        match teardown::dissolve(&self.path, arena) {
             world_tree::Progress::Done => CreationEvent::Done,
             world_tree::Progress::Pending => CreationEvent::Pending,
         }
