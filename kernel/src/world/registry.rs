@@ -159,13 +159,14 @@ pub(crate) fn withdraw(node: NodeRef) -> World {
     world
 }
 
-// The world's own record for as long as it is Live or Dying; a pin is the way into another world.
+// The world's own record while it is Live or Dying, checked again once held since nodes are reused.
 pub(crate) fn hold(node: NodeRef) -> Option<Hold<World>> {
     let entry = entry(node)?;
     if !entry.state().admits(Admission::Teardown) || !entry.is(node) {
         return None;
     }
-    entry.records.hold(entry.record())
+    let world = entry.records.hold(entry.record())?;
+    (world.node() == node).then_some(world)
 }
 
 pub(crate) fn state(node: NodeRef) -> Option<WorldState> {
