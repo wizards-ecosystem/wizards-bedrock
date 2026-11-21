@@ -5,9 +5,10 @@
 
 use native_abi::ring::{Completion, Opcode, Submission, flags, status};
 use native_abi::witness::behaviour::{
-    BACKDOOR, CHANNELS, DUPLICATE, ECHO, FAULT, INVALID_RETURN_FLAGS, INVALID_RETURN_STACK, MEMORY,
-    PROBE, READ_COUNTER, READ_KERNEL, RING_WAIT, SYSCALL, THREAD_BASE,
+    BACKDOOR, CALLS, CHANNELS, DUPLICATE, ECHO, FAULT, INVALID_RETURN_FLAGS, INVALID_RETURN_STACK,
+    MEMORY, PROBE, READ_COUNTER, READ_KERNEL, RING_WAIT, SYSCALL, THREAD_BASE,
 };
+use native_abi::witness::calls::SERVER;
 use native_abi::witness::channels::READER;
 use native_abi::witness::{self, AGREED};
 use native_abi::{Call, Rights, error, limits, message};
@@ -62,6 +63,10 @@ enum Failure {
     CopyLost = 28,
     DeadAnswer = 29,
     NotKilled = 30,
+    EchoLost = 31,
+    SpentReplyAccepted = 32,
+    NotAbandoned = 33,
+    QueuedCallNotClosed = 34,
 }
 
 fn behave(entry: &Entry) -> u64 {
@@ -94,6 +99,7 @@ fn run(entry: &Entry) -> Result<(), Failure> {
         MEMORY => memory(entry),
         BACKDOOR => witness_rt::probe_backdoor(),
         CHANNELS => channels(entry),
+        CALLS => calls(entry),
         _ => Err(Failure::UnknownBehaviour),
     }
 }
@@ -385,6 +391,149 @@ fn read_across(ring: &mut Session, data: &mut Data, birth: u64) -> Result<(), Fa
         return Err(Failure::ChannelAnswer);
     }
     Ok(())
+}
+
+// The server holds this call's reply right when it tells the client so.
+const HELD: u64 = 0x0CA1_1ED0;
+
+const THIRD: u32 = 3;
+
+const FOURTH: u32 = 4;
+
+// A server and a client in sibling worlds, born connected: a call echoes, a right answers once, a
+// dropped right abandons, and the server's death settles one received and one queued call.
+fn calls(entry: &Entry) -> Result<(), Failure> {
+    let mut ring = Session::open(entry)?;
+    let mut data = Data::take(entry).ok_or(Failure::DataTaken)?;
+    if entry.operand() == SERVER {
+        return serve(&mut ring, &mut data, entry.bootstrap_handle());
+    }
+    call_across(&mut ring, &mut data, entry.bootstrap_handle())
+}
+
+fn serve(ring: &mut Session, data: &mut Data, birth: u64) -> Result<(), Failure> {
+    ask_room(data);
+    let first = awaited(ring, channel(Opcode::ChannelRead, birth, READ_AT))?;
+    if first.status != status::OK || first.extra != 1 {
+        return Err(Failure::ChannelAnswer);
+    }
+    let right = reply_right(data);
+    let word = payload(data);
+    compose(data, word, received(data).0);
+    ring.expect(channel(Opcode::Reply, right, WRITE_AT), status::OK)?;
+    note(data, word);
+    ring.expect(channel(Opcode::Reply, right, WRITE_AT), status::BAD_HANDLE)
+        .map_err(|_| Failure::SpentReplyAccepted)?;
+    let dropped = received_call(ring, data, birth)?;
+    ring.expect(close(dropped), status::OK)?;
+    received_call(ring, data, birth)?;
+    note(data, HELD);
+    ring.expect(channel(Opcode::ChannelWrite, birth, WRITE_AT), status::OK)?;
+    // Nothing writes to `idle`, so this read sleeps until the world is killed.
+    let (idle, _) = pair(ring)?;
+    awaited(ring, channel(Opcode::ChannelRead, idle, READ_AT))?;
+    Err(Failure::NotKilled)
+}
+
+fn call_across(ring: &mut Session, data: &mut Data, birth: u64) -> Result<(), Failure> {
+    let (kept, moved) = pair(ring)?;
+    request(data, Some(moved));
+    let echoed = awaited(ring, calling(birth))?;
+    if echoed.status != status::OK
+        || echoed.value != 8
+        || echoed.extra != 1
+        || payload(data) != ECHOED
+    {
+        return Err(Failure::EchoLost);
+    }
+    let (returned, rights) = received(data);
+    if rights != MOVED.bits() {
+        return Err(Failure::MovedHandleLost);
+    }
+    note(data, QUEUED);
+    ring.expect(channel(Opcode::ChannelWrite, kept, WRITE_AT), status::OK)?;
+    ask_room(data);
+    ring.expect(channel(Opcode::ChannelRead, returned, READ_AT), status::OK)?;
+    if payload(data) != QUEUED {
+        return Err(Failure::CopyLost);
+    }
+    request(data, None);
+    let dropped = awaited(ring, calling(birth))?;
+    if dropped.status != status::ABANDONED {
+        return Err(Failure::NotAbandoned);
+    }
+    for token in [THIRD, FOURTH] {
+        ring.publish(Submission {
+            token,
+            ..calling(birth)
+        });
+    }
+    if witness_rt::call(Call::RingEnter, 0) != 0 {
+        return Err(Failure::ChannelAnswer);
+    }
+    for _ in [THIRD, FOURTH] {
+        let ended = loop {
+            if let Ok(completion) = ring.collect() {
+                break completion;
+            }
+            witness_rt::call(Call::RingWait, 0);
+        };
+        match (ended.token, ended.status) {
+            (THIRD, status::ABANDONED) | (FOURTH, status::PEER_CLOSED) => {}
+            (THIRD, _) => return Err(Failure::NotAbandoned),
+            _ => return Err(Failure::QueuedCallNotClosed),
+        }
+    }
+    ask_room(data);
+    ring.expect(channel(Opcode::ChannelRead, birth, READ_AT), status::OK)?;
+    if payload(data) != HELD {
+        return Err(Failure::MessageOutOfOrder);
+    }
+    if awaited(ring, channel(Opcode::ChannelRead, birth, READ_AT))?.status != status::PEER_CLOSED {
+        return Err(Failure::ChannelAnswer);
+    }
+    Ok(())
+}
+
+// The call's message and the room for its reply, which lands in the same place.
+fn request(data: &mut Data, moved: Option<u64>) {
+    let mut header = [0u8; message::ENTRIES_AT];
+    header[message::VERSION_AT..][..4].copy_from_slice(&message::VERSION.to_le_bytes());
+    header[message::BYTES..][..4].copy_from_slice(&8u32.to_le_bytes());
+    header[message::HANDLES..][..4].copy_from_slice(&u32::from(moved.is_some()).to_le_bytes());
+    header[message::BYTE_CAPACITY..][..4].copy_from_slice(&READ_ROOM.to_le_bytes());
+    header[message::HANDLE_CAPACITY..][..4].copy_from_slice(&1u32.to_le_bytes());
+    data.write(READ_AT, &header);
+    if let Some(moved) = moved {
+        let mut entry = [0u8; message::ENTRY_BYTES];
+        entry[..8].copy_from_slice(&moved.to_le_bytes());
+        entry[8..12].copy_from_slice(&MOVED.bits().to_le_bytes());
+        data.write(READ_AT + message::ENTRIES_AT, &entry);
+    }
+    data.write(READ_AT + message::BYTES_AT, &ECHOED.to_le_bytes());
+}
+
+// The reply right of the next call, read when it arrives.
+fn received_call(ring: &mut Session, data: &Data, birth: u64) -> Result<u64, Failure> {
+    let read = awaited(ring, channel(Opcode::ChannelRead, birth, READ_AT))?;
+    let right = reply_right(data);
+    if read.status != status::OK || right == 0 {
+        return Err(Failure::ChannelAnswer);
+    }
+    Ok(right)
+}
+
+const fn calling(endpoint: u64) -> Submission {
+    Submission {
+        at: READ_AT as u64,
+        ..Submission::about(Opcode::ChannelCall, TOKEN, endpoint, u64::MAX)
+    }
+}
+
+fn reply_right(data: &Data) -> u64 {
+    let mut right = [0u8; 8];
+    data.read(READ_AT + message::REPLY, &mut right);
+    u64::from_le_bytes(right)
 }
 
 fn next_moved(ring: &mut Session, data: &Data, birth: u64, sequence: u64) -> Result<u64, Failure> {

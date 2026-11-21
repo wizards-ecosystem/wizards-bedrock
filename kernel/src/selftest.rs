@@ -74,6 +74,7 @@ const CHECKS: &[Check] = &[
         "channel moves conserve handles",
         processes::channel_moves_conserve_handles,
     ),
+    ("calls end once", processes::calls_end_once),
     (
         "two spaces map one address to different memory",
         address_spaces::two_spaces_map_one_address_to_different_memory,

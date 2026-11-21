@@ -19,6 +19,7 @@ use crate::process::Rites;
 use crate::thread::ThreadContext;
 use crate::world::{self, registry};
 use crate::{thread, time, user};
+use native_abi::witness::calls::{CLIENT, SERVER};
 use native_abi::witness::channels::{READER, WRITER};
 use world_tree::{Admission, NodeRef};
 use wost::mm::pool;
@@ -324,6 +325,53 @@ pub(super) fn channel_moves_conserve_handles(context: &mut ThreadContext) -> boo
             reader_world,
             root,
             before_kill + writer_reserved + reserved,
+        )
+}
+
+// A server and a client in sibling worlds, born connected: a call echoes its bytes and the handle
+// it moved, a reply right answers once, a dropped right abandons its call, and the server world's
+// death abandons the call it received and closes the one still queued.
+pub(super) fn calls_end_once(context: &mut ThreadContext) -> bool {
+    let Some(root) = world::root() else {
+        return false;
+    };
+    let (Some(server_world), Some(client_world)) = (
+        worlds::child(context, root, WORLD_FRAMES),
+        worlds::child(context, root, WORLD_FRAMES),
+    ) else {
+        return false;
+    };
+    let (Some((before, _)), Some((server_reserved, _)), Some((client_reserved, _))) = (
+        world::inspect(root),
+        world::inspect(server_world),
+        world::inspect(client_world),
+    ) else {
+        return false;
+    };
+    let Some((server_birth, client_birth)) = root_channel(context, root) else {
+        return false;
+    };
+    let Ok(server) = user::spawn_calling(context, server_world, server_birth, SERVER) else {
+        return false;
+    };
+    let Ok(client) = user::spawn_calling(context, client_world, client_birth, CLIENT) else {
+        return false;
+    };
+    let held = yields_until(context, || {
+        queued(client_world, client.birth) == Some(1)
+            && queued(server_world, server.birth) == Some(1)
+    });
+    drop(server);
+    let settled = held
+        && worlds::killed(context, server_world, root, before + server_reserved)
+        && last_rites_for(&client, 10_000).is_some_and(|rites| agreed(&rites));
+    drop(client);
+    settled
+        && worlds::killed(
+            context,
+            client_world,
+            root,
+            before + server_reserved + client_reserved,
         )
 }
 

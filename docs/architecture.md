@@ -526,7 +526,8 @@ A handle resolves only in the table that issued it, because each table has its o
 The universal rights are `DUPLICATE` (bit 0), `TRANSFER` (1), `WAIT` (2) and `INSPECT` (3). The
 per-type rights are `READ` (8), `WRITE` (9), `EXECUTE` (10), `MAP` (11), `TRAVERSE` (12),
 `ENUMERATE` (13) and `MODIFY` (14). An undefined bit is refused, never masked. The object types are
-an `Endpoint`, a `File`, a `Directory`, a memory object and a world (`kernel/src/object.rs`).
+an `Endpoint`, a `File`, a `Directory`, a memory object, a world and a reply right
+(`kernel/src/object.rs`).
 
 Each process's table is an object in its world's table pool (`kernel/src/handle.rs`). Its capacity
 is the world's handles limit (64 for the root world), and its entry pages, 64 entries each, are
@@ -534,7 +535,8 @@ arena frames taken when it is made, so a ring operation never allocates for a ha
 sit behind one object lock (`rank::Object`, taken with a thread context). Held and promised counts
 share one atomic word; a retired slot stays counted, so the quota never promises a slot that no
 longer exists. An entry names its object by `ObjectRef`: a `Local` endpoint or memory object in
-the same world, a world by its node, or a `File` or `Directory` value. A local object is counted: a
+the same world, a world by its node, a reply right by its caller, or a `File` or `Directory`
+value. A local object is counted: a
 handle holds one strong reference, a `Duplicate` takes another, and `Close` or the table's teardown
 releases it, so the object goes with its last reference. An entry is free, live, retired, or moving
 while a channel write holds it (`libs/handle-space`): a moving entry resolves for nothing, and the
@@ -549,9 +551,10 @@ handle authorizes or a channel read, and `Close` ends one.
 `ChannelCreate` makes two endpoints in the caller's world, each naming the other, and returns a
 handle to each (`kernel/src/channel.rs`, `kernel/src/queue/channel.rs`). An endpoint is an object
 in its world's endpoint pool with its inbox: 16 message descriptors and 8 armed readers in the
-record, and one arena data frame of its own holding the 2304-byte byte ring and 32 moved-handle
-slots, each an object reference with its rights and the world whose count it holds as 32 plain
-bytes (`libs/channel-state`). Its holder's world pays for all of it when the endpoint is made, so a
+record, and one arena data frame of its own holding the 2304-byte byte ring, 32 moved-handle
+slots, each an object reference with its rights and the world whose count it holds as 40 plain
+bytes, and the caller of each descriptor that holds a call (`libs/channel-state`). Its holder's
+world pays for all of it when the endpoint is made, so a
 write allocates nothing. An endpoint names its peer by world and place, and the peer may live in
 another world: a write reaches it under a pin of that world for one step.
 
@@ -593,6 +596,37 @@ so no pinned step takes a second pin. A world's endpoints, those left only in ea
 included, are destroyed when its teardown detaches it, after no other world can pin it; each closes
 toward its peer, and what it still had in transit in another world's inbox arrives dead there,
 since that inbox holds only bytes.
+
+`ChannelCall` (opcode 27) sends the message at its descriptor like a write, and the reply lands in
+the same descriptor (`kernel/src/queue/call.rs`). Each of the queue's 8 pending slots has a call
+cell (`libs/channel-state`: state and generation in one word) and a staging record. At admission
+the caller's world prepays everything a reply can need: a table slot per declared reply handle, a
+staging frame for the reply's handles, and the frames to re-home each of them. The call's entry
+joins the endpoint's inbox in the one order with messages, and its cell turns `Queued` under the
+inbox lock, so no reader finds an entry whose call is not yet queued. `argument` is a deadline in
+world nanoseconds, `u64::MAX` for none; the ring's expiry ends a call still `Queued` or
+`Delivered` with `TIMED_OUT` (21).
+
+A `ChannelRead` that takes a call moves its cell to `Delivered` and installs a reply right
+(`TRANSFER WRITE`, never `DUPLICATE`) in a slot reserved with the message's, returning it in the
+descriptor's reply field. A call whose cell had already ended is discarded with every handle it
+carried, and the read takes the next entry. The right names the caller's queue, slot and cell
+generation, so a right for an earlier call meets a newer generation and fails. `Reply` (opcode 28)
+resolves the right, takes the reply's handles, then under at most one pin of the caller's world
+claims the cell, copies the bytes into the caller's buffer 0, stages the handles and completes the
+cell, all in one call. It answers `OK`, or `PEER_CLOSED` when the call already ended, and the right
+is spent either way; a reply larger than the caller's room answers `TOO_SMALL` with that room and
+keeps the right. A spent right answers `BAD_HANDLE`.
+
+Every other outcome is one cell transition under at most one pin: dropping a reply right, by
+`Close` or by its table's teardown, makes a delivered call `ABANDONED` (20), and destroying an
+endpoint makes each call still queued in it `PEER_CLOSED`. Each of these wakes the caller, whose
+next ring wait takes the outcome in its own context, installing the staged handles (re-homing
+endpoints from its prepaid frames) and posting the completion with the reply's bytes and handles.
+`Cancel`, the caller's own deadline and the caller's teardown end a queued or delivered call at
+once, writing flag `DELIVERED` into the descriptor when the server had received it. A caller's
+teardown waits while a reply is being copied in, and then returns the staged handles to their
+worlds.
 
 ### The ring
 
@@ -649,8 +683,9 @@ The statuses are `OK` (0), `UNKNOWN_OPCODE` (1), `NO_HANDLE_SLOT` (2), `BAD_HAND
 `BAD_BUFFER` (8), `NO_ENTRY` (9), `BAD_PATH` (10), `UNAVAILABLE` (11), `IO` (12, a device or
 volume failure), `NO_MEMORY` (13, the caller's arena cannot cover the operation), `BUSY` (14),
 `NO_QUOTA` (15, a code quota cannot cover an execute seal), `NO_ADDRESS` (16), `DEAD` (17, the
-object or its world is gone or dying) and `LIMIT` (23, a world limit or a fixed per-object
-limit). A pending operation stays
+object or its world is gone or dying), `FULL` (18), `PEER_CLOSED` (19), `ABANDONED` (20),
+`TIMED_OUT` (21), `TOO_SMALL` (22) and `LIMIT` (23, a world limit or a fixed per-object limit).
+A pending operation stays
 in its slot until its completion is posted, and ring pages are reclaimed only once the queue is
 quiet. Cancellation is advisory.
 

@@ -461,7 +461,10 @@ impl Queue {
         }
         let phase = match &mut entry.kind {
             PendingKind::OpenAt { phase } | PendingKind::Read { phase, .. } => phase,
-            PendingKind::Timer { .. } | PendingKind::Kill | PendingKind::ChannelRead { .. } => {
+            PendingKind::Timer { .. }
+            | PendingKind::Kill
+            | PendingKind::ChannelRead { .. }
+            | PendingKind::ChannelCall { .. } => {
                 return WorkClaim::Stale;
             }
         };

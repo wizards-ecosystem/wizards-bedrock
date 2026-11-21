@@ -75,6 +75,9 @@ pub mod status {
     // The inbox has no room for the message.
     pub const FULL: u32 = 18;
     pub const PEER_CLOSED: u32 = 19;
+    // The reply right was dropped, or its holder died, after the server received the call.
+    pub const ABANDONED: u32 = 20;
+    pub const TIMED_OUT: u32 = 21;
     // The head message exceeds the declared capacity and stays; value and extra give its size.
     pub const TOO_SMALL: u32 = 22;
     // A world limit or a fixed per-object limit.
@@ -114,6 +117,8 @@ pub enum Opcode {
     ChannelCreate,
     ChannelWrite,
     ChannelRead,
+    ChannelCall,
+    Reply,
     Unknown(u32),
 }
 
@@ -140,6 +145,8 @@ impl Opcode {
             24 => Self::ChannelCreate,
             25 => Self::ChannelWrite,
             26 => Self::ChannelRead,
+            27 => Self::ChannelCall,
+            28 => Self::Reply,
             other => Self::Unknown(other),
         }
     }
@@ -166,6 +173,8 @@ impl Opcode {
             Self::ChannelCreate => 24,
             Self::ChannelWrite => 25,
             Self::ChannelRead => 26,
+            Self::ChannelCall => 27,
+            Self::Reply => 28,
             Self::Unknown(other) => other,
         }
     }

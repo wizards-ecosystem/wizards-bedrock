@@ -685,6 +685,32 @@ number and is added here, as one entry or as an amending id on the entry it chan
   re-homed from the spawn's earmark when it lives elsewhere, so the self-test kernel can start two
   programs connected at birth in two worlds. The spawner's observation still lives in the target
   world, so a spawner lets it go before it kills that world.
+- **D-710** A ring call's cell and staging live in the caller's queue, one per pending slot, and a
+  reply right names the queue, the slot and the cell's generation. The queue outlives every pending
+  operation and its teardown already waits out a hold, so no party that reaches the cell from
+  another world ever destroys anything; a record per call would need its own deferred destruction.
+- **D-711** At admission a call prepays, from its caller's world, a table slot per declared reply
+  handle, one staging frame and `Endpoint::rehome_frames_for(n)` frames for the reply's handles,
+  because a re-home of n endpoints takes record pages and a spare frame beside one frame each, and
+  the caller cannot refuse once the reply has happened (amends choice 10 of the core design).
+- **D-712** An object reference is encoded in 32 bytes, since a reply right names three words, so a
+  transit slot is 40 bytes, and an endpoint's frame keeps the caller of each descriptor holding a
+  call after the moved references; the frame is then exactly one page (amends D-551).
+- **D-713** A call's cell turns `Queued` inside the inbox commit, under the endpoint's lock, so the
+  entry and the queued call appear together. A reader delivers the call after it drops that lock,
+  because a pin is never taken under an object lock; a cancel or deadline in between discards the
+  entry with its handles, as if it had come first.
+- **D-714** A `Reply` whose own content is refused (a malformed descriptor, a refused moved handle,
+  a handle that may not enter the caller's world, or more than the caller's room, `TOO_SMALL` with
+  that room) keeps its right and changes nothing. Only a reply, or a claim the cell refuses, spends
+  the right.
+- **D-715** A peer's outcome is taken only in the caller's context, at its next ring wait; the
+  caller's own cancel, deadline and teardown end a call at once. A cancel or deadline that loses to
+  the peer leaves the call to complete with the peer's outcome: the cancel answers `NOT_FOUND` and
+  the deadline is dropped. A caller's teardown waits while a reply is being copied in.
+- **D-716** The channel opcodes refuse a buffer index other than 0 with `BAD_BUFFER` instead of
+  reading buffer 0. `BufferRegister` waits for the synchronous calls, since the ring reply writes
+  the caller's buffer 0 directly.
 - **D-481** The ring 3 witness is a cargo-built static `ET_EXEC` linked at `0x400000`, and the
   loader maps each segment at its `p_vaddr` with no per-program shift, because a position-dependent
   image holds absolute addresses that a shift breaks and the in-kernel loader takes no `ET_DYN`;

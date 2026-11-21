@@ -1,7 +1,7 @@
 use core::ops::Deref;
 use core::sync::atomic::Ordering;
 
-use channel_state::{BYTES, HANDLES, Hop, Inbox, Link, Route, Span, route};
+use channel_state::{BYTES, DESCRIPTORS, HANDLES, Hop, Inbox, Link, Route, Span, route};
 use native_abi::Rights;
 use native_abi::limits::{MESSAGE_BYTES, MESSAGE_HANDLES};
 use world_tree::{Admission, NodeRef};
@@ -11,7 +11,7 @@ use wost::sync::SpinLock;
 
 use crate::arena::Local;
 use crate::object::{ENCODED, ObjectRef, ObjectType};
-use crate::queue::QueueRef;
+use crate::queue::{self, CallCell, Caller, QueueRef};
 use crate::rank;
 use crate::world::registry::{self, Pin};
 use crate::world::{EndpointPool, World};
@@ -74,7 +74,8 @@ pub(crate) struct Endpoint {
 struct State {
     link: Link<Peer>,
     inbox: Inbox,
-    // The byte ring, then each moved object's strong reference and its world, held until read.
+    // The byte ring, then each moved object's strong reference and its world, held until read,
+    // then the caller of each descriptor that holds a call.
     bytes: ArenaFrame,
     armed: [Option<Reader>; ARMED],
     doomed: Option<Local<Endpoint>>,
@@ -84,7 +85,9 @@ const TRANSIT_AT: usize = BYTES as usize;
 
 const TRANSIT: usize = ENCODED + 8;
 
-const FRAME_USED: usize = TRANSIT_AT + HANDLES as usize * TRANSIT;
+const CALLS_AT: usize = TRANSIT_AT + HANDLES as usize * TRANSIT;
+
+const FRAME_USED: usize = CALLS_AT + DESCRIPTORS as usize * ENCODED;
 
 const COPY_CHUNK: usize = 256;
 
@@ -93,58 +96,117 @@ const _: () = assert!(
     "the byte ring and the moved references share one frame"
 );
 
+fn hand(frame: &mut ArenaFrame, at: usize, moved: Option<(ObjectRef, Rights)>, origin: NodeRef) {
+    let mut encoded = [0; TRANSIT];
+    if let Some((object, rights)) = moved {
+        encoded[..ENCODED].copy_from_slice(&object.encode(rights));
+        encoded[ENCODED..ENCODED + 4].copy_from_slice(&origin.node.to_le_bytes());
+        encoded[ENCODED + 4..].copy_from_slice(&origin.generation.to_le_bytes());
+    }
+    assert!(
+        frame.write_at(at, &encoded),
+        "a transit slot left its frame"
+    );
+}
+
+fn peek(frame: &ArenaFrame, at: usize) -> Option<Carried> {
+    let mut encoded = [0; TRANSIT];
+    assert!(
+        frame.read_at(at, &mut encoded),
+        "a transit slot left its frame"
+    );
+    let mut object = [0; ENCODED];
+    object.copy_from_slice(&encoded[..ENCODED]);
+    let word = |at: usize| {
+        u32::from_le_bytes([
+            encoded[at],
+            encoded[at + 1],
+            encoded[at + 2],
+            encoded[at + 3],
+        ])
+    };
+    ObjectRef::decode(object).map(|(object, rights)| Carried {
+        object,
+        rights,
+        origin: NodeRef {
+            node: word(ENCODED),
+            generation: word(ENCODED + 4),
+        },
+    })
+}
+
+const NOWHERE: NodeRef = NodeRef {
+    node: 0,
+    generation: 0,
+};
+
+const _: () = assert!(
+    HANDLES as usize * TRANSIT <= x86_paging::PAGE_SIZE as usize,
+    "a reply's staged handles fit one frame"
+);
+
+// A reply's handles wait in its caller's staging frame in the form an inbox holds them.
+pub(crate) fn stage(
+    frame: &mut ArenaFrame,
+    slot: usize,
+    moved: Option<(ObjectRef, Rights)>,
+    origin: NodeRef,
+) {
+    hand(frame, slot * TRANSIT, moved, origin);
+}
+
+pub(crate) fn unstage(frame: &mut ArenaFrame, slot: usize) -> Option<Carried> {
+    let carried = peek(frame, slot * TRANSIT);
+    hand(frame, slot * TRANSIT, None, NOWHERE);
+    carried
+}
+
 impl State {
     fn hand(&mut self, slot: usize, moved: Option<(ObjectRef, Rights)>, origin: NodeRef) {
-        let mut encoded = [0; TRANSIT];
-        if let Some((object, rights)) = moved {
-            encoded[..ENCODED].copy_from_slice(&object.encode(rights));
-            encoded[ENCODED..ENCODED + 4].copy_from_slice(&origin.node.to_le_bytes());
-            encoded[ENCODED + 4..].copy_from_slice(&origin.generation.to_le_bytes());
-        }
-        assert!(
-            self.bytes.write_at(TRANSIT_AT + slot * TRANSIT, &encoded),
-            "a transit slot left its frame"
-        );
+        hand(&mut self.bytes, TRANSIT_AT + slot * TRANSIT, moved, origin);
     }
 
     fn peek(&self, slot: usize) -> Option<Carried> {
-        let mut encoded = [0; TRANSIT];
-        assert!(
-            self.bytes
-                .read_at(TRANSIT_AT + slot * TRANSIT, &mut encoded),
-            "a transit slot left its frame"
-        );
-        let mut object = [0; ENCODED];
-        object.copy_from_slice(&encoded[..ENCODED]);
-        let word = |at: usize| {
-            u32::from_le_bytes([
-                encoded[at],
-                encoded[at + 1],
-                encoded[at + 2],
-                encoded[at + 3],
-            ])
-        };
-        ObjectRef::decode(object).map(|(object, rights)| Carried {
-            object,
-            rights,
-            origin: NodeRef {
-                node: word(ENCODED),
-                generation: word(ENCODED + 4),
-            },
-        })
+        peek(&self.bytes, TRANSIT_AT + slot * TRANSIT)
     }
 
     fn claim(&mut self, slot: usize) -> Option<Carried> {
         let carried = self.peek(slot);
-        self.hand(
-            slot,
-            None,
-            NodeRef {
-                node: 0,
-                generation: 0,
-            },
-        );
+        self.hand(slot, None, NOWHERE);
         carried
+    }
+
+    fn mark(&mut self, index: u8, call: Option<Caller>) {
+        let encoded = call.map_or([0; ENCODED], |caller| {
+            ObjectRef::Reply(caller).encode(Rights::NONE)
+        });
+        assert!(
+            self.bytes
+                .write_at(CALLS_AT + usize::from(index) * ENCODED, &encoded),
+            "a call mark left its frame"
+        );
+    }
+
+    fn called(&self, index: u8) -> Option<Caller> {
+        let mut encoded = [0; ENCODED];
+        assert!(
+            self.bytes
+                .read_at(CALLS_AT + usize::from(index) * ENCODED, &mut encoded),
+            "a call mark left its frame"
+        );
+        match ObjectRef::decode(encoded) {
+            Some((ObjectRef::Reply(caller), _)) => Some(caller),
+            _ => None,
+        }
+    }
+
+    // The head entry and every moved reference it holds, with its caller when it is a call.
+    fn pop(&mut self, received: &mut Received) -> Option<Option<Caller>> {
+        let entry = self.inbox.pop()?;
+        for (at, slot) in spanned(entry.descriptor.handle_spans()).enumerate() {
+            received[at] = self.claim(slot);
+        }
+        Some(self.called(entry.index))
     }
 
     // Moved endpoints of the head message that live in another world and need a new home here.
@@ -179,11 +241,12 @@ pub(crate) enum Head {
         bytes: u16,
         handles: u16,
         foreign: u16,
+        call: bool,
     },
 }
 
 // The world an operation runs for, or another world for one pinned step.
-enum Reach<'a> {
+pub(crate) enum Reach<'a> {
     Own(&'a World),
     Pinned(Pin),
 }
@@ -199,7 +262,7 @@ impl Deref for Reach<'_> {
     }
 }
 
-fn reach(here: &World, node: NodeRef) -> Option<Reach<'_>> {
+pub(crate) fn reach(here: &World, node: NodeRef) -> Option<Reach<'_>> {
     if node == here.node() {
         Some(Reach::Own(here))
     } else {
@@ -284,13 +347,15 @@ enum Commit {
 }
 
 // Commits one message into the peer's inbox, following one re-home, and hands back the oldest
-// armed reader to wake. On a refusal the moved objects are still the caller's.
+// armed reader to wake. On a refusal the moved objects are still the caller's. A call's cell
+// leaves Idle under the inbox lock, so no reader finds its entry before the call is queued.
 pub(crate) fn write(
     world: &World,
     from: Local<Endpoint>,
     bytes: &[u8],
     moved: &mut Moved,
     count: usize,
+    call: Option<(Caller, &CallCell)>,
 ) -> Result<Option<Reader>, WriteRefusal> {
     let me = Peer {
         world: world.node(),
@@ -312,8 +377,10 @@ pub(crate) fn write(
                 }
                 return Err(WriteRefusal::PeerClosed);
             }
-            let committed = admit(&there, me.world, to, moved)
-                .and_then(|()| commit(&held(&there, to.endpoint), me, hop, bytes, moved, count));
+            let committed = admit(&there, me.world, to, moved).and_then(|()| {
+                let to = held(&there, to.endpoint);
+                commit(&to, me, hop, (bytes, moved, count), call)
+            });
             there.let_go(to.endpoint);
             match committed? {
                 Commit::Done(reader) => return Ok(reader),
@@ -323,29 +390,39 @@ pub(crate) fn write(
     }
 }
 
-// A memory object stays in its world, and a world handle enters only that world or an ancestor.
 fn admit(there: &World, here: NodeRef, to: Peer, moved: &Moved) -> Result<(), WriteRefusal> {
-    let crossing = to.world != here;
-    let refused = moved.iter().flatten().any(|&(object, _)| match object {
-        ObjectRef::Endpoint(endpoint) => !crossing && endpoint == to.endpoint,
-        ObjectRef::Memory(_) => crossing,
-        ObjectRef::World(node) => crossing && !there.governs(node),
-        ObjectRef::File(_) | ObjectRef::Directory(_) | ObjectRef::Dead(_) => false,
-    });
-    if refused {
+    let own_inbox = to.world == here
+        && moved
+            .iter()
+            .flatten()
+            .any(|&(object, _)| object == ObjectRef::Endpoint(to.endpoint));
+    if own_inbox || !admits(there, here, moved) {
         Err(WriteRefusal::Denied)
     } else {
         Ok(())
     }
 }
 
+// A memory object stays in its world, and a world handle enters only that world or an ancestor.
+pub(crate) fn admits(there: &World, here: NodeRef, moved: &Moved) -> bool {
+    let crossing = there.node() != here;
+    !moved.iter().flatten().any(|&(object, _)| match object {
+        ObjectRef::Memory(_) => crossing,
+        ObjectRef::World(node) => crossing && !there.governs(node),
+        ObjectRef::Endpoint(_)
+        | ObjectRef::File(_)
+        | ObjectRef::Directory(_)
+        | ObjectRef::Reply(_)
+        | ObjectRef::Dead(_) => false,
+    })
+}
+
 fn commit(
     to: &Endpoint,
     from: Peer,
     hop: Hop,
-    bytes: &[u8],
-    moved: &mut Moved,
-    count: usize,
+    (bytes, moved, count): (&[u8], &mut Moved, usize),
+    call: Option<(Caller, &CallCell)>,
 ) -> Result<Commit, WriteRefusal> {
     let mut state = to.state.lock_leaf();
     match route(from, state.link, hop) {
@@ -373,6 +450,10 @@ fn commit(
     for slot in spanned(entry.descriptor.handle_spans()) {
         state.hand(slot, taken.next().flatten(), from.world);
     }
+    state.mark(entry.index, call.map(|(caller, _)| caller));
+    if let Some((caller, cell)) = call {
+        cell.commit(caller);
+    }
     Ok(Commit::Done(pop_armed(&mut state)))
 }
 
@@ -396,6 +477,7 @@ pub(crate) fn head(world: &World, endpoint: Local<Endpoint>) -> Head {
             bytes: entry.descriptor.bytes(),
             handles: entry.descriptor.handles(),
             foreign: state.foreign(&entry, world.node()),
+            call: state.called(entry.index).is_some(),
         },
         None if state.closed() => Head::PeerClosed,
         None => Head::Empty,
@@ -408,19 +490,23 @@ pub(crate) fn queued(world: &World, endpoint: Local<Endpoint>) -> u8 {
 }
 
 // Pops the head message when it fits the room the reader holds, counting the moved endpoints it
-// earmarked a new home for; `None` leaves it queued.
+// earmarked a new home for and the slot a call's reply right needs; `None` leaves it queued.
 pub(crate) fn take(
     world: &World,
     endpoint: Local<Endpoint>,
-    room: (u16, u16, u16),
+    room: (u16, u16, u16, bool),
     into: &mut [u8],
     received: &mut Received,
-) -> Option<(u16, u16)> {
+) -> Option<(u16, u16, Option<Caller>)> {
     let hold = held(world, endpoint);
     let mut state = hold.state.lock_leaf();
     let entry = state.inbox.head()?;
     let (bytes, handles) = (entry.descriptor.bytes(), entry.descriptor.handles());
-    if bytes > room.0 || handles > room.1 || state.foreign(&entry, world.node()) > room.2 {
+    if bytes > room.0
+        || handles > room.1
+        || state.foreign(&entry, world.node()) > room.2
+        || (state.called(entry.index).is_some() && !room.3)
+    {
         return None;
     }
     let mut done = 0;
@@ -432,11 +518,8 @@ pub(crate) fn take(
         );
         done += chunk.len();
     }
-    for (at, slot) in spanned(entry.descriptor.handle_spans()).enumerate() {
-        received[at] = state.claim(slot);
-    }
-    state.inbox.pop();
-    Some((bytes, handles))
+    let caller = state.pop(received)?;
+    Some((bytes, handles, caller))
 }
 
 fn copy_frame(from: &ArenaFrame, to: &mut ArenaFrame) {
@@ -472,6 +555,31 @@ pub(crate) fn arrive(earmark: Option<&mut Earmark>, world: &World, carried: Carr
             ObjectRef::Dead(ObjectType::Memory)
         }
         object => object,
+    }
+}
+
+// A moved reference no table will hold: its count goes back to its world, and a reply right
+// abandons its call.
+pub(crate) fn drop_carried(world: &World, carried: Carried) {
+    let mut doomed = None;
+    dispose(world, carried, &mut doomed);
+    if let Some(first) = doomed {
+        destroy(world, first);
+    }
+}
+
+fn dispose(world: &World, carried: Carried, doomed: &mut Option<Local<Endpoint>>) {
+    match carried.object {
+        ObjectRef::Reply(caller) => queue::abandon(world, caller),
+        object if carried.origin == world.node() => discard(world, object, doomed),
+        object => {
+            if let Some(origin) = registry::pin(carried.origin, Admission::Live) {
+                match object {
+                    ObjectRef::Endpoint(moved) => release_pinned(&origin, moved),
+                    object => object.release(&origin),
+                }
+            }
+        }
     }
 }
 
@@ -678,24 +786,14 @@ fn destroy(world: &World, first: Local<Endpoint>) {
             doomed = held.state.lock_leaf().doomed.take();
             loop {
                 let mut received = NONE_RECEIVED;
-                {
-                    let mut state = held.state.lock_leaf();
-                    let Some(entry) = state.inbox.pop() else {
-                        break;
-                    };
-                    for (at, slot) in spanned(entry.descriptor.handle_spans()).enumerate() {
-                        received[at] = state.claim(slot);
-                    }
+                let Some(caller) = held.state.lock_leaf().pop(&mut received) else {
+                    break;
+                };
+                if let Some(caller) = caller {
+                    queue::close_call(world, caller);
                 }
                 for carried in received.into_iter().flatten() {
-                    if carried.origin == here {
-                        discard(world, carried.object, &mut doomed);
-                    } else if let Some(origin) = registry::pin(carried.origin, Admission::Live) {
-                        match carried.object {
-                            ObjectRef::Endpoint(moved) => release_pinned(&origin, moved),
-                            object => object.release(&origin),
-                        }
-                    }
+                    dispose(world, carried, &mut doomed);
                 }
             }
             let mut state = held.state.lock_leaf();

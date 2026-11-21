@@ -3,6 +3,7 @@
 use core::num::NonZeroU64;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
+use channel_state::CallEvent;
 use native_abi::Rights;
 use native_abi::ring::{
     COMPLETIONS, Completion, Opcode, SUBMISSIONS, Submission, flags, header, status,
@@ -22,6 +23,7 @@ use crate::timepage::WorldClock;
 use crate::wait::WaitQueue;
 use crate::world::{QueuePool, World, registry};
 
+mod call;
 mod channel;
 mod memory;
 mod ring;
@@ -33,6 +35,7 @@ mod world;
 #[cfg(feature = "selftest")]
 pub(crate) use selftest::TestQueue;
 
+pub(crate) use call::{CallCell, Caller, abandon, close_call};
 use ring::write_u32;
 use work::FILE_WORK;
 pub(crate) use work::{request_reap, start_worker, worker_is_ready};
@@ -73,13 +76,18 @@ enum PendingKind {
         endpoint: Local<Endpoint>,
         ready: bool,
     },
+    // Its outcome is in the cell of the same index; ready once the peer reached one.
+    ChannelCall {
+        deadline_ns: u64,
+        ready: bool,
+    },
 }
 
 impl PendingKind {
     const fn is_cancellable(self) -> bool {
         matches!(
             self,
-            Self::Timer { .. } | Self::Kill | Self::ChannelRead { .. }
+            Self::Timer { .. } | Self::Kill | Self::ChannelRead { .. } | Self::ChannelCall { .. }
         ) || self.is_queued_work()
     }
 
@@ -98,7 +106,14 @@ impl PendingKind {
     const fn deadline(self) -> Option<u64> {
         match self {
             Self::Timer { deadline_ns } => Some(deadline_ns),
-            Self::OpenAt { .. } | Self::Read { .. } | Self::Kill | Self::ChannelRead { .. } => None,
+            Self::ChannelCall { deadline_ns, .. } if deadline_ns != call::NEVER => {
+                Some(deadline_ns)
+            }
+            Self::OpenAt { .. }
+            | Self::Read { .. }
+            | Self::Kill
+            | Self::ChannelRead { .. }
+            | Self::ChannelCall { .. } => None,
         }
     }
 }
@@ -163,6 +178,8 @@ pub(crate) struct Queue {
     // Bumped by each write that readies a read here, so a sleeping waiter sees it.
     readied: AtomicUsize,
     clock: &'static WorldClock,
+    // One call cell and its prepaid staging per pending slot.
+    calls: [call::CallSlot; SUBMISSIONS as usize],
 }
 
 // The largest `Random` draw held on the stack at once.
@@ -277,6 +294,7 @@ impl Queue {
             served: AtomicUsize::new(0),
             readied: AtomicUsize::new(0),
             clock,
+            calls: core::array::from_fn(|_| call::CallSlot::new()),
         }
     }
 
@@ -356,6 +374,8 @@ impl Queue {
             Opcode::ChannelCreate => channel::create(process, submission),
             Opcode::ChannelWrite => channel::write(self, process, submission),
             Opcode::ChannelRead => return channel::read(self, process, submission),
+            Opcode::ChannelCall => return call::call(self, process, submission),
+            Opcode::Reply => call::reply(self, process, submission),
             Opcode::Unknown(_) => refuse(token, status::UNKNOWN_OPCODE),
         })
     }
@@ -492,7 +512,16 @@ impl Queue {
         else {
             return refuse(submission.token, status::NOT_FOUND);
         };
-        self.settle_pending(index, entry, status::CANCELLED, 0);
+        if let PendingKind::ChannelCall { .. } = entry.kind {
+            // A call its peer already decided completes with that outcome instead.
+            let Some(completion) = call::end(self, index, entry, CallEvent::Cancel) else {
+                self.unclaim(index, entry);
+                return refuse(submission.token, status::NOT_FOUND);
+            };
+            self.settle_with(index, entry, completion);
+        } else {
+            self.settle_pending(index, entry, status::CANCELLED, 0);
+        }
         Self::disarm(here, index, entry);
         // Unclaimed work goes now, so a queued OpenAt returns its slot promise before this reports.
         drop(FILE_WORK.remove(here, index, entry.id));
@@ -509,6 +538,17 @@ impl Queue {
                 .deadline()
                 .is_some_and(|deadline| !clock_live || deadline <= now_ns)
         }) {
+            if let PendingKind::ChannelCall { .. } = entry.kind {
+                match call::end(self, index, entry, CallEvent::Timeout) {
+                    Some(completion) => self.settle_with(index, entry, completion),
+                    None => {
+                        self.outlive(index, entry);
+                        continue;
+                    }
+                }
+                due += 1;
+                continue;
+            }
             let deadline = entry.kind.deadline().unwrap_or(now_ns);
             let (status, value) = if clock_live {
                 (status::OK, self.clock.to_world_ns(deadline))
@@ -526,10 +566,26 @@ impl Queue {
         due
     }
 
+    // A call whose reply is being copied in stops the round; the teardown comes back for it.
     pub(crate) fn abandon(&self, here: QueueRef) -> usize {
         let mut ended = 0;
         while let Some((index, entry)) = self.begin_settlement(|entry| entry.kind.is_cancellable())
         {
+            if let PendingKind::ChannelCall { .. } = entry.kind {
+                let decided = || {
+                    let world = registry::hold(here.world)?;
+                    call::forget(self, &world, index, entry)
+                };
+                let Some(completion) =
+                    call::end(self, index, entry, CallEvent::Cancel).or_else(decided)
+                else {
+                    self.unclaim(index, entry);
+                    break;
+                };
+                self.settle_with(index, entry, completion);
+                ended += 1;
+                continue;
+            }
             self.settle_pending(index, entry, status::CANCELLED, 0);
             Self::disarm(here, index, entry);
             drop(FILE_WORK.remove(here, index, entry.id));
@@ -586,7 +642,11 @@ impl Queue {
         };
         let mut served = 0;
         while let Some((index, entry)) = self.begin_settlement(|entry| {
-            matches!(entry.kind, PendingKind::ChannelRead { ready: true, .. })
+            matches!(
+                entry.kind,
+                PendingKind::ChannelRead { ready: true, .. }
+                    | PendingKind::ChannelCall { ready: true, .. }
+            )
         }) {
             let process = Process {
                 context: &mut *context,
@@ -595,7 +655,11 @@ impl Queue {
                 table_ref: table,
                 here,
             };
-            if let Some(completion) = channel::serve_ready(self, process, index, entry) {
+            let outcome = match entry.kind {
+                PendingKind::ChannelCall { .. } => Some(call::serve(self, process, index, entry)),
+                _ => channel::serve_ready(self, process, index, entry),
+            };
+            if let Some(completion) = outcome {
                 self.settle_with(index, entry, completion);
                 served += 1;
             }
@@ -715,8 +779,14 @@ impl Fields {
                 buffer: true,
                 ..none
             },
-            Opcode::ChannelWrite | Opcode::ChannelRead => Self {
+            Opcode::ChannelWrite | Opcode::ChannelRead | Opcode::Reply => Self {
                 handle: true,
+                buffer: true,
+                ..none
+            },
+            Opcode::ChannelCall => Self {
+                handle: true,
+                argument: true,
                 buffer: true,
                 ..none
             },

@@ -45,6 +45,8 @@ pub mod message {
     pub const VERSION: u32 = 1;
     pub const VERSION_AT: usize = 0;
     pub const FLAGS_AT: usize = 4;
+    // Written back on a cancelled or timed-out call the server had already received.
+    pub const DELIVERED: u32 = 1 << 0;
     pub const BYTES: usize = 8;
     pub const HANDLES: usize = 12;
     pub const BYTE_CAPACITY: usize = 16;
@@ -119,12 +121,19 @@ pub mod witness {
         pub const MEMORY: u64 = 13;
         pub const BACKDOOR: u64 = 14;
         pub const CHANNELS: u64 = 15;
+        pub const CALLS: u64 = 16;
     }
 
     // The operand of `CHANNELS`: the half a witness runs.
     pub mod channels {
         pub const WRITER: u64 = 0;
         pub const READER: u64 = 1;
+    }
+
+    // The operand of `CALLS`: the half a witness runs.
+    pub mod calls {
+        pub const SERVER: u64 = 0;
+        pub const CLIENT: u64 = 1;
     }
 }
 

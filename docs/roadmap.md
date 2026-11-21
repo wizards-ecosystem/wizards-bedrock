@@ -206,10 +206,11 @@ Phase 7:
   (`kernel/src/queue.rs`, `kernel/src/timepage.rs`): every process reads the one root world clock.
   Time needs a clock per world, the recorded mode and the raw time right.
 - Channels carry messages and moved handles between endpoints in one world or across worlds,
-  re-homing a moved endpoint into its reader's world (`kernel/src/channel.rs`), but only the kernel
-  starts a program in a child world, memory objects do not cross worlds, nothing calls or replies,
-  and only buffer 0 carries a message. Call and reply, registered buffers and the bootstrap roles need
-  them.
+  re-homing a moved endpoint into its reader's world (`kernel/src/channel.rs`), and a ring
+  `ChannelCall` is answered once by a single-use reply right (`kernel/src/queue/call.rs`). Only the
+  kernel starts a program in a child world, memory objects do not cross worlds, only buffer 0
+  carries a message, and no thread blocks in a call: the synchronous calls, donation, registered
+  buffers and the bootstrap roles need them.
 - No space holds a reservation, so a `Map` with `EXECUTE` answers `NO_ADDRESS`, and no program
   holds a code quota handle (`kernel/src/queue/memory.rs`). C9's `Reserve` and bootstrap roles
   need both.

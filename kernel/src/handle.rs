@@ -223,6 +223,16 @@ impl Table {
         world: &World,
         handle: u64,
     ) -> Result<(), HandleError> {
+        self.spend(context, handle)?.release(world);
+        Ok(())
+    }
+
+    // The entry goes and its object is handed back with the reference it held.
+    pub(crate) fn spend(
+        &self,
+        context: &mut ThreadContext,
+        handle: u64,
+    ) -> Result<ObjectRef, HandleError> {
         let named = Slot::decode(handle, self.mixer).ok_or(HandleError::Malformed)?;
         let (object, retired) = {
             let mut pages = self.entries.lock(context);
@@ -241,8 +251,7 @@ impl Table {
             let dropped = self.step(Quota::drop_live);
             assert!(dropped, "a closed handle was not counted live");
         }
-        object.release(world);
-        Ok(())
+        Ok(object)
     }
 
     // Every handle of a message leaves the table together or none does; each keeps its value
@@ -394,6 +403,22 @@ impl TableRef {
         })
     }
 
+    // Every slot is promised or none is.
+    pub(crate) fn reserve_slots(self, count: u16) -> Result<Reservations, HandleError> {
+        let (_, table) = self.hold().ok_or(HandleError::Gone)?;
+        let mut reserved = Reservations {
+            table: self,
+            left: 0,
+        };
+        while reserved.left < count {
+            if !table.step(|bits| Quota::reserve(bits, table.limit())) {
+                return Err(HandleError::QuotaExhausted);
+            }
+            reserved.left += 1;
+        }
+        Ok(reserved)
+    }
+
     // The process's reference goes; the table and every reference it holds go with the last one.
     pub(crate) fn destroy(self) -> bool {
         let Some(world) = registry::hold(self.world) else {
@@ -444,6 +469,31 @@ impl Drop for SlotReservation {
         if let Some((_, table)) = self.table.hold() {
             let released = table.step(Quota::release);
             assert!(released, "a live reservation refused quota release");
+        }
+    }
+}
+
+// Promised slots of one table, handed out one at a time; the rest go back on drop.
+#[derive(Debug)]
+pub(crate) struct Reservations {
+    table: TableRef,
+    left: u16,
+}
+
+impl Reservations {
+    pub(crate) fn next(&mut self) -> Option<SlotReservation> {
+        self.left = self.left.checked_sub(1)?;
+        Some(SlotReservation {
+            table: self.table,
+            spent: false,
+        })
+    }
+}
+
+impl Drop for Reservations {
+    fn drop(&mut self) {
+        while let Some(slot) = self.next() {
+            drop(slot);
         }
     }
 }
