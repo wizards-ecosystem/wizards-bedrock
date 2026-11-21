@@ -193,7 +193,7 @@ impl Plan<'_> {
             }
         }
         // A writable segment's writer becomes its record's.
-        let memory = world.memories.insert(earmark, object);
+        let memory = world.memories.insert(earmark, || object);
         let mapping = Mapping {
             access: placement.access,
             target: Target::Object { memory, first: 0 },

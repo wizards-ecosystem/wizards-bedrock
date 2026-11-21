@@ -642,6 +642,16 @@ number and is added here, as one entry or as an amending id on the entry it chan
 - **D-548** A pin is a `wost::sync::PinGuard` at rank `Pin`, below the object locks, plus a counted
   slab hold of the world's record; object locks under it are taken as leaves at rank `Object`, so
   no guard lends its token and no equal-rank pair lock is needed.
+- **D-549** An arena object is built in its slot and never moved in by value: `insert_with` writes
+  the value its closure returns straight into the slot, and an object that is mostly a fixed array
+  (a directory node, a handle block, a memory block, a space's records) is a `Blank` constant that
+  `insert_blank` copies into the slot. A debug build otherwise keeps several copies of each large
+  value on a 32 KiB kernel stack, and a stack overflow is terminal; a larger stack only moves the
+  limit.
+- **D-550** `Records` changes in place: `insert`, `remove` and `carve` each end in one private
+  function that borrows the entry array and the count together, with a lemma before the call that
+  shows the new records sorted, so the type invariant stays and no 2.5 KiB copy of the array is
+  made.
 - **D-481** The ring 3 witness is a cargo-built static `ET_EXEC` linked at `0x400000`, and the
   loader maps each segment at its `p_vaddr` with no per-program shift, because a position-dependent
   image holds absolute addresses that a shift breaks and the in-kernel loader takes no `ET_DYN`;

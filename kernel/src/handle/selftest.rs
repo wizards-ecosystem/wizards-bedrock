@@ -36,7 +36,7 @@ impl TestTable {
         let table = Table::new(&mut earmark, world.mixer(), capacity);
         let table = TableRef {
             world: world_ref,
-            table: world.tables.insert(&mut earmark, table),
+            table: world.tables.insert(&mut earmark, || table),
         };
         Some(Self {
             table,

@@ -166,8 +166,15 @@ impl<T> crate::Records<T> {
     }
 
     pub open(crate) spec fn spec_records(self) -> Seq<crate::Record<T>> {
-        Seq::new(self.count as nat, |i: int| self.entries@[i]->Some_0)
+        records_in(self.entries, self.count)
     }
+}
+
+pub open(crate) spec fn records_in<T>(
+    entries: [Option<crate::Record<T>>; crate::RECORDS],
+    count: usize,
+) -> Seq<crate::Record<T>> {
+    Seq::new(count as nat, |i: int| entries@[i]->Some_0)
 }
 
 pub open spec fn records_sorted_and_disjoint<T>(records: Seq<crate::Record<T>>) -> bool {

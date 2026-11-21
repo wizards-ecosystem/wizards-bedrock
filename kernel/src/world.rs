@@ -187,8 +187,8 @@ fn create_root(context: &mut ThreadContext) -> Result<NodeRef, RootRefusal> {
         threads: thread::CAPACITY as u32,
         handles: ROOT_HANDLES,
     };
-    let world = World::new(arena, &key, Path::ROOT, pool::full_mask(), limits);
-    let root = registry::prepare(context, arena, world).map_err(RootRefusal::Arena)?;
+    let root = registry::prepare(context, arena, &key, Path::ROOT, pool::full_mask(), limits)
+        .map_err(RootRefusal::Arena)?;
     registry::publish(root);
     *ROOT.lock_leaf() = Some(root);
     Ok(root)

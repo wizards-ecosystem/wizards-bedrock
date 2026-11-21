@@ -1,6 +1,6 @@
 use core::fmt;
 use core::marker::PhantomData;
-use core::mem::ManuallyDrop;
+use core::mem::{ManuallyDrop, MaybeUninit};
 use core::ops::Deref;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -12,6 +12,11 @@ use super::direct_pointer;
 use super::pool::{ArenaFrame, FrameKind};
 
 const FRAME_BYTES: usize = frame_space::FRAME_SIZE as usize;
+
+// A whole object as a constant, which `insert_blank` copies into a slot with no stack temporary.
+pub trait Blank: Sized {
+    const BLANK: Self;
+}
 
 // Slot state, borrow counts and objects in one frame; only `&mut self` changes slot state, and a
 // hold keeps its slot's object in place by its borrow count.
@@ -128,15 +133,33 @@ impl<T, const N: usize> ObjectPage<T, N> {
         self.slot_state().floor_after(0)
     }
 
-    pub fn insert(&mut self, value: T) -> Result<Issued, T> {
+    // `make` runs before any slot turns live, and its value is written straight into the slot.
+    pub fn insert_with(&mut self, make: impl FnOnce() -> T) -> Option<Issued> {
+        if self.free() == 0 {
+            return None;
+        }
+        let value = make();
         let Ok(issued) = self.slot_state_mut().insert() else {
-            return Err(value);
+            panic!("an object page with a free slot refused an insert");
         };
-        let object = self.object(usize::from(issued.slot));
         // SAFETY: the slot just turned live from free, so no object or hold occupies it, and it
         // lies inside the frame at `T`'s alignment.
-        unsafe { object.write(value) };
-        Ok(issued)
+        unsafe { self.object(usize::from(issued.slot)).write(value) };
+        Some(issued)
+    }
+
+    pub fn insert_blank(&mut self) -> Option<Issued>
+    where
+        T: Blank,
+    {
+        let issued = self.slot_state_mut().insert().ok()?;
+        let slot = self
+            .object(usize::from(issued.slot))
+            .cast::<MaybeUninit<T>>();
+        // SAFETY: the slot just turned live from free, so no object or hold occupies it, it lies
+        // inside the frame at `T`'s alignment, and assigning a `MaybeUninit` drops nothing.
+        unsafe { *slot = const { MaybeUninit::new(T::BLANK) } };
+        Some(issued)
     }
 
     pub fn hold(&self, slot: u16, generation: u32) -> Option<Hold<T>>

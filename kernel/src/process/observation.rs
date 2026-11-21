@@ -79,7 +79,7 @@ impl ObservationRef {
     pub(crate) fn create(earmark: &mut Earmark, world_ref: NodeRef, world: &World) -> Self {
         Self {
             world: world_ref,
-            observation: world.observations.insert(earmark, Observation::new()),
+            observation: world.observations.insert(earmark, Observation::new),
         }
     }
 

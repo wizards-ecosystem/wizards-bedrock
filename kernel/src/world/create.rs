@@ -144,8 +144,14 @@ impl Child {
         if let Err(reason) = random::fill(&mut key.0) {
             panic!("a world was created before the generator was ready: {reason}");
         }
-        let world = World::new(arena, &key, self.path, self.mask, self.request.limits);
-        match registry::prepare(context, arena, world) {
+        match registry::prepare(
+            context,
+            arena,
+            &key,
+            self.path,
+            self.mask,
+            self.request.limits,
+        ) {
             Ok(node) => {
                 self.node = Some(node);
                 CreationEvent::Done

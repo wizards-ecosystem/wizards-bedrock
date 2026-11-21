@@ -1,12 +1,12 @@
 use core::ops::Deref;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-use world_tree::{Admission, NodeRef, Path, Reclaimed, WorldEvent, WorldState};
-use wost::mm::pool::{self, ArenaId, Refused};
+use world_tree::{Admission, Limits, NodeRef, Path, Reclaimed, WorldEvent, WorldState};
+use wost::mm::pool::{self, ArenaId, ColourMask, Refused};
 use wost::mm::slab::{Hold, Removal};
 use wost::sync::{Leaf, PinGuard, SpinLock};
 
-use super::{Killer, World};
+use super::{Killer, World, WorldKey};
 use crate::arena::{Local, Pool};
 use crate::rank;
 use crate::thread::ThreadContext;
@@ -107,10 +107,13 @@ fn entry_of(arena: ArenaId) -> &'static Entry {
 
 // The record lands in the world's own arena while the entry stays Free, so nothing resolves it
 // before `publish`.
-pub(crate) fn prepare(
+pub(super) fn prepare(
     context: &mut ThreadContext,
     arena: ArenaId,
-    world: World,
+    key: &WorldKey,
+    path: Path,
+    mask: ColourMask,
+    limits: Limits,
 ) -> Result<NodeRef, Refused> {
     let entry = entry_of(arena);
     assert!(
@@ -118,9 +121,10 @@ pub(crate) fn prepare(
         "arena node {} was prepared while its world is not free",
         arena.index()
     );
-    let path = world.path;
     let mut earmark = Pool::<World, 1>::earmark(context, arena, 1)?;
-    let record = entry.records.insert(&mut earmark, world);
+    let record = entry
+        .records
+        .insert(&mut earmark, || World::new(arena, key, path, mask, limits));
     entry.record.store(record.to_bits(), Ordering::Relaxed);
     *entry.remains.lock_leaf() = Some(Remains {
         path,

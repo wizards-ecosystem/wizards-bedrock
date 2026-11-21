@@ -135,7 +135,7 @@ impl PendingTable {
 }
 
 #[derive(Debug)]
-struct SharedQueue {
+pub(crate) struct SharedQueue {
     pages: RingPages,
     data: SharedBytes,
     protocol: Queues,
@@ -172,11 +172,13 @@ impl QueueRef {
         earmark: &mut Earmark,
         world_ref: NodeRef,
         world: &World,
-        queue: Queue,
+        clock: &'static WorldClock,
+        ring: SharedQueue,
     ) -> Self {
+        let queue = world.queues.insert(earmark, || Queue::new(clock, ring));
         Self {
             world: world_ref,
-            queue: world.queues.insert(earmark, queue),
+            queue,
         }
     }
 
@@ -211,8 +213,8 @@ impl QueueRef {
     }
 }
 
-impl Queue {
-    pub(crate) fn new(clock: &'static WorldClock, earmark: &mut Earmark) -> Option<Self> {
+impl SharedQueue {
+    pub(crate) fn new(earmark: &mut Earmark) -> Option<Self> {
         let ring = earmark.take(FrameKind::ArenaData)?;
         let ring_home = earmark.take(FrameKind::ArenaObject)?;
         let data = earmark.take(FrameKind::ArenaData)?;
@@ -240,22 +242,27 @@ impl Queue {
         let state = Queues::new(submission, completion).ok()?;
 
         Some(Self {
-            ring: SpinLock::new(SharedQueue {
-                pages: shared,
-                data: data.share(data_home).into_bytes(),
-                protocol: state,
-            }),
-            waiters: WaitQueue::new(),
-            pending: SpinLock::new(PendingTable::new()),
-            served: AtomicUsize::new(0),
-            clock,
+            pages: shared,
+            data: data.share(data_home).into_bytes(),
+            protocol: state,
         })
     }
 
     // The ring page and buffer 0, for the space that maps them.
-    pub(crate) fn frames(&mut self) -> (SharedFrame, SharedFrame) {
-        let shared = self.ring.get_mut();
-        (shared.pages.frame(), shared.data.frame())
+    pub(crate) fn frames(&self) -> (SharedFrame, SharedFrame) {
+        (self.pages.frame(), self.data.frame())
+    }
+}
+
+impl Queue {
+    fn new(clock: &'static WorldClock, ring: SharedQueue) -> Self {
+        Self {
+            ring: SpinLock::new(ring),
+            waiters: WaitQueue::new(),
+            pending: SpinLock::new(PendingTable::new()),
+            served: AtomicUsize::new(0),
+            clock,
+        }
     }
 
     pub(crate) fn serve(

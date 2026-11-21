@@ -191,19 +191,10 @@ impl<T: Copy> Records<T> {
         }
         let at = self.position_for(extent);
         let record = Record { extent, value };
-        let mut entries = self.entries;
-        open(&mut entries, self.count, at, 1);
-        entries[at] = Some(record);
         proof! {
-            let before = self.spec_records();
-            crate::proof::lemma_inserted_sorted(before, at as int, record);
-            let after = Self { entries, count: (self.count + 1) as usize };
-            assert(after.spec_records() =~= before.insert(at as int, record));
+            crate::proof::lemma_inserted_sorted(self.spec_records(), at as int, record);
         }
-        *self = Self {
-            entries,
-            count: self.count + 1,
-        };
+        insert_at(&mut self.entries, &mut self.count, at, record);
         Ok(())
     }
 
@@ -242,18 +233,10 @@ impl<T: Copy> Records<T> {
             }
             return Err(RecordRefusal::NotFound);
         }
-        let mut entries = self.entries;
-        close(&mut entries, self.count, at);
         proof! {
-            let before = self.spec_records();
-            crate::proof::lemma_removed_sorted(before, at as int);
-            let after = Self { entries, count: (self.count - 1) as usize };
-            assert(after.spec_records() =~= before.remove(at as int));
+            crate::proof::lemma_removed_sorted(self.spec_records(), at as int);
         }
-        *self = Self {
-            entries,
-            count: self.count - 1,
-        };
+        remove_at(&mut self.entries, &mut self.count, at);
         Ok(record.value)
     }
 
@@ -300,56 +283,20 @@ impl<T: Copy> Records<T> {
         if self.count + added > RECORDS {
             return Err(RecordRefusal::Full);
         }
-        let mut entries = self.entries;
-        open(&mut entries, self.count, at + 1, added);
-        let mut next = at;
-        if let Some(left) = left {
-            entries[next] = Some(Record {
-                extent: left,
-                value: record.value,
-            });
-            next += 1;
-        }
-        entries[next] = Some(Record { extent, value });
-        next += 1;
-        if let Some(right) = right {
-            entries[next] = Some(Record {
-                extent: right,
-                value: record.value,
-            });
-        }
         proof! {
-            let before = self.spec_records();
-            let pieces = crate::proof::carved_pieces(record, extent, value);
-            let carved = crate::proof::carved(before, at as int, extent, value);
-            crate::proof::lemma_carved_sorted(before, at as int, extent, value);
-            crate::proof::lemma_carved_index(before, at as int, extent, value);
+            crate::proof::lemma_carved_sorted(self.spec_records(), at as int, extent, value);
             assert(left is Some <==> record.extent.spec_first() < extent.spec_first());
             assert(right is Some <==> extent.spec_end() < record.extent.spec_end());
-            assert(pieces.len() == added + 1);
-            assert forall|k: int| 0 <= k <= added implies entries@[at + k] == Some(
-                #[trigger] pieces[k],
-            ) by {
-                if left is Some {
-                    assert(left->Some_0 == pieces[0].extent);
-                }
-                if right is Some {
-                    assert(right->Some_0 == pieces[added as int].extent);
-                }
-            }
-            let after = Self { entries, count: (self.count + added) as usize };
-            assert forall|k: int| 0 <= k < carved.len() implies #[trigger] after.spec_records()[k]
-                == carved[k] by {
-                if at <= k <= at + added {
-                    assert(entries@[k] == Some(pieces[k - at]));
-                }
-            }
-            assert(after.spec_records() =~= carved);
         }
-        *self = Self {
-            entries,
-            count: self.count + added,
-        };
+        carve_at(
+            &mut self.entries,
+            &mut self.count,
+            at,
+            Record { extent, value },
+            left,
+            right,
+            added,
+        );
         Ok(record.value)
     }
 }
@@ -516,6 +463,144 @@ impl<T: Copy> Records<T> {
     }
 }
 
+fn insert_at<T: Copy>(
+    entries: &mut [Option<Record<T>>; RECORDS],
+    count: &mut usize,
+    at: usize,
+    record: Record<T>,
+)
+    requires
+        at <= *old(count) < RECORDS,
+        forall|i: int| 0 <= i < *old(count) ==> #[trigger] (*old(entries))@[i] is Some,
+        forall|i: int| *old(count) <= i < RECORDS ==> #[trigger] (*old(entries))@[i] is None,
+    ensures
+        *final(count) == *old(count) + 1,
+        forall|i: int| 0 <= i < *final(count) ==> #[trigger] (*final(entries))@[i] is Some,
+        forall|i: int| *final(count) <= i < RECORDS ==> #[trigger] (*final(entries))@[i] is None,
+        crate::proof::records_in(*final(entries), *final(count)) == crate::proof::records_in(
+            *old(entries),
+            *old(count),
+        ).insert(at as int, record),
+    no_unwind
+{
+    open(entries, *count, at, 1);
+    entries[at] = Some(record);
+    proof {
+        assert(crate::proof::records_in(*entries, (*old(count) + 1) as usize)
+            =~= crate::proof::records_in(*old(entries), *old(count)).insert(at as int, record));
+    }
+    *count += 1;
+}
+
+fn remove_at<T: Copy>(entries: &mut [Option<Record<T>>; RECORDS], count: &mut usize, at: usize)
+    requires
+        at < *old(count) <= RECORDS,
+        forall|i: int| 0 <= i < *old(count) ==> #[trigger] (*old(entries))@[i] is Some,
+        forall|i: int| *old(count) <= i < RECORDS ==> #[trigger] (*old(entries))@[i] is None,
+    ensures
+        *final(count) == *old(count) - 1,
+        forall|i: int| 0 <= i < *final(count) ==> #[trigger] (*final(entries))@[i] is Some,
+        forall|i: int| *final(count) <= i < RECORDS ==> #[trigger] (*final(entries))@[i] is None,
+        crate::proof::records_in(*final(entries), *final(count)) == crate::proof::records_in(
+            *old(entries),
+            *old(count),
+        ).remove(at as int),
+    no_unwind
+{
+    close(entries, *count, at);
+    proof {
+        assert(crate::proof::records_in(*entries, (*old(count) - 1) as usize)
+            =~= crate::proof::records_in(*old(entries), *old(count)).remove(at as int));
+    }
+    *count -= 1;
+}
+
+// Writes what `carve` leaves of the record at `at`: the left remainder, `middle`, the right one.
+fn carve_at<T: Copy>(
+    entries: &mut [Option<Record<T>>; RECORDS],
+    count: &mut usize,
+    at: usize,
+    middle: Record<T>,
+    left: Option<Extent>,
+    right: Option<Extent>,
+    added: usize,
+)
+    requires
+        at < *old(count),
+        *old(count) + added <= RECORDS,
+        forall|i: int| 0 <= i < *old(count) ==> #[trigger] (*old(entries))@[i] is Some,
+        forall|i: int| *old(count) <= i < RECORDS ==> #[trigger] (*old(entries))@[i] is None,
+        left is Some <==> (*old(entries))@[at as int]->Some_0.extent.spec_first() < middle.extent.spec_first(),
+        right is Some <==> middle.extent.spec_end() < (*old(entries))@[at as int]->Some_0.extent.spec_end(),
+        left is Some ==> left->Some_0.spec_first() == (*old(entries))@[at as int]->Some_0.extent.spec_first()
+            && left->Some_0.spec_pages() == middle.extent.spec_first()
+            - (*old(entries))@[at as int]->Some_0.extent.spec_first(),
+        right is Some ==> right->Some_0.spec_first() == middle.extent.spec_end()
+            && right->Some_0.spec_pages() == (*old(entries))@[at as int]->Some_0.extent.spec_end() - middle.extent.spec_end(),
+        added == (if left is Some {
+            1int
+        } else {
+            0int
+        }) + (if right is Some {
+            1int
+        } else {
+            0int
+        }),
+    ensures
+        *final(count) == *old(count) + added,
+        forall|i: int| 0 <= i < *final(count) ==> #[trigger] (*final(entries))@[i] is Some,
+        forall|i: int| *final(count) <= i < RECORDS ==> #[trigger] (*final(entries))@[i] is None,
+        crate::proof::records_in(*final(entries), *final(count)) == crate::proof::carved(
+            crate::proof::records_in(*old(entries), *old(count)),
+            at as int,
+            middle.extent,
+            middle.value,
+        ),
+    no_unwind
+{
+    let Some(outer) = entries[at] else {
+        return;
+    };
+    open(entries, *count, at + 1, added);
+    let mut next = at;
+    if let Some(left) = left {
+        entries[next] = Some(Record { extent: left, value: outer.value });
+        next += 1;
+    }
+    entries[next] = Some(middle);
+    next += 1;
+    if let Some(right) = right {
+        entries[next] = Some(Record { extent: right, value: outer.value });
+    }
+    proof {
+        let extent = middle.extent;
+        let value = middle.value;
+        let before = crate::proof::records_in(*old(entries), *old(count));
+        let after = crate::proof::records_in(*entries, (*old(count) + added) as usize);
+        let pieces = crate::proof::carved_pieces(outer, extent, value);
+        let carved = crate::proof::carved(before, at as int, extent, value);
+        crate::proof::lemma_carved_index(before, at as int, extent, value);
+        assert(pieces.len() == added + 1);
+        assert forall|k: int| 0 <= k <= added implies (*entries)@[at + k] == Some(
+            #[trigger] pieces[k],
+        ) by {
+            if left is Some {
+                assert(left->Some_0 == pieces[0].extent);
+            }
+            if right is Some {
+                assert(right->Some_0 == pieces[added as int].extent);
+            }
+        }
+        assert forall|k: int| 0 <= k < carved.len() implies #[trigger] after[k] == carved[k] by {
+            if at <= k <= at + added {
+                assert((*entries)@[k] == Some(pieces[k - at]));
+            }
+        }
+        assert(after =~= carved);
+    }
+    *count += added;
+}
+
 fn open<T: Copy>(entries: &mut [Option<Record<T>>; RECORDS], count: usize, at: usize, by: usize)
     requires
         at <= count,
@@ -527,6 +612,7 @@ fn open<T: Copy>(entries: &mut [Option<Record<T>>; RECORDS], count: usize, at: u
                 - by],
         forall|i: int|
             count + by <= i < RECORDS ==> #[trigger] (*final(entries))@[i] == (*old(entries))@[i],
+    no_unwind
 {
     if by == 0 {
         return;
@@ -559,6 +645,7 @@ fn close<T: Copy>(entries: &mut [Option<Record<T>>; RECORDS], count: usize, at: 
         (*final(entries))@[count - 1] is None,
         forall|i: int|
             count <= i < RECORDS ==> #[trigger] (*final(entries))@[i] == (*old(entries))@[i],
+    no_unwind
 {
     let mut to = at;
     while to + 1 < count

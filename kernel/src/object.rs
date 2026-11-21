@@ -107,5 +107,5 @@ pub(crate) fn bootstrap_identity(
     earmark: &mut wost::mm::pool::Earmark,
     world: &World,
 ) -> ObjectRef {
-    ObjectRef::Channel(world.channels.insert(earmark, Channel))
+    ObjectRef::Channel(world.channels.insert(earmark, || Channel))
 }

@@ -8,6 +8,7 @@ use world_tree::NodeRef;
 use wost::arch::current::paging::{Flush, FrameRef};
 use wost::mm::Sealing;
 use wost::mm::pool::{ArenaFrame, Earmark, FrameKind, SealedFrame};
+use wost::mm::slab::Blank;
 use wost::sync::{Leaf, SpinLock};
 use x86_paging::PAGE_SIZE;
 
@@ -34,12 +35,10 @@ struct Block {
     frames: [Option<Frame>; PER_BLOCK as usize],
 }
 
-impl Block {
-    const fn empty() -> Self {
-        Self {
-            frames: [const { None }; PER_BLOCK as usize],
-        }
-    }
+impl Blank for Block {
+    const BLANK: Self = Self {
+        frames: [const { None }; PER_BLOCK as usize],
+    };
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -101,7 +100,7 @@ impl MemoryObject {
     }
 
     pub(crate) fn new(earmark: &mut Earmark, kind: Kind, pages: u32) -> Self {
-        let mut blocks = Pages::build(earmark, pages.div_ceil(PER_BLOCK), Block::empty);
+        let mut blocks = Pages::build(earmark, pages.div_ceil(PER_BLOCK));
         for page in 0..pages {
             let Some(frame) = earmark.take(FrameKind::ArenaData) else {
                 panic!("a memory object outran the earmark its pages were counted for");

@@ -7,7 +7,7 @@ use native_abi::ring::{
 use wost::mm::slab::Hold;
 
 use super::ring::publish_index;
-use super::{Queue, QueueRef};
+use super::{Queue, QueueRef, SharedQueue};
 use crate::handle::TestTable;
 use crate::thread::ThreadContext;
 use crate::world::{self, registry};
@@ -70,8 +70,14 @@ impl TestQueue {
         let world = registry::hold(world_ref)?;
         let frames = QueueRef::frames_for()?;
         let mut earmark = wost::mm::pool::earmark(context, world.arena(), frames).ok()?;
-        let queue = Queue::new(crate::timepage::root(), &mut earmark)?;
-        let queue = QueueRef::create(&mut earmark, world_ref, &world, queue);
+        let ring = SharedQueue::new(&mut earmark)?;
+        let queue = QueueRef::create(
+            &mut earmark,
+            world_ref,
+            &world,
+            crate::timepage::root(),
+            ring,
+        );
         Some(Self {
             queue,
             held: queue.hold(),

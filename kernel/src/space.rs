@@ -3,6 +3,7 @@ use native_abi::limits::{PLACEMENT_START, USER_MAPPING_END};
 use wost::arch::current::paging::{AddressSpace, Flush, MapError, UserAccess};
 use wost::mm::SharedFrame;
 use wost::mm::pool::Earmark;
+use wost::mm::slab::Blank;
 use x86_paging::PAGE_SIZE;
 
 use crate::arena::{Local, Pages};
@@ -54,19 +55,26 @@ pub(crate) enum UnmapRefusal {
     NotAnObject,
 }
 
+#[derive(Debug)]
+struct Mappings(Records<Mapping>);
+
+impl Blank for Mappings {
+    const BLANK: Self = Self(Records::EMPTY);
+}
+
 // A user address space and the records every present user leaf in it is the image of.
 #[derive(Debug)]
 pub(crate) struct Space {
     address: AddressSpace,
     seed: [u8; 32],
     counter: u64,
-    records: Pages<Records<Mapping>>,
+    records: Pages<Mappings>,
     shared: [Option<SharedFrame>; 3],
 }
 
 impl Space {
     pub(crate) fn frames_for() -> u32 {
-        Pages::<Records<Mapping>>::frames_for(1)
+        Pages::<Mappings>::frames_for(1)
     }
 
     // The records live in the world's arena, so the space itself stays small to move.
@@ -75,13 +83,13 @@ impl Space {
             address,
             seed,
             counter: 0,
-            records: Pages::build(earmark, 1, || Records::EMPTY),
+            records: Pages::build(earmark, 1),
             shared: [const { None }; 3],
         }
     }
 
     fn records(&mut self) -> &mut Records<Mapping> {
-        let Some(records) = self.records.get_mut(0) else {
+        let Some(Mappings(records)) = self.records.get_mut(0) else {
             panic!("a space lost its record page");
         };
         records

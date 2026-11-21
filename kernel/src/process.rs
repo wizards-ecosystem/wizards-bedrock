@@ -81,7 +81,7 @@ pub(crate) struct Process {
 }
 
 impl Process {
-    pub(crate) fn new(launch: Launch, observation: Local<Observation>, objects: Objects) -> Self {
+    fn new(launch: Launch, observation: Local<Observation>, objects: Objects) -> Self {
         Self {
             launch,
             observation,
@@ -148,11 +148,16 @@ impl ProcessRef {
         earmark: &mut Earmark,
         world_ref: NodeRef,
         world: &World,
-        process: Process,
+        launch: Launch,
+        observation: Local<Observation>,
+        objects: Objects,
     ) -> Self {
+        let process = world
+            .processes
+            .insert(earmark, || Process::new(launch, observation, objects));
         Self {
             world: world_ref,
-            process: world.processes.insert(earmark, process),
+            process,
         }
     }
 

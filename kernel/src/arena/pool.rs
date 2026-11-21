@@ -65,7 +65,7 @@ impl<T, const N: usize> Pool<T, N> {
         frames::earmark(context, arena, wanted)
     }
 
-    pub(crate) fn insert(&self, earmark: &mut Earmark, value: T) -> Local<T> {
+    pub(crate) fn insert(&self, earmark: &mut Earmark, make: impl FnOnce() -> T) -> Local<T> {
         let mut taken = Frames::none();
         loop {
             let mut state = self.state.lock_leaf();
@@ -77,7 +77,7 @@ impl<T, const N: usize> Pool<T, N> {
             );
             let needed = state.frames_to_insert();
             if taken.count() >= needed {
-                let local = state.insert(&mut taken, value);
+                let local = state.insert(&mut taken, make);
                 drop(state);
                 drop(taken);
                 return local;
@@ -187,7 +187,7 @@ impl<T, const N: usize> State<T, N> {
         }
     }
 
-    fn insert(&mut self, taken: &mut Frames, value: T) -> Local<T> {
+    fn insert(&mut self, taken: &mut Frames, make: impl FnOnce() -> T) -> Local<T> {
         if self.available == NONE {
             let frame = taken.pop();
             let ordinal = self.directory.open(taken, |floor| Page {
@@ -200,7 +200,7 @@ impl<T, const N: usize> State<T, N> {
         }
         let ordinal = self.available;
         let page = self.page_mut(ordinal);
-        let Ok(issued) = page.page.insert(value) else {
+        let Some(issued) = page.page.insert_with(make) else {
             panic!("a listed object page had no free slot");
         };
         let full = page.page.free() == 0;

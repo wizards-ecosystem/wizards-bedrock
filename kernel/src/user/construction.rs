@@ -12,8 +12,8 @@ use super::load::{self, LoadError, Plan};
 use super::{Launch, STACK_BYTES, Spawned};
 use crate::handle::{HandleError, Table, TableRef};
 use crate::memory::{Kind, MemoryObject};
-use crate::process::{Authority, Objects, ObservationRef, Process, ProcessRef, Space};
-use crate::queue::{self, Queue, QueueRef};
+use crate::process::{Authority, Objects, ObservationRef, ProcessRef, Space};
+use crate::queue::{self, QueueRef, SharedQueue};
 use crate::space::{self, Mapping, Page, Target};
 use crate::world::{self, World, registry};
 use crate::{object, thread};
@@ -195,8 +195,8 @@ fn build(
     let time_page = clock
         .frame()
         .ok_or(SpawnError::NoTimePage(crate::timepage::Error::Absent))?;
-    let mut queue = Queue::new(clock, &mut earmark).ok_or(SpawnError::NoRing)?;
-    let (ring_page, data_page) = queue.frames();
+    let shared = SharedQueue::new(&mut earmark).ok_or(SpawnError::NoRing)?;
+    let (ring_page, data_page) = shared.frames();
     for (at, frame) in [(time, time_page), (ring, ring_page), (data, data_page)] {
         construction
             .space()?
@@ -206,7 +206,7 @@ fn build(
     let root = construction.address()?.root();
 
     let objects = Objects {
-        ring: QueueRef::create(&mut earmark, world_ref, world, queue),
+        ring: QueueRef::create(&mut earmark, world_ref, world, clock, shared),
         table: TableRef::create(&mut earmark, world_ref, world),
     };
     // Created before the thread can observe the table it names.
@@ -242,7 +242,9 @@ fn build(
         &mut earmark,
         world_ref,
         world,
-        Process::new(launch, observation.local(), objects),
+        launch,
+        observation.local(),
+        objects,
     );
     // The process takes the space only once its thread is bound to it.
     let arrange = |slot, bound| {
@@ -415,7 +417,7 @@ fn place_stack(
         object.acquire_writer().is_ok(),
         "a fresh stack object refused its writer"
     );
-    let memory = world.memories.insert(earmark, object);
+    let memory = world.memories.insert(earmark, || object);
     let mapping = Mapping {
         access: UserAccess::Write,
         target: Target::Object { memory, first: 0 },

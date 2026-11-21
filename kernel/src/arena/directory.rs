@@ -2,7 +2,7 @@ use core::mem;
 
 use object_pool::PAGES;
 use wost::mm::pool::{ArenaFrame, ArenaId, Earmark, FrameKind};
-use wost::mm::slab::ObjectPage;
+use wost::mm::slab::{Blank, ObjectPage};
 
 const BITS: u32 = 6;
 const FANOUT: usize = 1 << BITS;
@@ -21,6 +21,12 @@ enum Entry<E> {
 #[derive(Debug)]
 struct Node<E> {
     entries: [Entry<E>; FANOUT],
+}
+
+impl<E> Blank for Node<E> {
+    const BLANK: Self = Self {
+        entries: [const { Entry::Unborn }; FANOUT],
+    };
 }
 
 // Frames taken from an earmark before the pool lock, since taking one locks the frames.
@@ -206,11 +212,8 @@ fn position(ordinal: u32, level: u32) -> usize {
 
 fn new_node<E>(frame: ArenaFrame) -> ObjectPage<Node<E>, 1> {
     let mut page = ObjectPage::open(frame, 0);
-    let node = Node {
-        entries: [const { Entry::Unborn }; FANOUT],
-    };
     assert!(
-        page.insert(node).is_ok(),
+        page.insert_blank().is_some(),
         "a fresh directory node page had no free slot"
     );
     page
@@ -227,7 +230,7 @@ pub(crate) struct Pages<B> {
     directory: Directory<ObjectPage<B, 1>>,
 }
 
-impl<B> Pages<B> {
+impl<B: Blank> Pages<B> {
     pub(crate) fn frames_for(count: u32) -> u32 {
         let mut frames = count;
         let mut depth = 0;
@@ -240,7 +243,7 @@ impl<B> Pages<B> {
         frames
     }
 
-    pub(crate) fn build(earmark: &mut Earmark, count: u32, make: impl Fn() -> B) -> Self {
+    pub(crate) fn build(earmark: &mut Earmark, count: u32) -> Self {
         let mut directory = Directory::EMPTY;
         for _ in 0..count {
             let mut frames = Frames::none();
@@ -252,7 +255,7 @@ impl<B> Pages<B> {
             }
             let mut page = ObjectPage::open(frames.pop(), 0);
             assert!(
-                page.insert(make()).is_ok(),
+                page.insert_blank().is_some(),
                 "a fresh block page had no free slot"
             );
             directory.open(&mut frames, |_| page);

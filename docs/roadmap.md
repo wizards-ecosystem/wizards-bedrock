@@ -183,21 +183,19 @@ Phase 7:
   thread is a slot of the kernel's fixed task table, with a static save area and a stack from the
   16-slot arena (`kernel/src/thread.rs`, `wost/src/arch/x86_64/task.rs`), and the reaper's queue is
   bounded by those slots. Thread records and stacks need to live in the world's arena.
-- The root world exists with its arena, record and object pools, and each process's handle table
-  and ring live in it (`kernel/src/world.rs`, `kernel/src/handle.rs`, `kernel/src/queue.rs`), but
-  processes, threads and address spaces still come from the kernel heap and frames. Child worlds
+- The root world exists with its arena, record and object pools, and each process with its handle
+  table, ring and address space lives in it (`kernel/src/world.rs`, `kernel/src/handle.rs`,
+  `kernel/src/queue.rs`), but threads still come from the kernel's fixed task table. Child worlds
   are created, inspected and killed with their own arenas, keys and limits
   (`kernel/src/world/create.rs`, `kernel/src/world/teardown.rs`), but no program can be spawned
   into one, so every process still belongs to the root world. Teardown stops a world's threads
   through the fixed task table (`thread::stop_world`). User page tables are arena `Table` frames of
   the world named only by their links, and a shared ring, buffer 0 or time page keeps its holder
   count in an object frame of the world.
-- Frame ownership lives in a page-table software bit, nothing changes a permission or unmaps a
-  shared mapping, and spawn takes each segment as one contiguous run with no quota
-  (`wost/src/arch/x86_64/paging.rs`, `kernel/src/user/load.rs`). Memory objects own their arena
-  frames and seal read-only (`kernel/src/memory.rs`), but no program can map one, seal one for
-  execution or charge a code quota, and the loader does not use them. They need mapping records,
-  user page tables of arena frames and a shared unmap.
+- Memory objects own their arena frames and seal read-only, or for execution against a code
+  quota (`kernel/src/memory.rs`). Spawn loads each segment as one, and a program maps and unmaps
+  them with `Map` and `Unmap` against the mapping records of its space
+  (`kernel/src/queue/memory.rs`, `kernel/src/space.rs`); no call changes a mapping's permission.
 - The kernel parses ELF and loads one borrowed Limine module (`kernel/src/user/load.rs`,
   `wost/src/boot/limine_glue.rs`). The user-space loader replaces it and needs every module as owned
   frames; the kernel keeps its mapper checks.

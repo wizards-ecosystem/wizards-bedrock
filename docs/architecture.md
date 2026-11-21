@@ -270,7 +270,10 @@ owns one arena object frame and holds `libs/object-pool`'s slot state,
 one borrow count per slot and the objects. Slot state and objects change only through `&mut`; a
 `Hold` is a counted shared borrow of one object, and a borrowed object can be neither removed nor
 reached mutably, and its page cannot close or surrender. A closing page forgets its live objects
-and zeroes the frame; a surrendered page forgets them and leaves the frame to dissolve. A kernel `Pool` (`kernel/src/arena/pool.rs`) keeps one object type of one arena behind a
+and zeroes the frame; a surrendered page forgets them and leaves the frame to dissolve. An object
+is built in its slot, so no large value crosses a kernel stack: `insert_with` writes the value its
+closure returns straight into the slot, and `insert_blank` copies a `Blank` constant there (a
+directory node, a handle block, a memory block, a space's records). A kernel `Pool` (`kernel/src/arena/pool.rs`) keeps one object type of one arena behind a
 leaf lock: its pages sit in a `Directory` (`kernel/src/arena/directory.rs`), a radix of 64-way
 nodes that are themselves object pages and whose depth grows with the highest ordinal, up to four
 levels. A `Local` names an object by page ordinal (22 bits), slot (10 bits) and generation. A pool
@@ -436,7 +439,8 @@ fall between the check and the block. A wait may also end at a deadline.
 `wost/src/sync.rs` has two lock kinds, and every lock names its rank as its first type
 parameter: a `libs/lock-order` level, declared once per crate, whose number orders it. `wost`
 declares only `Leaf`, the highest rank; `kernel/src/rank.rs` declares the storage, IOMMU, console
-and serial thread locks, then the kernel address space and the scheduler, as one chain whose ranks
+and serial thread locks, then a world pin, the per-object lock (a handle table, a memory object's
+frames, a world's life), the kernel address space and the scheduler, as one chain whose ranks
 a constant assertion keeps ascending. `SpinLock` clears the interrupt flag while held and restores
 the flag it found; setting the flag or switching threads while one is held panics.
 `SpinLock::lock` borrows a `Held<M>` token mutably for the guard's life and compiles only when the

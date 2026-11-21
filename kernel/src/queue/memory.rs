@@ -46,7 +46,7 @@ pub(super) fn create(process: Process<'_, '_>, submission: Submission) -> Comple
         return refuse(token, status::NO_MEMORY);
     };
     let object = MemoryObject::new(&mut earmark, kind, pages);
-    let object = ObjectRef::Memory(process.world.memories.insert(&mut earmark, object));
+    let object = ObjectRef::Memory(process.world.memories.insert(&mut earmark, || object));
     drop(earmark);
     let rights = kind.rights();
     match reservation.install(process.context, object, rights, rights) {

@@ -4,7 +4,7 @@ use handle_space::{Entry as Generation, Mixer, Quota, SLOTS, Slot};
 use native_abi::Rights;
 use world_tree::NodeRef;
 use wost::mm::pool::Earmark;
-use wost::mm::slab::{Hold, Refusal, Removal};
+use wost::mm::slab::{Blank, Hold, Refusal, Removal};
 use wost::sync::SpinLock;
 
 use crate::arena::{Local, Pages};
@@ -57,17 +57,15 @@ struct Block {
     entries: [Entry; PER_PAGE as usize],
 }
 
-impl Block {
-    const fn empty() -> Self {
-        Self {
-            entries: [const {
-                Entry {
-                    generation: Generation::Free(0),
-                    held: None,
-                }
-            }; PER_PAGE as usize],
-        }
-    }
+impl Blank for Block {
+    const BLANK: Self = Self {
+        entries: [const {
+            Entry {
+                generation: Generation::Free(0),
+                held: None,
+            }
+        }; PER_PAGE as usize],
+    };
 }
 
 // One table per process in its world's arena; a retired slot stays charged, so the quota never
@@ -94,11 +92,7 @@ impl Table {
             mixer,
             capacity,
             counts: AtomicU64::new(Quota::EMPTY),
-            entries: SpinLock::new(Pages::build(
-                earmark,
-                capacity.div_ceil(PER_PAGE),
-                Block::empty,
-            )),
+            entries: SpinLock::new(Pages::build(earmark, capacity.div_ceil(PER_PAGE))),
         }
     }
 
@@ -283,7 +277,7 @@ impl TableRef {
         let table = Table::new(earmark, world.mixer(), world.handles());
         Self {
             world: world_ref,
-            table: world.tables.insert(earmark, table),
+            table: world.tables.insert(earmark, || table),
         }
     }
 
