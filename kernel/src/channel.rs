@@ -6,7 +6,7 @@ use wost::mm::slab::{Hold, Refusal, Released, Removal};
 use wost::sync::SpinLock;
 
 use crate::arena::Local;
-use crate::object::ObjectRef;
+use crate::object::{ENCODED, ObjectRef};
 use crate::queue::QueueRef;
 use crate::rank;
 use crate::world::{EndpointPool, World};
@@ -47,11 +47,38 @@ pub(crate) struct Endpoint {
 struct State {
     link: Link<Local<Endpoint>>,
     inbox: Inbox,
-    // A moved object's strong reference, held here until a reader installs it.
-    transit: [Option<(ObjectRef, Rights)>; HANDLES as usize],
+    // The byte ring, then each moved object's strong reference, held until a reader installs it.
     bytes: ArenaFrame,
     armed: [Option<Reader>; ARMED],
     doomed: Option<Local<Endpoint>>,
+}
+
+const TRANSIT_AT: usize = BYTES as usize;
+
+const _: () = assert!(
+    TRANSIT_AT + HANDLES as usize * ENCODED <= x86_paging::PAGE_SIZE as usize,
+    "the byte ring and the moved references share one frame"
+);
+
+impl State {
+    fn hand(&mut self, slot: usize, moved: Option<(ObjectRef, Rights)>) {
+        let encoded = moved.map_or([0; ENCODED], |(object, rights)| object.encode(rights));
+        assert!(
+            self.bytes.write_at(TRANSIT_AT + slot * ENCODED, &encoded),
+            "a transit slot left its frame"
+        );
+    }
+
+    fn claim(&mut self, slot: usize) -> Option<(ObjectRef, Rights)> {
+        let mut encoded = [0; ENCODED];
+        assert!(
+            self.bytes
+                .read_at(TRANSIT_AT + slot * ENCODED, &mut encoded),
+            "a transit slot left its frame"
+        );
+        self.hand(slot, None);
+        ObjectRef::decode(encoded)
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -74,17 +101,21 @@ impl Endpoint {
         EndpointPool::frames_for(endpoints)?.checked_add(endpoints)
     }
 
-    fn make(earmark: &mut Earmark, link: Link<Local<Self>>) -> Option<Self> {
-        Some(Self {
+    fn insert(
+        earmark: &mut Earmark,
+        world: &World,
+        link: Link<Local<Self>>,
+    ) -> Option<Local<Self>> {
+        let bytes = earmark.take(FrameKind::ArenaData)?;
+        Some(world.endpoints.insert(earmark, || Self {
             state: SpinLock::new(State {
                 link,
                 inbox: Inbox::EMPTY,
-                transit: [None; HANDLES as usize],
-                bytes: earmark.take(FrameKind::ArenaData)?,
+                bytes,
                 armed: [None; ARMED],
                 doomed: None,
             }),
-        })
+        }))
     }
 }
 
@@ -93,24 +124,18 @@ pub(crate) fn create(
     earmark: &mut Earmark,
     world: &World,
 ) -> Option<(Local<Endpoint>, Local<Endpoint>)> {
-    let first = Endpoint::make(earmark, Link::PeerClosed)?;
-    let first = world.endpoints.insert(earmark, first);
-    let Some(second) = Endpoint::make(earmark, Link::Open(first)) else {
+    let first = Endpoint::insert(earmark, world, Link::PeerClosed)?;
+    let Some(second) = Endpoint::insert(earmark, world, Link::Open(first)) else {
         release(world, first);
         return None;
     };
-    let second = world.endpoints.insert(earmark, second);
-    let Some(held) = world.endpoints.hold(first) else {
-        panic!("a fresh endpoint went before its peer named it");
-    };
-    held.state.lock_leaf().link = Link::Open(second);
+    held(world, first).state.lock_leaf().link = Link::Open(second);
     Some((first, second))
 }
 
 // The birth endpoint of a program: nothing is at the other end.
 pub(crate) fn alone(earmark: &mut Earmark, world: &World) -> Option<Local<Endpoint>> {
-    let endpoint = Endpoint::make(earmark, Link::PeerClosed)?;
-    Some(world.endpoints.insert(earmark, endpoint))
+    Endpoint::insert(earmark, world, Link::PeerClosed)
 }
 
 fn held(world: &World, endpoint: Local<Endpoint>) -> Hold<Endpoint> {
@@ -178,7 +203,7 @@ fn commit(
     }
     let mut taken = moved.iter_mut().map(Option::take);
     for slot in spanned(entry.descriptor.handle_spans()) {
-        state.transit[slot] = taken.next().flatten();
+        state.hand(slot, taken.next().flatten());
     }
     Ok(pop_armed(&mut state))
 }
@@ -233,7 +258,7 @@ pub(crate) fn take(
         done += chunk.len();
     }
     for (at, slot) in spanned(entry.descriptor.handle_spans()).enumerate() {
-        moved[at] = state.transit[slot].take();
+        moved[at] = state.claim(slot);
     }
     state.inbox.pop();
     Some((bytes, handles))
@@ -302,7 +327,7 @@ fn destroy(world: &World, first: Local<Endpoint>) {
                         break;
                     };
                     for (at, slot) in spanned(entry.descriptor.handle_spans()).enumerate() {
-                        moved[at] = state.transit[slot].take();
+                        moved[at] = state.claim(slot);
                     }
                 }
                 for (object, _) in moved.into_iter().flatten() {

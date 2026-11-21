@@ -652,6 +652,18 @@ number and is added here, as one entry or as an amending id on the entry it chan
   function that borrows the entry array and the count together, with a lemma before the call that
   shows the new records sorted, so the type invariant stays and no 2.5 KiB copy of the array is
   made.
+- **D-551** An endpoint is a pool record of about 600 bytes holding its descriptors and armed
+  readers, built in its slot, plus one arena data frame for its 2304-byte byte ring and its 32
+  moved references, each encoded as 24 plain bytes, so neither a write nor a destruction holds a
+  page-sized value on a kernel stack.
+- **D-552** An endpoint keeps 8 armed readers in a fixed array in its record instead of a list
+  linked through the readers' pending entries, so a write, a cancel and a destruction each touch one
+  endpoint lock and no other object's; a ninth waiting read answers `NO_ROOM`.
+- **D-553** The message limits are defined once in `native_abi::limits`; `libs/channel-state`
+  bounds a message only by its rings and the kernel checks the ABI limits when it reads a
+  descriptor (amends the L4 admission check).
+- **D-554** A dying world's endpoints that hold only each other are found by walking its endpoint
+  pool for any live slot (`object_pool::Slots::first_live`) and destroyed at `DestroyObjects`.
 - **D-481** The ring 3 witness is a cargo-built static `ET_EXEC` linked at `0x400000`, and the
   loader maps each segment at its `p_vaddr` with no per-program shift, because a position-dependent
   image holds absolute addresses that a shift breaks and the in-kernel loader takes no `ET_DYN`;

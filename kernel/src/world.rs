@@ -77,7 +77,7 @@ pub(crate) struct World {
 
 pub(crate) type TablePool = Pool<Table, 16>;
 pub(crate) type QueuePool = Pool<Queue, 2>;
-pub(crate) type EndpointPool = Pool<Endpoint, 2>;
+pub(crate) type EndpointPool = Pool<Endpoint, 4>;
 pub(crate) type ProcessPool = Pool<Process, 4>;
 pub(crate) type ObservationPool = Pool<Observation, 16>;
 pub(crate) type MemoryPool = Pool<MemoryObject, 16>;

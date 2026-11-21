@@ -39,6 +39,9 @@ pub(crate) const fn directory(directory: crate::vfs::Directory) -> ObjectRef {
     ObjectRef::Directory(directory)
 }
 
+// An object reference and its rights as plain bytes, so a frame can hold it; zero is none.
+pub(crate) const ENCODED: usize = 24;
+
 // A copy names the object; only `acquire` and `release` change what keeps it alive.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum ObjectRef {
@@ -73,6 +76,64 @@ impl ObjectRef {
             Self::Directory(directory) => Some(directory),
             Self::Endpoint(_) | Self::File(_) | Self::Memory(_) | Self::World(_) => None,
         }
+    }
+
+    pub(crate) fn encode(self, rights: Rights) -> [u8; ENCODED] {
+        let (tag, first, second): (u8, u64, u64) = match self {
+            Self::Endpoint(endpoint) => (1, endpoint.to_bits(), 0),
+            Self::Memory(memory) => (2, memory.to_bits(), 0),
+            Self::World(node) => (3, u64::from(node.node), u64::from(node.generation)),
+            Self::File(crate::vfs::File::Fat { cluster, size }) => {
+                (4, u64::from(cluster), u64::from(size))
+            }
+            Self::File(crate::vfs::File::Tmp { at, len }) => (5, at as u64, len as u64),
+            Self::Directory(crate::vfs::Directory::Fat { cluster }) => (6, u64::from(cluster), 0),
+            Self::Directory(crate::vfs::Directory::Tmp { index }) => (7, index as u64, 0),
+            Self::Directory(crate::vfs::Directory::Dev) => (8, 0, 0),
+        };
+        let mut bytes = [0; ENCODED];
+        bytes[0] = tag;
+        bytes[4..8].copy_from_slice(&rights.bits().to_le_bytes());
+        bytes[8..16].copy_from_slice(&first.to_le_bytes());
+        bytes[16..].copy_from_slice(&second.to_le_bytes());
+        bytes
+    }
+
+    // Only what `encode` wrote is ever decoded, so the narrowing casts are exact.
+    pub(crate) fn decode(bytes: [u8; ENCODED]) -> Option<(Self, Rights)> {
+        let word = |at: usize| {
+            let mut word = [0; 8];
+            word.copy_from_slice(&bytes[at..at + 8]);
+            u64::from_le_bytes(word)
+        };
+        let (first, second) = (word(8), word(16));
+        let rights =
+            Rights::from_bits(u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]))?;
+        let object = match bytes[0] {
+            1 => Self::Endpoint(Local::from_bits(first)),
+            2 => Self::Memory(Local::from_bits(first)),
+            3 => Self::World(NodeRef {
+                node: first as u32,
+                generation: second as u32,
+            }),
+            4 => Self::File(crate::vfs::File::Fat {
+                cluster: first as u32,
+                size: second as u32,
+            }),
+            5 => Self::File(crate::vfs::File::Tmp {
+                at: first as usize,
+                len: second as usize,
+            }),
+            6 => Self::Directory(crate::vfs::Directory::Fat {
+                cluster: first as u32,
+            }),
+            7 => Self::Directory(crate::vfs::Directory::Tmp {
+                index: first as usize,
+            }),
+            8 => Self::Directory(crate::vfs::Directory::Dev),
+            _ => return None,
+        };
+        Some((object, rights))
     }
 
     // One more strong reference for a second handle; `false` when the object is already gone.

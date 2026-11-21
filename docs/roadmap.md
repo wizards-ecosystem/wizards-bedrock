@@ -204,8 +204,11 @@ Phase 7:
   per root.
 - Each process has one fixed ring, timers expire only on kernel entry, and the time page is global
   (`kernel/src/queue.rs`, `kernel/src/timepage.rs`): every process reads the one root world clock.
-  Channels need their own transport, and time needs a clock per world, the recorded mode and the raw
-  time right.
+  Time needs a clock per world, the recorded mode and the raw time right.
+- Channels carry messages and moved handles between endpoints of one world
+  (`kernel/src/channel.rs`), but no endpoint reaches another world, nothing calls or replies, and
+  only buffer 0 carries a message. Call and reply, registered buffers and the bootstrap roles need
+  them.
 - No space holds a reservation, so a `Map` with `EXECUTE` answers `NO_ADDRESS`, and no program
   holds a code quota handle (`kernel/src/queue/memory.rs`). C9's `Reserve` and bootstrap roles
   need both.

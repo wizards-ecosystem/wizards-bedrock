@@ -526,21 +526,56 @@ A handle resolves only in the table that issued it, because each table has its o
 The universal rights are `DUPLICATE` (bit 0), `TRANSFER` (1), `WAIT` (2) and `INSPECT` (3). The
 per-type rights are `READ` (8), `WRITE` (9), `EXECUTE` (10), `MAP` (11), `TRAVERSE` (12),
 `ENUMERATE` (13) and `MODIFY` (14). An undefined bit is refused, never masked. The object types are
-an opaque `Channel` identity, a `File` and a `Directory` (`kernel/src/object.rs`).
+an `Endpoint`, a `File`, a `Directory`, a memory object and a world (`kernel/src/object.rs`).
 
 Each process's table is an object in its world's table pool (`kernel/src/handle.rs`). Its capacity
 is the world's handles limit (64 for the root world), and its entry pages, 64 entries each, are
 arena frames taken when it is made, so a ring operation never allocates for a handle. The entries
 sit behind one object lock (`rank::Object`, taken with a thread context). Held and promised counts
 share one atomic word; a retired slot stays counted, so the quota never promises a slot that no
-longer exists. An entry names its object by `ObjectRef`: a `Local` channel in the same world, or a
-`File` or `Directory` value. A channel is counted: a handle holds one strong reference, a
-`Duplicate` takes another, and `Close` or the table's teardown releases it, so the channel goes
-with its last handle.
+longer exists. An entry names its object by `ObjectRef`: a `Local` endpoint or memory object in
+the same world, a world by its node, or a `File` or `Directory` value. A local object is counted: a
+handle holds one strong reference, a `Duplicate` takes another, and `Close` or the table's teardown
+releases it, so the object goes with its last reference. An entry is free, live, retired, or moving
+while a channel write holds it (`libs/handle-space`): a moving entry resolves for nothing, and the
+write either restores it with its value and rights or erases it.
 
-A new program's table holds exactly one entry at birth: an opaque `Channel` with the universal
-rights, which has no peer and carries no messages. Every later handle arrives through a ring
-operation that a held handle authorizes, and `Close` ends one.
+A new program's table holds exactly one entry at birth: an endpoint whose peer is closed, with
+`DUPLICATE TRANSFER READ WRITE`. Every later handle arrives through a ring operation that a held
+handle authorizes or a channel read, and `Close` ends one.
+
+### Channels
+
+`ChannelCreate` makes two endpoints in the caller's world, each naming the other, and returns a
+handle to each (`kernel/src/channel.rs`, `kernel/src/queue/channel.rs`). An endpoint is an object
+in its world's endpoint pool with its inbox: 16 message descriptors and 8 armed readers in the
+record, and one arena data frame of its own holding the 2304-byte byte ring and 32 moved-handle
+slots, each an object reference with its rights as 24 plain bytes (`libs/channel-state`). Its holder's world
+pays for all of it when the endpoint is made, so a write allocates nothing.
+
+`ChannelWrite` reads a message descriptor from buffer 0 (`native_abi::message`: at most 2048 bytes
+and 16 handles, `native_abi::limits`). It takes every named handle out of the writer's table in one
+step under the table lock, each needing `TRANSFER` and keeping the rights the descriptor names
+within those it holds, then commits the message into the peer's inbox under the peer's lock. A full
+inbox answers `FULL`, a closed peer `PEER_CLOSED`, and moving the receiving endpoint into its own
+inbox `DENIED`; each restores every taken handle with its value and rights. A committed message's
+handles are erased from the writer's table, and each object's strong reference moves with it, held
+by the inbox until a reader installs it. The writer reaches the peer only under a strong reference
+of its own, so the peer cannot go mid-write.
+
+`ChannelRead` reads the head message into the descriptor at its buffer offset when it fits the
+declared room, reserving a table slot for each moved handle first; a message too large answers
+`TOO_SMALL` with its size and stays queued. An empty inbox with an open peer arms the read: a pending
+entry in the reader's queue and a place in the endpoint's 8 armed readers. A write pops the oldest
+armed reader and marks its entry ready, and the reader's next `RingWait` performs the read in its
+own context. Once the inbox is empty and the peer is gone, a read answers `PEER_CLOSED`.
+
+An endpoint goes with its last strong reference. Its inbox's messages are destroyed with every
+handle they carry, its peer turns `PeerClosed`, and both endpoints' armed readers are woken. An
+endpoint that loses its last reference inside another's destruction joins a chain instead of
+recursing, so nesting depth costs no stack. Endpoints left only in each other's inboxes are
+destroyed at the world teardown's `DestroyObjects` step. Every endpoint and every message lies in
+one world: no endpoint reaches another world yet, so re-homing a moved endpoint does not arise.
 
 ### The ring
 
@@ -604,7 +639,7 @@ quiet. Cancellation is advisory.
 
 `OpenAt`, `Read` and `Random` move data through buffer 0, so the kernel validates no user pointer
 for them. A file opened from a directory gets `READ` plus the directory's universal rights. No program
-can hold a directory handle today, because spawn installs only the bootstrap channel.
+can hold a directory handle today, because spawn installs only the birth endpoint.
 
 ### Calls
 
@@ -684,7 +719,7 @@ state isolated, the clock calibrated, the random generator seeded, the service w
 shared or paired isolation mode. It then builds the address space, loads the image, maps a one-page
 user stack at `0x0000300000000000`, maps the time page, the ring and buffer 0, creates the handle
 table with its birth handle, binds the space and publishes a thread. Before it builds anything it
-earmarks, in the root world's arena, every frame its queue, table and birth channel can need, so a
+earmarks, in the root world's arena, every frame its queue, table and birth endpoint can need, so a
 full arena refuses the spawn with nothing changed. `ProcessConstruction` owns the space and
 every mapped range until the thread is published, so any refusal rolls back through one owner.
 
