@@ -1,4 +1,4 @@
-use world_tree::{Admission, MAX_DEPTH, NodeRef, Path, Progress, WorldState, WorldStep};
+use world_tree::{Admission, Limits, MAX_DEPTH, NodeRef, Path, Progress, WorldState, WorldStep};
 use wost::mm::pool::{self, ArenaId, Dissolved};
 
 use super::{DESCENDANTS, Killer, registry};
@@ -122,12 +122,19 @@ fn quiesce(node: NodeRef) -> Progress {
     }
 }
 
-// Leaves every ancestor's set and returns its budgets; a closed ancestor has no set left.
+// Leaves every ancestor's set; the nearest one still holding a set gets back this world's own slot
+// and unspent budgets, and each descendant returns its own share when it detaches.
 fn detach(node: NodeRef) -> Progress {
     let Some(world) = registry::take(node) else {
         return Progress::Pending;
     };
     crate::channel::dissolve(&world);
+    let unspent = world.life.lock_leaf().budgets;
+    let mut share = Some(Limits {
+        descendants: unspent.descendants(),
+        threads: unspent.threads(),
+        handles: world.limits.handles,
+    });
     for distance in 0..world.path.depth() {
         let Some(ancestor) = world
             .path
@@ -142,8 +149,8 @@ fn detach(node: NodeRef) -> Progress {
             "world {} was missing from an ancestor",
             node.node
         );
-        if distance == 0 {
-            super::create::credit(&ancestor, world.limits);
+        if let Some(share) = share.take() {
+            super::create::credit(&ancestor, share);
         }
     }
     world.release();
