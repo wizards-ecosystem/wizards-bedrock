@@ -446,6 +446,22 @@ number and is added here, as one entry or as an amending id on the entry it chan
 - **D-503** Ring opcode 8 `Random` fills a range of the data page from the kernel generator and
   refuses `UNAVAILABLE` before it is seeded. It draws from the one kernel `Local` until a world
   key gives each world its own stream; a program never adds entropy, and no draw blocks.
+- **D-504** Each world has its own clock: offset, precision and time page, started when the world
+  is prepared on frames of its own arena and stopped when its record leaves the registry (amends
+  D-501). The clock state sits in the world's registry entry rather than its record, because threads
+  and queues name it by a static reference for as long as they live, and none outlives the record.
+  A child's precision is its parent's or a coarser one its creator asks for in the version 2 world
+  descriptor; a finer one is refused `LIMIT`.
+- **D-505** The raw time right is a world's counter access, fixed at creation. The root holds it,
+  so a grant has a source, and a child holds it only when its creator holds it and asks; a grant
+  from a world without it is refused `DENIED`. Spawn binds a space with its world's access, each
+  task slot keeps it, and every switch writes `CR4.TSD` for the arriving slot when it differs,
+  reading `CR4` rather than keeping a per-processor shadow. A raw world's page stays in normal mode
+  with no conversion: the conversion comes with its first reader.
+- **D-506** `Random` serves each world from a `Local` of its own, keyed from the kernel `Base` on
+  its first draw and after every reseed (amends D-503). The stream is not derived from the world
+  key, because the world key stays stored for the handle mixers and placements, and a stream it
+  derived would let a captured key replay every output.
 - **D-590** The generator's periodic reseed runs on the keyboard poller, the one kernel thread that
   already wakes every 10 ms, rather than on a thread of its own or in the timer interrupt, which
   may not read seed words for long. The call costs a clock read and a leaf lock until the

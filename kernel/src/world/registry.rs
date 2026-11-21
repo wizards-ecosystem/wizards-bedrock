@@ -2,14 +2,15 @@ use core::ops::Deref;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use world_tree::{Admission, Limits, NodeRef, Path, Reclaimed, WorldEvent, WorldState};
-use wost::mm::pool::{self, ArenaId, ColourMask, Refused};
+use wost::mm::pool::{self, ArenaId, ColourMask, FrameKind, Refused};
 use wost::mm::slab::{Hold, Removal};
 use wost::sync::{Leaf, PinGuard, SpinLock};
 
-use super::{Killer, World, WorldKey};
+use super::{Killer, Time, World, WorldKey};
 use crate::arena::{Local, Pool};
 use crate::rank;
 use crate::thread::ThreadContext;
+use crate::timepage::WorldClock;
 
 const CAPACITY: usize = pool::capacity() as usize;
 
@@ -35,6 +36,8 @@ struct Entry {
     word: AtomicU64,
     record: AtomicU64,
     records: Pool<World, 1>,
+    // Beside the record, since threads and queues of the world name it for as long as they live.
+    clock: WorldClock,
     remains: SpinLock<Leaf, Option<Remains>>,
     killers: SpinLock<Leaf, [Option<Killer>; KILLERS]>,
 }
@@ -46,6 +49,7 @@ impl Entry {
             word: AtomicU64::new(encode(WorldState::Free)),
             record: AtomicU64::new(0),
             records: Pool::new(),
+            clock: WorldClock::new(),
             remains: SpinLock::new(None),
             killers: SpinLock::new([None; KILLERS]),
         }
@@ -114,6 +118,7 @@ pub(super) fn prepare(
     path: Path,
     mask: ColourMask,
     limits: Limits,
+    time: Time,
 ) -> Result<NodeRef, Refused> {
     let entry = entry_of(arena);
     assert!(
@@ -122,9 +127,20 @@ pub(super) fn prepare(
         arena.index()
     );
     let mut earmark = Pool::<World, 1>::earmark(context, arena, 1)?;
-    let record = entry
-        .records
-        .insert(&mut earmark, || World::new(arena, key, path, mask, limits));
+    let mut page = pool::earmark(context, arena, 2)?;
+    let (Some(frame), Some(home)) = (
+        page.take(FrameKind::ArenaData),
+        page.take(FrameKind::ArenaObject),
+    ) else {
+        return Err(Refused::NoMemory);
+    };
+    entry
+        .clock
+        .start(time.precision_ns, frame, home)
+        .map_err(|_| Refused::NoMemory)?;
+    let record = entry.records.insert(&mut earmark, || {
+        World::new(arena, key, time.counter, path, mask, limits)
+    });
     entry.record.store(record.to_bits(), Ordering::Relaxed);
     *entry.remains.lock_leaf() = Some(Remains {
         path,
@@ -156,7 +172,15 @@ pub(crate) fn withdraw(node: NodeRef) -> World {
         panic!("the record of unpublished world {} was held", node.node);
     };
     entry.records.close();
+    entry.clock.stop();
     world
+}
+
+// The clock of a world for as long as its node keeps this generation.
+pub(crate) fn clock(node: NodeRef) -> Option<&'static WorldClock> {
+    entry(node)
+        .filter(|entry| entry.is(node))
+        .map(|entry| &entry.clock)
 }
 
 // The world's own record for as long as it is Live or Dying; a pin is the way into another world.
@@ -199,6 +223,7 @@ pub(super) fn take(node: NodeRef) -> Option<World> {
     match entry.records.destroy(entry.record()) {
         Ok(Some(world)) => {
             entry.records.close();
+            entry.clock.stop();
             Some(world)
         }
         Err(Removal::Borrowed) => None,

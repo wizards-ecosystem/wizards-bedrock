@@ -60,8 +60,8 @@ pub mod message {
 
 // The world descriptor `WorldCreate` reads from a buffer, 8-byte aligned.
 pub mod world {
-    pub const VERSION: u32 = 1;
-    pub const BYTES: usize = 32;
+    pub const VERSION: u32 = 2;
+    pub const BYTES: usize = 40;
 
     pub mod offset {
         pub const VERSION: usize = 0;
@@ -71,7 +71,14 @@ pub mod world {
         pub const DESCENDANTS: usize = 16;
         pub const THREADS: usize = 20;
         pub const HANDLES: usize = 24;
-        pub const RESERVED: usize = 28;
+        pub const FLAGS: usize = 28;
+        // A `u64`; 0 asks for the parent's precision, and a finer one is refused.
+        pub const PRECISION_NS: usize = 32;
+    }
+
+    pub mod flags {
+        // Grants the raw time right, which only a world holding it may pass on.
+        pub const RAW_TIME: u32 = 1;
     }
 }
 
@@ -122,7 +129,11 @@ pub mod witness {
         pub const BACKDOOR: u64 = 14;
         pub const CHANNELS: u64 = 15;
         pub const CALLS: u64 = 16;
+        pub const SERVED: u64 = 17;
     }
+
+    // `SERVED` exits with its draw and this bit, so no failure status can pass for one.
+    pub const DRAWN: u64 = 1 << 63;
 
     // The operand of `CHANNELS`: the half a witness runs.
     pub mod channels {

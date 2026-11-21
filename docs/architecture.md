@@ -76,7 +76,7 @@ is treated like a reserved one: never allocated and never direct-mapped.
    (`kernel/src/routing.rs`), surveys PCI and selects storage (`storage::survey_the_bus`) and lists
    tmpfs and devfs (`storage::survey_the_filesystems`).
 6. `interrupts::start` silences the 8259 PICs, applies the speculation controls and chooses user
-   isolation, starts the local APIC, calibrates the clock, publishes the time page, checks that
+   isolation, starts the local APIC, calibrates the clock, checks that
    every interrupt source is masked or remapped, and only then sets the interrupt flag.
 7. `random::seed` seeds the kernel's random generator (section 5), and `processors::bring_up`
    starts the other processors and parks them (section 3). The keyboard comes up polled,
@@ -187,7 +187,10 @@ clears `CR0.EM` and `CR4.DE`, `PGE`, `PCE` and `FSGSBASE`, writes zero to `IA32_
 set them. With `PGE` clear no global translation survives a `CR3` load, so a shootdown's reload
 flushes everything the bootloader's tables left.
 With `CR4.TSD` set, `RDTSC`, `RDTSCP`, `TPAUSE` and `UMWAIT` raise #GP in ring 3 before they retire,
-and the fault path retires the program; the kernel never emulates them. `RDPID` cannot be trapped
+and the fault path retires the program; the kernel never emulates them. Each task slot carries the
+counter access of the space bound to it (`cpu::CounterAccess`, set by `Binding::with_counter`), and
+every switch writes `CR4.TSD` for the arriving slot when it differs, so the bit is clear in ring 3
+exactly while a thread of a world with the raw time right runs. `RDPID` cannot be trapped
 and reads the zeroed `IA32_TSC_AUX`. The second sets `CR0.WP` and `EFER.NXE` and enables SMEP, SMAP
 and UMIP where CPUID reports them, arming the entry path's `clac` with SMAP. Ring 3 requires NX;
 missing SMEP, SMAP or UMIP is logged and tolerated.
@@ -283,12 +286,16 @@ empties closes, and its ordinal keeps the least generation above every one the p
 reused ordinal never repeats a generation and an exhausted one retires.
 
 The world registry (`kernel/src/world/registry.rs`) has one entry per arena node: the generation,
-a word with the world's state (Free, Live, Dying, Closed) and pin count, and the record pool that
-holds the world's record in its own arena. A `NodeRef` is the node index and its arena
+a word with the world's state (Free, Live, Dying, Closed) and pin count, the record pool that
+holds the world's record in its own arena, and the world's clock (section 6), which threads and
+queues of the world name for as long as they live. A `NodeRef` is the node index and its arena
 generation. After the generator is seeded, `world::start_root` draws the root world's key from it,
-reserves the root arena with a margin of 1/32 of each colour and publishes the root world.
+reserves the root arena with a margin of 1/32 of each colour and publishes the root world. Preparing
+any world starts its clock on a time page from its own arena, and the record leaving the registry
+stops it.
 
-A world record holds its key, its path of at most 16 ancestors, its colour mask, its limits
+A world record holds its key, its stream, its counter access (`Raw` only for the root and for a
+child whose creator holds it and grants it), its path of at most 16 ancestors, its colour mask, its limits
 (descendants, threads, handles per table) and, under its life lock (rank `Object`), its remaining
 budgets and the flat set of its descendants, at most 63, so at most 64 worlds live at once. Another
 world is reached only under a pin (rank `Pin`, below every object lock): interrupts off, the
@@ -497,7 +504,12 @@ discarded uncredited, so a source stuck in a cycle of up to four words cannot se
 The generator is ready after 256 credited bits, and the boot log names the source that seeded it.
 `random::fill`
 refuses with `NotReady` before then, and every draw replaces the key that produced it before it
-returns. The ring's `Random` draws from it in 256-byte rounds.
+returns. The kernel's `Local` draws each world key, so no world exists before the generator is
+seeded and none derives its key from its parent. Each world also holds its own `Local`, its stream,
+behind a lock of rank `Object`: `random::fill_stream` keys it from `Base` on its first draw and
+again after every reseed, with the same erasure. The ring's `Random` draws from the caller's world
+stream in 256-byte rounds. The stream is never derived from the world key, so the stored key reveals
+no output.
 
 A reseed hashes the old key with the pool's digest into the new key, and the pool restarts empty,
 so the state holds no input to an earlier key. It happens once the pool holds 256 bits credited
@@ -667,14 +679,14 @@ kernel narrows it with `try_from` and refuses or saturates.
 | 5 | `Cancel` | ends the oldest operation whose token is `argument`; the target still completes once, with `CANCELLED` |
 | 6 | `OpenAt` | resolves the path in `buffer`, `at`, `length` from a directory handle; completes with a new handle. A path naming the directory itself is `BAD_PATH` |
 | 7 | `Read` | reads file `handle` from file offset `offset` into `buffer` at `at`, up to `length` bytes |
-| 8 | `Random` | fills `length` bytes of `buffer` from `at` with generator output; completes with the byte count, or `UNAVAILABLE` before the generator is seeded |
+| 8 | `Random` | fills `length` bytes of `buffer` from `at` with output of the caller's world stream; completes with the byte count, or `UNAVAILABLE` before the generator is seeded |
 | 9 | `Close` | ends `handle`; its object goes once no handle or kernel reference holds it |
 | 11 | `MemoryCreate` | makes an object of `argument` zeroed pages in the caller's world; flag bit 0 makes it shareable. Completes with a handle: sealable `TRANSFER READ WRITE MAP`, shareable adds `DUPLICATE` |
 | 12 | `MemoryCopy` | copies `length` bytes from object `second` at byte `argument` into object `handle` at byte `offset`; needs `READ` and `WRITE`, and both ranges inside their objects (`BAD_BUFFER` otherwise) |
 | 13 | `MemorySeal` | with flag bit 0, seals the sealable object `handle` read-only; needs `WRITE` and no writer (`BUSY`), and a writable mapping is a writer. Completes with the new handle `DUPLICATE TRANSFER READ MAP`; the old value is gone |
 | 16 | `Map` | maps `length` pages of object `second` from byte `offset` (page aligned) at address `argument` in the caller's space (`handle` 0); flag bit 0 `WRITE` takes a writer, bit 1 `EXECUTE` needs a sealed executable object, its `EXECUTE` right and a reservation. Needs `MAP` and `READ`; rights are checked before state and address. Completes with the address, or `NO_ADDRESS` when the range is taken or not user memory, `LIMIT` past 64 records |
 | 17 | `Unmap` | removes the whole mapping record at `argument` of `length` pages (`NOT_FOUND` otherwise) and completes after the flush that cleared its translations; only then does a writable record's writer go |
-| 18 | `WorldCreate` | makes a child of the caller's world from the 32-byte world descriptor in buffer 0 at `at` (8-byte aligned): version 1, frames per colour, colour mask (0 for the parent's), descendants, threads and handles per table. Completes with a world handle `DUPLICATE TRANSFER INSPECT SPAWN KILL`; `NO_MEMORY` when the parent cannot donate the frames, `LIMIT` past a budget, the depth or the parent's mask, `DEAD` when an ancestor is dying |
+| 18 | `WorldCreate` | makes a child of the caller's world from the 40-byte world descriptor in buffer 0 at `at` (8-byte aligned): version 2, frames per colour, colour mask (0 for the parent's), descendants, threads and handles per table, flags (bit 0 grants the raw time right) and precision in nanoseconds (`u64` at 32, 0 for the parent's). Completes with a world handle `DUPLICATE TRANSFER INSPECT SPAWN KILL`; `NO_MEMORY` when the parent cannot donate the frames, `LIMIT` past a budget, the depth, the parent's mask or a precision finer than the parent's, `DENIED` for an unknown flag or a raw grant from a world without the right, `DEAD` when an ancestor is dying |
 | 19 | `WorldKill` | needs `KILL`; completes once the world is gone and its frames are its heir's, while its descendants end on their own; `DEAD` for a world already dying, `DENIED` for the root, `NO_ROOM` past 8 waiting kills of one world. A cancel ends the wait, not the kill |
 | 20 | `WorldInspect` | `handle` names a world (`INSPECT`) or is 0 for the caller's; completes with the frames the world reserves, and `extra` with the frames it uses |
 
@@ -736,7 +748,7 @@ arena data frames the kernel also reads through a shared view (`mm::SharedRing`,
 a `SharedFrame` reference to it, so the frame outlives every leaf naming it whatever order the queue
 and the space go in; `clear` drops those references only after its flush. The holder count and the
 frame's token live in an arena object frame of the same world, so sharing takes nothing from the
-kernel heap. The time page is a frame of the root world, made when the root world starts.
+kernel heap. Each world's time page is a frame of that world, made when the world is prepared.
 
 A user space's roots and tables are arena `Table` frames of its world, named only by their links:
 the space keeps their count and its arena, and rebuilds each token from the tree, checked against
@@ -750,18 +762,21 @@ The time page is mapped read-only at its placed address (`kernel/src/timepage.rs
 field widths in `native_abi::timepage`, whose `Constants::encode` writes the constants). Version 2 holds constants written
 before any mapping exists: version (`u32` at 0, value `2`), page size (`u32` at 4), mode (`u32` at
 8: `0` none, `1` normal), precision in nanoseconds (`u64` at 16) and generation (`u64` at 24, never
-0). One aligned `u64` at 64 holds world time in nanoseconds. Ring 3 cannot execute `rdtsc`, so the
-page carries a value, not a conversion, and needs no sequence lock.
+0). One aligned `u64` at 64 holds world time in nanoseconds. Only a world with the raw time right
+can execute `rdtsc`, so the page carries a value, not a conversion, and needs no sequence lock. A
+raw world's page is the same.
 
-World time belongs to a world's clock, a `timepage::WorldClock`: host time minus the host time at
-which the world started, so it starts at 0 and never reveals host uptime. A served value is world
-time rounded down to the precision (1 ms) and raised by an atomic maximum, so it never goes back;
+World time belongs to a world's clock, a `timepage::WorldClock` in the world's registry entry: host
+time minus the host time at which the world started, so it starts at 0 and never reveals host
+uptime. A world's precision is fixed when it is made: 1 ms for the root, and for a child its
+parent's or a coarser one its creator asks for. A served value is world
+time rounded down to the precision and raised by an atomic maximum, so it never goes back;
 the page word is raised by a compare-and-swap loop in `wost`. `Uptime` serves the same value, and a
 `Timer` deadline is a multiple of the precision. The page is refreshed before every return to ring
 3, and while a thread of the world runs the scheduler arms its alarm at least every max(precision,
 1 ms), so a program spinning in ring 3 sees time advance. The cost is one timer interrupt per
 millisecond on a processor running such a thread, and none while no world thread runs. Spawn takes
-the clock as a value; today every process gets the one root clock, `timepage::root`.
+the target world's clock (`registry::clock`) and maps that world's page.
 
 ## 7. Processes and the loader
 
@@ -770,7 +785,8 @@ this order: interrupts admitted, the boot thread on a guarded stack, NX on, `CR4
 state isolated, the clock calibrated, the random generator seeded, the service worker running, and a
 shared or paired isolation mode. It then builds the address space, loads the image, maps a one-page
 user stack at `0x0000300000000000`, maps the time page, the ring and buffer 0, creates the handle
-table with its birth handle, binds the space and publishes a thread. The shipped boot spawns into
+table with its birth handle, binds the space with its world's counter access and publishes a
+thread. The shipped boot spawns into
 the root world; `user::spawn_in` names a target world and optionally a birth endpoint the caller
 holds, which it consumes, re-homing it into the target when it lives elsewhere. Every object of the
 process is built in and charged to the target world's arena, and its handle mixer and placements

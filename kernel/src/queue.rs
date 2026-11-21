@@ -362,7 +362,7 @@ impl Queue {
             Opcode::Cancel => self.cancel(process.here, submission),
             Opcode::OpenAt => return self.open_at(process, submission),
             Opcode::Read => return self.read(process, submission),
-            Opcode::Random => self.random(submission),
+            Opcode::Random => self.random(process, submission),
             Opcode::MemoryCreate => memory::create(process, submission),
             Opcode::MemoryCopy => memory::copy(process, submission),
             Opcode::MemorySeal => memory::seal(process, submission),
@@ -424,8 +424,8 @@ impl Queue {
         }
     }
 
-    // Filled in rounds, so a refused write or an unseeded generator stops before the next one.
-    fn random(&self, submission: Submission) -> Completion {
+    // Filled in rounds from the world's stream, so a refused write stops before the next one.
+    fn random(&self, process: Process<'_, '_>, submission: Submission) -> Completion {
         let token = submission.token;
         let Some((at, len)) = ring::buffer_bounds(&submission) else {
             return refuse(token, status::BAD_BUFFER);
@@ -437,7 +437,11 @@ impl Queue {
                 break None;
             }
             let round = &mut chunk[..RANDOM_CHUNK.min(len - written)];
-            if crate::random::fill(round).is_err() {
+            if process
+                .world
+                .fill_random(&mut *process.context, round)
+                .is_err()
+            {
                 break Some(status::UNAVAILABLE);
             }
             if !self.write_data(at + written, round) {

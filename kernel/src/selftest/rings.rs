@@ -487,7 +487,10 @@ pub(super) fn an_operation_completes_after_its_deadline_and_only_once(
         return false;
     };
 
-    let submitted_at = crate::timepage::root().now_ns();
+    let Some(clock) = crate::world::root().and_then(crate::world::registry::clock) else {
+        return false;
+    };
+    let submitted_at = clock.now_ns();
     post(
         &queue,
         0,

@@ -90,6 +90,7 @@ struct Slot {
     entry: Option<(Entry, usize)>,
     starts_interruptible: bool,
     page_table: Option<AddressSpaceRoots>,
+    counter: cpu::CounterAccess,
     thread_base: CanonicalAddress,
 }
 
@@ -100,6 +101,7 @@ impl Slot {
         entry: None,
         starts_interruptible: false,
         page_table: None,
+        counter: cpu::CounterAccess::Trapped,
         thread_base: CanonicalAddress::ZERO,
     };
 }
@@ -259,6 +261,7 @@ pub fn fabricate(slot: usize, entry: Entry, argument: usize) -> Result<(), TaskE
         entry: Some((entry, argument)),
         starts_interruptible,
         page_table: None,
+        counter: cpu::CounterAccess::Trapped,
         thread_base: CanonicalAddress::ZERO,
     };
     Ok(())
@@ -397,6 +400,7 @@ fn prepare(slot: usize, leaving: State) -> Result<(*mut u64, u64), TaskError> {
     }
 
     switch_thread_base(&mut table, current, slot);
+    cpu::set_counter_access(table.slots[slot].counter);
 
     let contexts = CONTEXTS.as_mut_ptr().cast::<u64>();
     let save = contexts.wrapping_add(current);
@@ -448,6 +452,7 @@ fn switch_thread_base(table: &mut Table, current: usize, slot: usize) {
 
 pub fn bind_address_space(slot: usize, binding: Binding) -> Result<Bound, (TaskError, Binding)> {
     let roots = binding.roots();
+    let counter = binding.counter();
     let saved = interrupt::disable();
     let mut table = TABLE.lock_leaf();
     let outcome = if slot >= table.count {
@@ -460,6 +465,7 @@ pub fn bind_address_space(slot: usize, binding: Binding) -> Result<Bound, (TaskE
         Err(TaskError::Current(slot))
     } else {
         table.slots[slot].page_table = Some(roots);
+        table.slots[slot].counter = counter;
         Ok(())
     };
     drop(table);

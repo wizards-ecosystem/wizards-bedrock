@@ -1,4 +1,3 @@
-use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use native_abi::timepage::{Constants, NOW_NS, mode};
@@ -20,33 +19,33 @@ const FIRST_GENERATION: u64 = 1;
 // The two halves of `NOW_NS`, the only words written after the page is mapped.
 type PageWords = SharedRing<2>;
 
+// One per registry entry: started when its world is prepared and stopped before its arena goes.
 #[derive(Debug)]
 pub(crate) struct WorldClock {
     // Host time at which this world's time is zero, so a world never learns host uptime.
     origin_ns: AtomicU64,
-    precision_ns: u64,
+    precision_ns: AtomicU64,
     served_ns: AtomicU64,
-    page: SpinLock<Leaf, Option<Arc<PageWords>>>,
-}
-
-static ROOT: WorldClock = WorldClock::new(PRECISION_NS);
-
-pub(crate) fn root() -> &'static WorldClock {
-    &ROOT
+    page: SpinLock<Leaf, Option<PageWords>>,
 }
 
 impl WorldClock {
-    const fn new(precision_ns: u64) -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             origin_ns: AtomicU64::new(0),
-            precision_ns,
+            precision_ns: AtomicU64::new(PRECISION_NS),
             served_ns: AtomicU64::new(0),
             page: SpinLock::new(None),
         }
     }
 
-    // The page is a frame of the world it serves.
-    pub(crate) fn start(&self, frame: ArenaFrame, home: ArenaFrame) -> Result<(), Error> {
+    // The page is a frame of the world it serves, and its time starts at 0.
+    pub(crate) fn start(
+        &self,
+        precision_ns: u64,
+        frame: ArenaFrame,
+        home: ArenaFrame,
+    ) -> Result<(), Error> {
         let layout = SharedLayout::new(PAGE_SIZE as usize, [NOW_NS, NOW_NS + 4])
             .map_err(|_| Error::Absent)?;
         let mut page = frame
@@ -62,23 +61,31 @@ impl WorldClock {
         let constants = Constants {
             page_bytes: PAGE_SIZE as u32,
             mode,
-            precision_ns: self.precision_ns,
+            precision_ns,
             generation: FIRST_GENERATION,
         };
         write(&mut page, 0, &constants.encode());
 
+        self.precision_ns.store(precision_ns, Ordering::Release);
+        self.served_ns.store(0, Ordering::Release);
         self.origin_ns.store(time::now_ns(), Ordering::Release);
-        *self.page.lock_leaf() = Some(Arc::new(page));
+        *self.page.lock_leaf() = Some(page);
         Ok(())
+    }
+
+    // The world's frames go back once every space that mapped the page has dropped it.
+    pub(crate) fn stop(&self) {
+        drop(self.page.lock_leaf().take());
     }
 
     // Rounded down to the precision and raised by a maximum, so no reader sees time go back.
     pub(crate) fn now_ns(&self) -> u64 {
+        let precision = self.precision_ns();
         let world = self.to_world_ns(time::now_ns());
-        let rounded = world - world % self.precision_ns;
+        let rounded = world - world % precision;
         let page = self.page.lock_leaf();
         let Some(page) = page.as_ref() else {
-            return 0;
+            return self.served_ns.load(Ordering::Acquire);
         };
         let served = self
             .served_ns
@@ -93,10 +100,9 @@ impl WorldClock {
 
     // A deadline `after_ns` past the served time, rounded up so it is itself a served value.
     pub(crate) fn deadline_after(&self, after_ns: u64) -> u64 {
+        let precision = self.precision_ns();
         let wanted = self.now_ns().saturating_add(after_ns);
-        wanted
-            .div_ceil(self.precision_ns)
-            .saturating_mul(self.precision_ns)
+        wanted.div_ceil(precision).saturating_mul(precision)
     }
 
     pub(crate) fn to_host_ns(&self, world_ns: u64) -> u64 {
@@ -108,17 +114,16 @@ impl WorldClock {
     }
 
     pub(crate) fn refresh_interval_ns(&self) -> u64 {
-        self.precision_ns.max(MIN_REFRESH_NS)
+        self.precision_ns().max(MIN_REFRESH_NS)
     }
 
-    #[cfg(feature = "selftest")]
     pub(crate) fn precision_ns(&self) -> u64 {
-        self.precision_ns
+        self.precision_ns.load(Ordering::Acquire)
     }
 
     // A space keeps its own reference, so the page outlives every leaf naming it.
     pub(crate) fn frame(&self) -> Option<SharedFrame> {
-        self.page.lock_leaf().as_ref().map(|page| page.frame())
+        self.page.lock_leaf().as_ref().map(PageWords::frame)
     }
 
     #[cfg(feature = "selftest")]

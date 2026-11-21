@@ -202,9 +202,10 @@ Phase 7:
 - Threads are capped by a 32-slot task table and a 16-slot stack arena, and one `Binding` serves
   one thread (`kernel/src/thread.rs`, `wost/src/arch/x86_64/task.rs`). Processes need many threads
   per root.
-- Each process has one fixed ring, timers expire only on kernel entry, and the time page is global
-  (`kernel/src/queue.rs`, `kernel/src/timepage.rs`): every process reads the one root world clock.
-  Time needs a clock per world, the recorded mode and the raw time right.
+- Each process has one fixed ring and timers expire only on kernel entry (`kernel/src/queue.rs`).
+  Each world has its own clock page, precision, raw time right and random stream
+  (`kernel/src/timepage.rs`, `kernel/src/world.rs`). Time still needs the recorded mode, which
+  needs the log.
 - Channels carry messages and moved handles between endpoints in one world or across worlds,
   re-homing a moved endpoint into its reader's world (`kernel/src/channel.rs`), and a ring
   `ChannelCall` is answered once by a single-use reply right (`kernel/src/queue/call.rs`). Only the

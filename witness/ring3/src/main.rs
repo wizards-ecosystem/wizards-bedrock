@@ -6,12 +6,12 @@
 use native_abi::ring::{Completion, Opcode, Submission, flags, status};
 use native_abi::witness::behaviour::{
     BACKDOOR, CALLS, CHANNELS, DUPLICATE, ECHO, FAULT, INVALID_RETURN_FLAGS, INVALID_RETURN_STACK,
-    MEMORY, PROBE, READ_COUNTER, READ_KERNEL, RING_WAIT, SYSCALL, THREAD_BASE,
+    MEMORY, PROBE, READ_COUNTER, READ_KERNEL, RING_WAIT, SERVED, SYSCALL, THREAD_BASE,
 };
 use native_abi::witness::calls::SERVER;
 use native_abi::witness::channels::READER;
-use native_abi::witness::{self, AGREED};
-use native_abi::{Call, Rights, error, limits, message};
+use native_abi::witness::{self, AGREED, DRAWN};
+use native_abi::{Call, Rights, error, limits, message, timepage};
 use witness_rt::{Data, Entry, Ring, fault_with};
 
 witness_rt::entry!(behave);
@@ -67,6 +67,8 @@ enum Failure {
     SpentReplyAccepted = 32,
     NotAbandoned = 33,
     QueuedCallNotClosed = 34,
+    Imprecise = 35,
+    NotDrawn = 36,
 }
 
 fn behave(entry: &Entry) -> u64 {
@@ -100,8 +102,44 @@ fn run(entry: &Entry) -> Result<(), Failure> {
         BACKDOOR => witness_rt::probe_backdoor(),
         CHANNELS => channels(entry),
         CALLS => calls(entry),
+        SERVED => served(entry),
         _ => Err(Failure::UnknownBehaviour),
     }
+}
+
+// Upper bound on `Uptime` calls while world time is still 0 at the precision the operand names.
+const UPTIME_POLLS: u32 = 1_000_000;
+
+// The page and `Uptime` keep the world's precision, and the exit carries one draw of its stream.
+fn served(entry: &Entry) -> Result<(), Failure> {
+    let precision = entry.operand();
+    if witness_rt::time_word(entry, timepage::constants::PRECISION_NS) != precision {
+        return Err(Failure::Imprecise);
+    }
+    let mut ring = Session::open(entry)?;
+    let mut uptime = 0;
+    for _ in 0..UPTIME_POLLS {
+        uptime = ring
+            .expect(Submission::simple(Opcode::Uptime, TOKEN, 0), status::OK)?
+            .value;
+        if uptime != 0 {
+            break;
+        }
+    }
+    if uptime == 0 || !uptime.is_multiple_of(precision) {
+        return Err(Failure::Imprecise);
+    }
+    let draw = Submission {
+        length: 8,
+        ..Submission::simple(Opcode::Random, TOKEN, 0)
+    };
+    if ring.expect(draw, status::OK)?.value != 8 {
+        return Err(Failure::NotDrawn);
+    }
+    let data = Data::take(entry).ok_or(Failure::DataTaken)?;
+    let mut bytes = [0u8; 8];
+    data.read(0, &mut bytes);
+    witness_rt::exit(u64::from_le_bytes(bytes) | DRAWN)
 }
 
 // An unserved call is answered, not dropped, and the program keeps running.

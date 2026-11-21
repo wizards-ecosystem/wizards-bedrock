@@ -1,16 +1,28 @@
 use core::hint::spin_loop;
 
+use boot_record::{Exit, Fault, Record};
+use native_abi::witness::DRAWN;
+use native_abi::witness::behaviour::{READ_COUNTER, SERVED};
+use world_tree::NodeRef;
+use wost::arch::current::cpu::CounterAccess;
 use wost::arch::current::paging::{MapError, UserAccess};
 use wost::sync::{Leaf, SpinLock};
 use x86_paging::{Flags, PAGE_SIZE};
+use x86_tables::exception;
 
 use super::address_spaces::{root_earmark, user_space};
+use super::processes::last_rites_for;
+use super::worlds;
 use crate::thread::ThreadContext;
-use crate::time;
-use crate::timepage::{self, WorldClock};
+use crate::timepage::WorldClock;
+use crate::world::{self, Time, registry};
+use crate::{time, user};
 
 // The test space is its own, so the page may go anywhere in the user half.
 const TIME: u64 = 0x0000_1000_0000_0000;
+
+// Enough of each colour for one witness at a time.
+const WORLD_FRAMES: u32 = 128;
 
 pub(super) fn spins_until(attempts: u32, done: impl Fn() -> bool) -> bool {
     (0..attempts).any(|_| {
@@ -19,10 +31,81 @@ pub(super) fn spins_until(attempts: u32, done: impl Fn() -> bool) -> bool {
     })
 }
 
+// Siblings with different precisions, one granted the raw time right: only the other's `rdtsc`
+// faults, each program reads its own world's precision, and the two draws differ.
+pub(super) fn sibling_worlds_keep_their_own_clock_and_randomness(
+    context: &mut ThreadContext,
+) -> bool {
+    const TRAPPED: Time = Time {
+        precision_ns: 2 * time::NANOSECONDS_PER_MS,
+        counter: CounterAccess::Trapped,
+    };
+    const RAW: Time = Time {
+        precision_ns: 5 * time::NANOSECONDS_PER_MS,
+        counter: CounterAccess::Raw,
+    };
+
+    let Some(root) = world::root() else {
+        return false;
+    };
+    let (Some(trapped), Some(raw)) = (
+        worlds::timed(context, root, WORLD_FRAMES, TRAPPED),
+        worlds::timed(context, root, WORLD_FRAMES, RAW),
+    ) else {
+        return false;
+    };
+    let (Some((held, _)), Some((trapped_reserved, _)), Some((raw_reserved, _))) = (
+        world::inspect(root),
+        world::inspect(trapped),
+        world::inspect(raw),
+    ) else {
+        return false;
+    };
+    let trapped_run = served_in(context, trapped, TRAPPED.precision_ns);
+    let raw_run = served_in(context, raw, RAW.precision_ns);
+    let gone = worlds::killed(context, trapped, root, held + trapped_reserved)
+        && worlds::killed(context, raw, root, held + trapped_reserved + raw_reserved);
+    let (Some((trapped_vector, trapped_draw)), Some((raw_vector, raw_draw))) =
+        (trapped_run, raw_run)
+    else {
+        return false;
+    };
+    gone && trapped_vector == u64::from(exception::GENERAL_PROTECTION)
+        && raw_vector == u64::from(exception::INVALID_OPCODE)
+        && trapped_draw & DRAWN != 0
+        && raw_draw & DRAWN != 0
+        && trapped_draw != raw_draw
+}
+
+// The vector that ended a counter read, and the draw of a program that checked its precision.
+fn served_in(context: &mut ThreadContext, world: NodeRef, precision_ns: u64) -> Option<(u64, u64)> {
+    let counter = user::spawn_in(context, world, None, "user-rdtsc", 12, READ_COUNTER, 0).ok()?;
+    let Some(Record::Fault(Fault { vector, .. })) = last_rites_for(&counter, 2_000)?.ending else {
+        return None;
+    };
+    drop(counter);
+    let served = user::spawn_in(
+        context,
+        world,
+        None,
+        "user-served",
+        20,
+        SERVED,
+        precision_ns,
+    )
+    .ok()?;
+    let Some(Record::Exit(Exit { status: draw })) = last_rites_for(&served, 2_000)?.ending else {
+        return None;
+    };
+    Some((vector, draw))
+}
+
 pub(super) fn a_program_reads_served_time_from_a_page_it_cannot_write(
     context: &mut ThreadContext,
 ) -> bool {
-    let clock = timepage::root();
+    let Some(clock) = world::root().and_then(registry::clock) else {
+        return false;
+    };
     let tables = u32::try_from(x86_paging::tables_for(1)).ok();
     let (Some(mut space), Some(page), Some(mut tables)) = (
         user_space(context),

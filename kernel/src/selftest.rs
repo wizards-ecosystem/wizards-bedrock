@@ -35,8 +35,8 @@ const CHECKS: &[Check] = &[
         processes::a_faulting_program_dies_alone,
     ),
     (
-        "a direct clock read retires its program",
-        processes::a_direct_clock_read_retires_its_program,
+        "sibling worlds keep their own clock and randomness",
+        clocks::sibling_worlds_keep_their_own_clock_and_randomness,
     ),
     (
         "a program cannot reach the hypervisor backdoor",

@@ -65,15 +65,6 @@ pub(super) fn a_faulting_program_dies_alone(context: &mut ThreadContext) -> bool
     this_child && it_was_the_ud2 && in_user_memory && observed
 }
 
-// `rax` still holds the argument only if the trapped `rdtsc` never retired.
-pub(super) fn a_direct_clock_read_retires_its_program(context: &mut ThreadContext) -> bool {
-    retired_by_protection_fault(
-        context,
-        user::spawn_reading_the_counter,
-        behaviour::READ_COUNTER,
-    )
-}
-
 // At IOPL 0 with no I/O bitmap the `in` faults; a hypervisor that served it would replace `rax`.
 pub(super) fn a_program_cannot_reach_the_hypervisor_backdoor(context: &mut ThreadContext) -> bool {
     retired_by_protection_fault(

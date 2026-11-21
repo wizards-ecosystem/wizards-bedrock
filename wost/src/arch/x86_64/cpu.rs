@@ -307,6 +307,24 @@ pub fn counter_is_trapped() -> bool {
     read_cr4() & CR4_TSD != 0
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CounterAccess {
+    Trapped,
+    Raw,
+}
+
+// Called on every switch, so `CR4.TSD` follows the thread about to run; written only on a change.
+pub(crate) fn set_counter_access(access: CounterAccess) {
+    let cr4 = read_cr4();
+    let wanted = match access {
+        CounterAccess::Trapped => cr4 | CR4_TSD,
+        CounterAccess::Raw => cr4 & !CR4_TSD,
+    };
+    if wanted != cr4 {
+        write_cr4(wanted);
+    }
+}
+
 fn has_tsc_aux() -> bool {
     const RDTSCP: u32 = 1 << 27;
     const RDPID: u32 = 1 << 22;
@@ -766,7 +784,7 @@ fn add_cr4(additions: Cr4Additions) {
 
 fn write_cr4(value: u64) {
     // SAFETY: private to this module, whose callers pass the value just read with only
-    // `Cr4Additions` bits, `TSD` or a supported `MCE` added, or `DE`, `PCE` and `FSGSBASE`
+    // `Cr4Additions` bits, `TSD` or a supported `MCE` added, or `TSD`, `DE`, `PCE` and `FSGSBASE`
     // cleared; paging-mode bits are written back unchanged and no memory changes, and the asm
     // stays a memory barrier because these bits change which accesses the processor permits.
     unsafe {

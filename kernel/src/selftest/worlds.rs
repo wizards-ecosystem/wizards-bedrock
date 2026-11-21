@@ -1,9 +1,10 @@
 use world_tree::{Admission, Limits, NodeRef};
+use wost::arch::current::cpu::CounterAccess;
 use wost::mm::pool::{self, ArenaId, FrameKind};
 
 use super::threads::yields_until;
 use crate::thread::ThreadContext;
-use crate::world::{self, Request, registry};
+use crate::world::{self, Request, Time, registry};
 
 const PER_COLOUR: u32 = 8;
 
@@ -15,8 +16,14 @@ const LIMITS: Limits = Limits {
 
 const SAMPLES: u32 = 4;
 
+// The parent's precision, and no raw time right.
+const INHERITED: Time = Time {
+    precision_ns: 0,
+    counter: CounterAccess::Trapped,
+};
+
 fn child_of(context: &mut ThreadContext, parent: NodeRef, mask: u64) -> Option<NodeRef> {
-    child_with(context, parent, mask, PER_COLOUR)
+    child_with(context, parent, mask, PER_COLOUR, INHERITED)
 }
 
 // A child of the whole parent's mask that can hold a few programs' handles.
@@ -25,7 +32,16 @@ pub(super) fn child(
     parent: NodeRef,
     per_colour: u32,
 ) -> Option<NodeRef> {
-    child_with(context, parent, 0, per_colour)
+    child_with(context, parent, 0, per_colour, INHERITED)
+}
+
+pub(super) fn timed(
+    context: &mut ThreadContext,
+    parent: NodeRef,
+    per_colour: u32,
+    time: Time,
+) -> Option<NodeRef> {
+    child_with(context, parent, 0, per_colour, time)
 }
 
 fn child_with(
@@ -33,11 +49,13 @@ fn child_with(
     parent: NodeRef,
     mask: u64,
     per_colour: u32,
+    time: Time,
 ) -> Option<NodeRef> {
     let request = Request {
         per_colour,
         mask,
         limits: LIMITS,
+        time,
     };
     world::create(context, parent, request).ok()
 }

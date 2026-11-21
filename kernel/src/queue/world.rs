@@ -1,11 +1,12 @@
 use native_abi::Rights;
 use native_abi::ring::{Completion, Submission, status};
-use native_abi::world::{BYTES, VERSION, offset};
+use native_abi::world::{BYTES, VERSION, flags, offset};
 use world_tree::{Limits, NodeRef};
+use wost::arch::current::cpu::CounterAccess;
 
 use super::{PendingKind, Process, Queue, answer, refuse, unresolved};
 use crate::object::ObjectRef;
-use crate::world::{KillRefusal, Killer, Refusal, Request};
+use crate::world::{KillRefusal, Killer, Refusal, Request, Time};
 
 const RIGHTS: Rights = Rights::DUPLICATE
     .union(Rights::TRANSFER)
@@ -30,16 +31,25 @@ pub(super) fn create(
     }
     let word =
         |at: usize| u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
-    if word(offset::VERSION) != VERSION || word(offset::RESERVED) != 0 {
+    let double = |at: usize| u64::from(word(at)) | u64::from(word(at + 4)) << 32;
+    if word(offset::VERSION) != VERSION || word(offset::FLAGS) & !flags::RAW_TIME != 0 {
         return refuse(token, status::DENIED);
     }
     let request = Request {
         per_colour: word(offset::FRAMES_PER_COLOUR),
-        mask: u64::from(word(offset::COLOUR_MASK)) | u64::from(word(offset::COLOUR_MASK + 4)) << 32,
+        mask: double(offset::COLOUR_MASK),
         limits: Limits {
             descendants: word(offset::DESCENDANTS),
             threads: word(offset::THREADS),
             handles: word(offset::HANDLES),
+        },
+        time: Time {
+            precision_ns: double(offset::PRECISION_NS),
+            counter: if word(offset::FLAGS) & flags::RAW_TIME == 0 {
+                CounterAccess::Trapped
+            } else {
+                CounterAccess::Raw
+            },
         },
     };
     let Ok(reservation) = process.table_ref.reserve_slot() else {
@@ -49,6 +59,7 @@ pub(super) fn create(
         Ok(node) => node,
         Err(Refusal::NoMemory) => return refuse(token, status::NO_MEMORY),
         Err(Refusal::Limit) => return refuse(token, status::LIMIT),
+        Err(Refusal::Denied) => return refuse(token, status::DENIED),
         Err(Refusal::Dead) => return refuse(token, status::DEAD),
     };
     match reservation.install(process.context, ObjectRef::World(node), RIGHTS, RIGHTS) {

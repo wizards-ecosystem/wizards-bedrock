@@ -5,11 +5,12 @@ mod teardown;
 use core::fmt;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use entropy::NotReady;
+use entropy::{Local, NotReady};
 use handle_space::Mixer;
 use world_tree::{Budgets, Descendants, Limits, NodeRef, Path, WorldState};
+use wost::arch::current::cpu::CounterAccess;
 use wost::mm;
-use wost::mm::pool::{self, ArenaId, ColourMask, FrameKind, Refused};
+use wost::mm::pool::{self, ArenaId, ColourMask, Refused};
 use wost::sync::{Leaf, SpinLock};
 
 use crate::arena::Pool;
@@ -50,6 +51,13 @@ pub(crate) struct Killer {
     pub(crate) id: u64,
 }
 
+// A world's clock precision and its access to the counter, fixed when the world is made.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct Time {
+    pub(crate) precision_ns: u64,
+    pub(crate) counter: CounterAccess,
+}
+
 // Children join and leave `descendants` and debit `budgets` only under this lock.
 #[derive(Debug)]
 struct Life {
@@ -60,6 +68,9 @@ struct Life {
 pub(crate) struct World {
     arena: ArenaId,
     key: WorldKey,
+    // Keyed from the kernel generator, never from `key`, so the stored key reveals no output.
+    stream: SpinLock<rank::Object, Local>,
+    counter: CounterAccess,
     path: Path,
     mask: ColourMask,
     limits: Limits,
@@ -85,10 +96,19 @@ pub(crate) type ObservationPool = Pool<Observation, 16>;
 pub(crate) type MemoryPool = Pool<MemoryObject, 16>;
 
 impl World {
-    fn new(arena: ArenaId, key: &WorldKey, path: Path, mask: ColourMask, limits: Limits) -> Self {
+    fn new(
+        arena: ArenaId,
+        key: &WorldKey,
+        counter: CounterAccess,
+        path: Path,
+        mask: ColourMask,
+        limits: Limits,
+    ) -> Self {
         Self {
             arena,
             key: WorldKey(key.0),
+            stream: SpinLock::new(Local::new(mm::wipe)),
+            counter,
             path,
             mask,
             limits,
@@ -127,6 +147,19 @@ impl World {
 
     pub(crate) const fn handles(&self) -> u32 {
         self.limits.handles
+    }
+
+    pub(crate) const fn counter(&self) -> CounterAccess {
+        self.counter
+    }
+
+    // The key that made each output is replaced before the output returns.
+    pub(crate) fn fill_random(
+        &self,
+        context: &mut ThreadContext,
+        out: &mut [u8],
+    ) -> Result<(), NotReady> {
+        random::fill_stream(&mut self.stream.lock(context), out)
     }
 
     // Every object page goes back to the arena; a live object here outlived each of its holders.
@@ -202,8 +235,21 @@ fn create_root(context: &mut ThreadContext) -> Result<NodeRef, RootRefusal> {
         threads: thread::CAPACITY as u32,
         handles: ROOT_HANDLES,
     };
-    let root = registry::prepare(context, arena, &key, Path::ROOT, pool::full_mask(), limits)
-        .map_err(RootRefusal::Arena)?;
+    // Only the root is given the raw time right; every other world inherits it from a holder.
+    let time = Time {
+        precision_ns: timepage::PRECISION_NS,
+        counter: CounterAccess::Raw,
+    };
+    let root = registry::prepare(
+        context,
+        arena,
+        &key,
+        Path::ROOT,
+        pool::full_mask(),
+        limits,
+        time,
+    )
+    .map_err(RootRefusal::Arena)?;
     registry::publish(root);
     *ROOT.lock_leaf() = Some(root);
     Ok(root)
@@ -224,31 +270,14 @@ pub(crate) fn start_root(context: &mut ThreadContext) {
         );
     };
     info!(
-        "world: root world {} reserves {} frames, its record uses {}",
+        "world: root world {} reserves {} frames, its record and time page use {}",
         root.node,
         usage.reserved(),
         usage.used()
     );
-    publish_time_page(context, root);
-}
-
-// A program reading its time page must find the mode word, not a page fault.
-fn publish_time_page(context: &mut ThreadContext, root: NodeRef) {
-    let frames = registry::hold(root)
-        .and_then(|world| pool::earmark(context, world.arena, 2).ok())
-        .and_then(|mut earmark| {
-            Some((
-                earmark.take(FrameKind::ArenaData)?,
-                earmark.take(FrameKind::ArenaObject)?,
-            ))
-        });
-    match frames.map(|(frame, home)| timepage::root().start(frame, home)) {
-        Some(Ok(())) => info!(
-            "time: world clock page v{}, world time from 0 in steps of {} ns",
-            native_abi::timepage::VERSION,
-            timepage::PRECISION_NS
-        ),
-        Some(Err(reason)) => warn!("time: {reason}; ring 3 stays closed"),
-        None => warn!("time: the root world has no frame for its time page; ring 3 stays closed"),
-    }
+    info!(
+        "time: world clock page v{}, world time from 0 in steps of {} ns",
+        native_abi::timepage::VERSION,
+        timepage::PRECISION_NS
+    );
 }

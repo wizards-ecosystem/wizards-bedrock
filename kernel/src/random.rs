@@ -10,7 +10,7 @@ use crate::time;
 // Sixteen times the four healthy words a first seeding needs.
 const SEED_WORDS: u32 = 64;
 
-// One `Local` today; each processor gets its own when there is more than one.
+// The kernel's own `Local` draws world keys; each processor gets one once there are several.
 #[derive(Debug)]
 struct Generator {
     base: Base,
@@ -97,4 +97,11 @@ pub(crate) fn fill(out: &mut [u8]) -> Result<(), NotReady> {
     let mut guard = GENERATOR.lock_leaf();
     let generator = guard.as_mut().ok_or(NotReady)?;
     generator.local.fill(&mut generator.base, out)
+}
+
+// A world's own stream, keyed from `Base` on its first draw and again after every reseed.
+pub(crate) fn fill_stream(stream: &mut Local, out: &mut [u8]) -> Result<(), NotReady> {
+    let mut guard = GENERATOR.lock_leaf();
+    let generator = guard.as_mut().ok_or(NotReady)?;
+    stream.fill(&mut generator.base, out)
 }

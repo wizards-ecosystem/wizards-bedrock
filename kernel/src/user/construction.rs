@@ -217,7 +217,7 @@ fn build(
         argument,
         operand,
     } = named;
-    let clock = crate::timepage::root();
+    let clock = registry::clock(world_ref).ok_or(SpawnError::NoWorld)?;
     let Layout {
         entry,
         stack,
@@ -264,7 +264,8 @@ fn build(
     let binding = construction
         .address()?
         .bind()
-        .map_err(SpawnError::NotBindable)?;
+        .map_err(SpawnError::NotBindable)?
+        .with_counter(world.counter());
 
     let launch = Launch {
         entry,

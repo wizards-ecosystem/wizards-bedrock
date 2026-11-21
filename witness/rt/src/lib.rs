@@ -29,6 +29,8 @@ const BACKDOOR_PORT: u16 = 0x5658;
 
 const BACKDOOR_GET_TIME: u64 = 0x17;
 
+const TIME_PAGE_BYTES: usize = 4096;
+
 // Only `Entry::read` makes one, so the ring address in it is the kernel's.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Entry {
@@ -218,6 +220,18 @@ pub fn thread_word() -> u64 {
         );
     }
     word
+}
+
+// An aligned `u64` of the time page, which the kernel maps read-only for the program's life.
+pub fn time_word(entry: &Entry, offset: usize) -> u64 {
+    assert!(
+        offset.is_multiple_of(8) && offset < TIME_PAGE_BYTES,
+        "a time-page read left the page"
+    );
+    let word = ptr::with_exposed_provenance::<u64>(entry.time as usize + offset);
+    // SAFETY: only `Entry::read` makes an entry, so `time` is the page the kernel mapped readable,
+    // and the aligned word lies inside it.
+    unsafe { word.read_volatile() }
 }
 
 // `rdtsc` with the marker in `rax`, so a trapped read leaves the marker for the fault record.

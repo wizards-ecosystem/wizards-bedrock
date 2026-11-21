@@ -3,22 +3,27 @@ use world_tree::{
 };
 use wost::mm::pool::{self, ArenaId, ColourMask, Refused};
 
-use super::{World, WorldKey, registry, teardown};
+use wost::arch::current::cpu::CounterAccess;
+
+use super::{Time, World, WorldKey, registry, teardown};
 use crate::random;
 use crate::thread::ThreadContext;
 
-// What a parent gives a child: frames of each colour in the mask (0 for the parent's) and limits.
+// What a parent gives a child: frames of each colour in the mask (0 for the parent's), limits,
+// and a precision (0 for the parent's) and counter access no wider than its own.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Request {
     pub(crate) per_colour: u32,
     pub(crate) mask: u64,
     pub(crate) limits: Limits,
+    pub(crate) time: Time,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Refusal {
     NoMemory,
     Limit,
+    Denied,
     Dead,
 }
 
@@ -36,6 +41,7 @@ struct Child {
     parent: NodeRef,
     path: Path,
     mask: ColourMask,
+    time: Time,
     request: Request,
     arena: Option<ArenaId>,
     node: Option<NodeRef>,
@@ -47,14 +53,27 @@ pub(crate) fn create(
     parent: NodeRef,
     request: Request,
 ) -> Result<NodeRef, Refusal> {
-    let (path, mask) = {
+    let (path, mask, time) = {
         let world = registry::pin(parent, Admission::Live).ok_or(Refusal::Dead)?;
         let path = world.path.child(parent).map_err(|_| Refusal::Limit)?;
         let mask = match request.mask {
             0 => world.mask,
             bits => pool::colour_mask(bits).ok_or(Refusal::Limit)?,
         };
-        (path, mask)
+        let coarsest = registry::clock(parent).ok_or(Refusal::Dead)?.precision_ns();
+        let precision_ns = match request.time.precision_ns {
+            0 => coarsest,
+            finer if finer < coarsest => return Err(Refusal::Limit),
+            precision => precision,
+        };
+        if request.time.counter == CounterAccess::Raw && world.counter != CounterAccess::Raw {
+            return Err(Refusal::Denied);
+        }
+        let time = Time {
+            precision_ns,
+            counter: request.time.counter,
+        };
+        (path, mask, time)
     };
     let Some(mut creation) = Creation::new(&path) else {
         panic!("a child path is never the root path");
@@ -63,6 +82,7 @@ pub(crate) fn create(
         parent,
         path,
         mask,
+        time,
         request,
         arena: None,
         node: None,
@@ -151,6 +171,7 @@ impl Child {
             self.path,
             self.mask,
             self.request.limits,
+            self.time,
         ) {
             Ok(node) => {
                 self.node = Some(node);

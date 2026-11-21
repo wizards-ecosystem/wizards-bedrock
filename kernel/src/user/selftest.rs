@@ -1,6 +1,6 @@
 use native_abi::witness::behaviour::{
     BACKDOOR, CALLS, CHANNELS, DUPLICATE, ECHO, FAULT, INVALID_RETURN_FLAGS, INVALID_RETURN_STACK,
-    MEMORY, PROBE, READ_COUNTER, READ_KERNEL, RING_WAIT, SYSCALL, THREAD_BASE,
+    MEMORY, PROBE, READ_KERNEL, RING_WAIT, SYSCALL, THREAD_BASE,
 };
 use wost::arch::current::usercopy;
 
@@ -44,12 +44,6 @@ pub(crate) fn spawn_with_invalid_return_flags(
     context: &mut ThreadContext,
 ) -> Result<Spawned, SpawnError> {
     spawn(context, "user-invalid-flags", 11, INVALID_RETURN_FLAGS, 0)
-}
-
-pub(crate) fn spawn_reading_the_counter(
-    context: &mut ThreadContext,
-) -> Result<Spawned, SpawnError> {
-    spawn(context, "user-rdtsc", 12, READ_COUNTER, 0)
 }
 
 // The operand is the kernel-half address the witness reads from ring 3.

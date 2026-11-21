@@ -318,7 +318,10 @@ impl AddressSpace {
             }
         }
         self.bound = true;
-        Ok(Binding { roots })
+        Ok(Binding {
+            roots,
+            counter: cpu::CounterAccess::Trapped,
+        })
     }
 }
 
@@ -347,10 +350,21 @@ pub(crate) fn force_unlock(panic: &crate::panic::PanicToken) {
 #[derive(Debug)]
 pub struct Binding {
     roots: AddressSpaceRoots,
+    counter: cpu::CounterAccess,
 }
 
 impl Binding {
     pub(crate) const fn roots(&self) -> AddressSpaceRoots {
         self.roots
+    }
+
+    pub(crate) const fn counter(&self) -> cpu::CounterAccess {
+        self.counter
+    }
+
+    // The access every thread bound to this space has to the counter while it runs.
+    #[must_use]
+    pub const fn with_counter(self, counter: cpu::CounterAccess) -> Self {
+        Self { counter, ..self }
     }
 }

@@ -71,13 +71,8 @@ impl TestQueue {
         let frames = QueueRef::frames_for()?;
         let mut earmark = wost::mm::pool::earmark(context, world.arena(), frames).ok()?;
         let ring = SharedQueue::new(&mut earmark)?;
-        let queue = QueueRef::create(
-            &mut earmark,
-            world_ref,
-            &world,
-            crate::timepage::root(),
-            ring,
-        );
+        let clock = registry::clock(world_ref)?;
+        let queue = QueueRef::create(&mut earmark, world_ref, &world, clock, ring);
         Some(Self {
             queue,
             held: queue.hold(),
