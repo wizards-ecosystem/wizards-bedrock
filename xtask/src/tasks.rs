@@ -8,11 +8,11 @@ use crate::image::{self, Kernel};
 use crate::paths::{self, Paths, RunDirectory};
 use crate::{qemu, supply_chain, vendor};
 
-const SELFTEST_TIMEOUT: Duration = Duration::from_secs(60);
+const SELFTEST_QUIET: Duration = Duration::from_secs(24);
 // Cargo's `xtask` profile builds the running executable here, and Windows cannot delete it.
 const OWN_PROFILE_DIRECTORY: &str = "xtask";
 // A debug kernel runs several times slower under emulation.
-const DEBUG_SELFTEST_TIMEOUT: Duration = Duration::from_secs(150);
+const DEBUG_SELFTEST_QUIET: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Packages {
@@ -89,11 +89,11 @@ pub(crate) fn test(paths: &Paths) -> Result<()> {
 pub(crate) fn test_boot(paths: &Paths, profile: Profile) -> Result<()> {
     let run = RunDirectory::create(paths)?;
     image::build(paths, profile, Kernel::SelfTest, &run.image())?;
-    let (timeout, processors) = match profile {
-        Profile::Release => (SELFTEST_TIMEOUT, qemu::Processors::Two),
-        Profile::Dev => (DEBUG_SELFTEST_TIMEOUT, qemu::Processors::One),
+    let (quiet, processors) = match profile {
+        Profile::Release => (SELFTEST_QUIET, qemu::Processors::Two),
+        Profile::Dev => (DEBUG_SELFTEST_QUIET, qemu::Processors::One),
     };
-    qemu::run_selftest(&run, timeout, processors)
+    qemu::run_selftest(&run, quiet, processors)
 }
 
 pub(crate) fn boot_check(paths: &Paths, profile: Profile) -> Result<()> {
