@@ -5,12 +5,12 @@
 
 use native_abi::ring::{Completion, Opcode, Submission, flags, status};
 use native_abi::witness::behaviour::{
-    BACKDOOR, DUPLICATE, ECHO, FAULT, INVALID_RETURN_FLAGS, INVALID_RETURN_STACK, MEMORY, PROBE,
-    READ_COUNTER, READ_KERNEL, RING_WAIT, SYSCALL, THREAD_BASE,
+    BACKDOOR, CHANNELS, DUPLICATE, ECHO, FAULT, INVALID_RETURN_FLAGS, INVALID_RETURN_STACK, MEMORY,
+    PROBE, READ_COUNTER, READ_KERNEL, RING_WAIT, SYSCALL, THREAD_BASE,
 };
 use native_abi::witness::{self, AGREED};
-use native_abi::{Call, Rights, error, limits};
-use witness_rt::{Entry, Ring, fault_with};
+use native_abi::{Call, Rights, error, limits, message};
+use witness_rt::{Data, Entry, Ring, fault_with};
 
 witness_rt::entry!(behave);
 
@@ -49,6 +49,13 @@ enum Failure {
     BadBaseAccepted = 16,
     BaseMoved = 17,
     MemoryAnswer = 18,
+    ChannelAnswer = 19,
+    WrittenTooFew = 20,
+    RefusedHandleLost = 21,
+    MessageOutOfOrder = 22,
+    MovedHandleLost = 23,
+    ReadNotReady = 24,
+    DataTaken = 25,
 }
 
 fn behave(entry: &Entry) -> u64 {
@@ -80,6 +87,7 @@ fn run(entry: &Entry) -> Result<(), Failure> {
         SYSCALL => witness_rt::execute_syscall(SYSCALL),
         MEMORY => memory(entry),
         BACKDOOR => witness_rt::probe_backdoor(),
+        CHANNELS => channels(entry),
         _ => Err(Failure::UnknownBehaviour),
     }
 }
@@ -103,7 +111,7 @@ fn echo(entry: &Entry) -> Result<(), Failure> {
 // The entry block, not the image, supplies the authority the duplicate names.
 fn duplicate(entry: &Entry) -> Result<(), Failure> {
     let bootstrap = entry.bootstrap_handle();
-    let rights = u64::from(Rights::INSPECT.bits());
+    let rights = u64::from(Rights::READ.bits());
     let completion = exchange(
         entry,
         Submission::about(Opcode::Duplicate, TOKEN, bootstrap, rights),
@@ -217,6 +225,131 @@ fn memory(entry: &Entry) -> Result<(), Failure> {
     Ok(())
 }
 
+const WRITE_AT: usize = 0;
+const READ_AT: usize = 2400;
+const READ_ROOM: u32 = 64;
+const MOVED: Rights = Rights::TRANSFER.union(Rights::READ);
+const ENDPOINT: Rights = Rights::DUPLICATE
+    .union(Rights::TRANSFER)
+    .union(Rights::READ)
+    .union(Rights::WRITE);
+
+// Writes that each move a handle fill the inbox; the refused one keeps its handle, and the reads
+// return every committed message once, in order, each with the handle it moved.
+fn channels(entry: &Entry) -> Result<(), Failure> {
+    let mut ring = Session::open(entry)?;
+    let mut data = Data::take(entry).ok_or(Failure::DataTaken)?;
+    let created = ring.expect(
+        Submission::simple(Opcode::ChannelCreate, TOKEN, 0),
+        status::OK,
+    )?;
+    let (writer, reader) = (created.value, created.extra);
+    let mut written = 0;
+    let refused = loop {
+        let moved = ring
+            .expect(duplicate_as(entry.bootstrap_handle(), ENDPOINT), status::OK)?
+            .value;
+        compose(&mut data, written, moved);
+        let completion = ring.submit(channel(Opcode::ChannelWrite, writer, WRITE_AT))?;
+        match completion.status {
+            status::OK => written += 1,
+            status::FULL => break moved,
+            _ => return Err(Failure::ChannelAnswer),
+        }
+    };
+    if written != 16 {
+        return Err(Failure::WrittenTooFew);
+    }
+    let again = ring.submit(duplicate_as(refused, ENDPOINT))?;
+    if again.status != status::OK {
+        return Err(Failure::RefusedHandleLost);
+    }
+    ring.expect(close(again.value), status::OK)?;
+    ask_room(&mut data);
+    for sequence in 0..written {
+        let completion = ring.expect(channel(Opcode::ChannelRead, reader, READ_AT), status::OK)?;
+        if completion.value != 8 || completion.extra != 1 || payload(&data) != sequence {
+            return Err(Failure::MessageOutOfOrder);
+        }
+        let (handle, rights) = received(&data);
+        if rights != MOVED.bits() {
+            return Err(Failure::MovedHandleLost);
+        }
+        ring.expect(close(handle), status::OK)?;
+    }
+    // An empty inbox arms the read; the next write readies it and the ring wait serves it.
+    ring.publish(channel(Opcode::ChannelRead, reader, READ_AT));
+    if witness_rt::call(Call::RingEnter, 0) != 0 {
+        return Err(Failure::ReadNotReady);
+    }
+    compose(&mut data, written, refused);
+    let committed = ring.submit(channel(Opcode::ChannelWrite, writer, WRITE_AT))?;
+    if committed.status != status::OK {
+        return Err(Failure::ChannelAnswer);
+    }
+    if witness_rt::call(Call::RingWait, 0) != 1 {
+        return Err(Failure::ReadNotReady);
+    }
+    let late = ring.collect()?;
+    if late.status != status::OK || payload(&data) != written {
+        return Err(Failure::MessageOutOfOrder);
+    }
+    ring.expect(close(received(&data).0), status::OK)?;
+    ring.expect(close(writer), status::OK)?;
+    ring.expect(
+        channel(Opcode::ChannelRead, reader, READ_AT),
+        status::PEER_CLOSED,
+    )?;
+    Ok(())
+}
+
+fn compose(data: &mut Data, sequence: u64, moved: u64) {
+    let mut header = [0u8; message::ENTRIES_AT];
+    header[message::VERSION_AT..][..4].copy_from_slice(&message::VERSION.to_le_bytes());
+    header[message::BYTES..][..4].copy_from_slice(&8u32.to_le_bytes());
+    header[message::HANDLES..][..4].copy_from_slice(&1u32.to_le_bytes());
+    data.write(WRITE_AT, &header);
+    let mut entry = [0u8; message::ENTRY_BYTES];
+    entry[..8].copy_from_slice(&moved.to_le_bytes());
+    entry[8..12].copy_from_slice(&MOVED.bits().to_le_bytes());
+    data.write(WRITE_AT + message::ENTRIES_AT, &entry);
+    data.write(WRITE_AT + message::BYTES_AT, &sequence.to_le_bytes());
+}
+
+fn ask_room(data: &mut Data) {
+    let mut header = [0u8; message::ENTRIES_AT];
+    header[message::VERSION_AT..][..4].copy_from_slice(&message::VERSION.to_le_bytes());
+    header[message::BYTE_CAPACITY..][..4].copy_from_slice(&READ_ROOM.to_le_bytes());
+    header[message::HANDLE_CAPACITY..][..4].copy_from_slice(&limits::MESSAGE_HANDLES.to_le_bytes());
+    data.write(READ_AT, &header);
+}
+
+fn payload(data: &Data) -> u64 {
+    let mut bytes = [0u8; 8];
+    data.read(READ_AT + message::BYTES_AT, &mut bytes);
+    u64::from_le_bytes(bytes)
+}
+
+fn received(data: &Data) -> (u64, u32) {
+    let mut entry = [0u8; message::ENTRY_BYTES];
+    data.read(READ_AT + message::ENTRIES_AT, &mut entry);
+    let mut handle = [0u8; 8];
+    handle.copy_from_slice(&entry[..8]);
+    let rights = u32::from_le_bytes([entry[8], entry[9], entry[10], entry[11]]);
+    (u64::from_le_bytes(handle), rights)
+}
+
+const fn channel(opcode: Opcode, endpoint: u64, at: usize) -> Submission {
+    Submission {
+        at: at as u64,
+        ..Submission::about(opcode, TOKEN, endpoint, 0)
+    }
+}
+
+const fn close(handle: u64) -> Submission {
+    Submission::about(Opcode::Close, TOKEN, handle, 0)
+}
+
 // Below the kernel's placements and far above the image.
 const MAPPED_AT: u64 = limits::PLACEMENT_START / 4;
 
@@ -258,6 +391,7 @@ fn duplicate_as(handle: u64, rights: Rights) -> Submission {
 struct Session {
     ring: Ring,
     next: u32,
+    head: u32,
 }
 
 impl Session {
@@ -265,25 +399,39 @@ impl Session {
         Ok(Self {
             ring: open_ring(entry)?,
             next: 0,
+            head: 0,
         })
     }
 
     fn expect(&mut self, submission: Submission, wanted: u32) -> Result<Completion, Failure> {
-        let index = self.next;
-        self.next = index.wrapping_add(1);
-        self.ring.submit(index, submission);
-        self.ring.publish_submission_tail(self.next);
-        if witness_rt::call(Call::RingEnter, 0) != 1 {
-            return Err(Failure::NotServed);
-        }
-        if self.ring.completion_tail() != self.next {
-            return Err(Failure::NoCompletion);
-        }
-        let completion = self.ring.completion(index);
-        self.ring.release_completion_head(self.next);
+        let completion = self.submit(submission)?;
         if completion.status != wanted {
             return Err(Failure::MemoryAnswer);
         }
+        Ok(completion)
+    }
+
+    fn submit(&mut self, submission: Submission) -> Result<Completion, Failure> {
+        self.publish(submission);
+        if witness_rt::call(Call::RingEnter, 0) != 1 {
+            return Err(Failure::NotServed);
+        }
+        self.collect()
+    }
+
+    fn publish(&mut self, submission: Submission) {
+        self.ring.submit(self.next, submission);
+        self.next = self.next.wrapping_add(1);
+        self.ring.publish_submission_tail(self.next);
+    }
+
+    fn collect(&mut self) -> Result<Completion, Failure> {
+        if self.ring.completion_tail() == self.head {
+            return Err(Failure::NoCompletion);
+        }
+        let completion = self.ring.completion(self.head);
+        self.head = self.head.wrapping_add(1);
+        self.ring.release_completion_head(self.head);
         Ok(completion)
     }
 }

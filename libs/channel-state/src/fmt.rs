@@ -25,7 +25,6 @@ impl core::error::Error for CellRefusal {}
 impl fmt::Display for InboxRefusal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            Self::TooLarge => "the message exceeds 2048 bytes or 16 handles",
             Self::Full => "the inbox has no room for the message",
         })
     }

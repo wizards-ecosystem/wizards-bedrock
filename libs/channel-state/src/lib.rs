@@ -13,10 +13,7 @@ mod receivers;
 use vstd::prelude::verus_verify;
 
 pub use cell::{CallEvent, CallState, Cell, CellRefusal, GENERATION_LIMIT};
-pub use inbox::{
-    BYTES, DESCRIPTORS, Descriptor, Entry, HANDLES, Inbox, InboxRefusal, MESSAGE_BYTES,
-    MESSAGE_HANDLES, Span,
-};
+pub use inbox::{BYTES, DESCRIPTORS, Descriptor, Entry, HANDLES, Inbox, InboxRefusal, Span};
 pub use peer::{Hop, Link, Route, route};
 pub use receivers::{NotArmed, Receivers, Relink};
 

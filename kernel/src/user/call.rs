@@ -108,11 +108,14 @@ fn authority_of() -> Option<(QueueRef, TableRef)> {
 }
 
 fn wait_ring(context: &mut thread::ThreadContext) -> u64 {
-    let Some(ring) = authority_of().and_then(|(here, _)| here.hold()) else {
+    let Some((here, table)) = authority_of() else {
+        return ENOSYS;
+    };
+    let Some(ring) = here.hold() else {
         return ENOSYS;
     };
 
-    ring.wait(context) as u64
+    ring.wait(context, here, table) as u64
 }
 
 // The switch that scheduled this thread already set `RSP0` and installed its tables.

@@ -242,6 +242,96 @@ impl Table {
         Ok(())
     }
 
+    // Every handle of a message leaves the table together or none does; each keeps its value
+    // while it moves, so a restore gives back exactly what was taken.
+    pub(crate) fn take(
+        &self,
+        context: &mut ThreadContext,
+        moved: &[(u64, Rights)],
+        into: &mut [Option<(ObjectRef, Rights)>],
+    ) -> Result<(), HandleError> {
+        let mut pages = self.entries.lock(context);
+        let mut taken = 0;
+        let refusal = loop {
+            let Some(&(handle, declared)) = moved.get(taken) else {
+                return Ok(());
+            };
+            match self.take_one(&mut pages, handle, declared) {
+                Ok(object) => into[taken] = Some(object),
+                Err(refusal) => break refusal,
+            }
+            taken += 1;
+        };
+        for &(handle, _) in &moved[..taken] {
+            self.settle_move(&mut pages, handle, Generation::restore);
+        }
+        into.fill(None);
+        Err(refusal)
+    }
+
+    fn take_one(
+        &self,
+        pages: &mut Pages<Block>,
+        handle: u64,
+        declared: Rights,
+    ) -> Result<(ObjectRef, Rights), HandleError> {
+        let named = Slot::decode(handle, self.mixer).ok_or(HandleError::Malformed)?;
+        let entry = entry_mut(pages, named.index()).ok_or(HandleError::Stale)?;
+        let moving = entry
+            .generation
+            .take(named.generation())
+            .ok_or(HandleError::Stale)?;
+        let (object, held) = entry.held.ok_or(HandleError::Stale)?;
+        if !held.contains(Rights::TRANSFER) {
+            return Err(HandleError::Denied);
+        }
+        let granted = held.attenuate(declared).ok_or(HandleError::Denied)?;
+        entry.generation = moving;
+        Ok((object, granted))
+    }
+
+    pub(crate) fn restore(&self, context: &mut ThreadContext, moved: &[(u64, Rights)]) {
+        let mut pages = self.entries.lock(context);
+        for &(handle, _) in moved {
+            self.settle_move(&mut pages, handle, Generation::restore);
+        }
+    }
+
+    // The objects now belong to the message, so no reference is released here.
+    pub(crate) fn erase(&self, context: &mut ThreadContext, moved: &[(u64, Rights)]) {
+        let mut retired = 0;
+        {
+            let mut pages = self.entries.lock(context);
+            for &(handle, _) in moved {
+                if self.settle_move(&mut pages, handle, Generation::erase) == Generation::Retired {
+                    retired += 1;
+                }
+            }
+        }
+        for _ in retired..moved.len() {
+            let dropped = self.step(Quota::drop_live);
+            assert!(dropped, "an erased handle was not counted live");
+        }
+    }
+
+    fn settle_move(
+        &self,
+        pages: &mut Pages<Block>,
+        handle: u64,
+        settle: fn(Generation, u64) -> Option<Generation>,
+    ) -> Generation {
+        let settled = Slot::decode(handle, self.mixer).and_then(|named| {
+            let entry = entry_mut(pages, named.index())?;
+            let next = settle(entry.generation, named.generation())?;
+            entry.generation = next;
+            if !matches!(next, Generation::Live(_)) {
+                entry.held = None;
+            }
+            Some(next)
+        });
+        settled.unwrap_or_else(|| panic!("a moving handle left its state"))
+    }
+
     // Teardown of a table no one else can reach: every live entry's reference goes back.
     fn drain(&mut self, world: &World) {
         let pages = self.entries.get_mut();

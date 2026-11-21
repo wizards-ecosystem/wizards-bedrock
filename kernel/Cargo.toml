@@ -19,6 +19,7 @@ selftest = ["wost/selftest"]
 noto-sans-mono-bitmap.workspace = true
 acpi-tables.workspace = true
 boot-record.workspace = true
+channel-state.workspace = true
 eevdf.workspace = true
 elf64.workspace = true
 entropy.workspace = true

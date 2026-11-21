@@ -250,6 +250,14 @@ pub(super) fn memory_refusals_name_their_rule(context: &mut ThreadContext) -> bo
     })
 }
 
+// Every handle a refused write named stays, and every committed message is read once, in order.
+pub(super) fn channel_moves_conserve_handles(context: &mut ThreadContext) -> bool {
+    let Ok(spawned) = user::spawn_moving_handles(context) else {
+        return false;
+    };
+    last_rites_for(&spawned, 10_000).is_some_and(|rites| agreed(&rites))
+}
+
 // A user base is read back through `fs`, and a kernel-half or noncanonical one is refused.
 pub(super) fn a_thread_base_is_taken_only_inside_user_memory(context: &mut ThreadContext) -> bool {
     let Ok(spawned) = user::spawn_setting_its_thread_base(context) else {

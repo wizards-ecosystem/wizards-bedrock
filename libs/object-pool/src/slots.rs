@@ -478,3 +478,27 @@ impl<const N: usize> FreeList<N> {
         self.next_free[at] = RETIRED;
     }
 }
+
+verus! {
+
+impl<const N: usize> Slots<N> {
+    // A teardown that must empty the page finds what is still live by this.
+    pub fn first_live(&self) -> (r: Option<Issued>)
+        ensures
+            r matches Some(issued) ==> self.resolves_to(issued.slot as int, issued.generation),
+    {
+        let mut slot: u16 = 0;
+        while usize::from(slot) < N && slot < u16::MAX
+            decreases u16::MAX - slot,
+        {
+            let generation = self.generation[usize::from(slot)];
+            if self.resolves(slot, generation) {
+                return Some(Issued { slot, generation });
+            }
+            slot += 1;
+        }
+        None
+    }
+}
+
+} // verus!

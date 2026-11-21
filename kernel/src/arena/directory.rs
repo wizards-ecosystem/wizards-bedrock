@@ -87,6 +87,10 @@ impl<E> Directory<E> {
         free: NONE,
     };
 
+    pub(super) const fn ordinals(&self) -> u32 {
+        self.fresh
+    }
+
     // Node frames the next `open` needs: none for a vacant ordinal, else the missing path.
     pub(super) fn nodes_to_open(&self) -> u32 {
         if self.free != NONE {

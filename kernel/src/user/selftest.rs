@@ -1,6 +1,6 @@
 use native_abi::witness::behaviour::{
-    BACKDOOR, DUPLICATE, ECHO, FAULT, INVALID_RETURN_FLAGS, INVALID_RETURN_STACK, MEMORY, PROBE,
-    READ_COUNTER, READ_KERNEL, RING_WAIT, SYSCALL, THREAD_BASE,
+    BACKDOOR, CHANNELS, DUPLICATE, ECHO, FAULT, INVALID_RETURN_FLAGS, INVALID_RETURN_STACK, MEMORY,
+    PROBE, READ_COUNTER, READ_KERNEL, RING_WAIT, SYSCALL, THREAD_BASE,
 };
 use wost::arch::current::usercopy;
 
@@ -75,6 +75,10 @@ pub(crate) fn spawn_executing_syscall(context: &mut ThreadContext) -> Result<Spa
 
 pub(crate) fn spawn_refusing_memory(context: &mut ThreadContext) -> Result<Spawned, SpawnError> {
     spawn(context, "user-memory", 17, MEMORY, 0)
+}
+
+pub(crate) fn spawn_moving_handles(context: &mut ThreadContext) -> Result<Spawned, SpawnError> {
+    spawn(context, "user-channels", 19, CHANNELS, 0)
 }
 
 pub(crate) fn spawn_probing_the_backdoor(

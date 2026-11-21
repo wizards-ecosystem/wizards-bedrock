@@ -34,6 +34,26 @@ pub mod limits {
     // The end of what `Map` accepts: the last canonical user page stays unmapped, since a trap
     // saving a RIP at the user end would fault on return.
     pub const USER_MAPPING_END: u64 = 0x0000_7FFF_FFFF_F000;
+    // Bytes and moved handles of one channel message, and the span of its descriptor.
+    pub const MESSAGE_BYTES: u32 = 2048;
+    pub const MESSAGE_HANDLES: u32 = 16;
+    pub const MESSAGE_SPAN: usize = super::message::BYTES_AT + MESSAGE_BYTES as usize;
+}
+
+// The message descriptor `ChannelWrite` reads and `ChannelRead` fills, 8-byte aligned.
+pub mod message {
+    pub const VERSION: u32 = 1;
+    pub const VERSION_AT: usize = 0;
+    pub const FLAGS_AT: usize = 4;
+    pub const BYTES: usize = 8;
+    pub const HANDLES: usize = 12;
+    pub const BYTE_CAPACITY: usize = 16;
+    pub const HANDLE_CAPACITY: usize = 20;
+    pub const REPLY: usize = 24;
+    // Each entry is a handle `u64`, its rights `u32` and a reserved `u32`.
+    pub const ENTRIES_AT: usize = 32;
+    pub const ENTRY_BYTES: usize = 16;
+    pub const BYTES_AT: usize = ENTRIES_AT + super::limits::MESSAGE_HANDLES as usize * ENTRY_BYTES;
 }
 
 // The world descriptor `WorldCreate` reads from a buffer, 8-byte aligned.
@@ -98,6 +118,7 @@ pub mod witness {
         pub const SYSCALL: u64 = 12;
         pub const MEMORY: u64 = 13;
         pub const BACKDOOR: u64 = 14;
+        pub const CHANNELS: u64 = 15;
     }
 }
 

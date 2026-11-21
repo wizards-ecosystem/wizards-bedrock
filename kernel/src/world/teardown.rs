@@ -62,9 +62,16 @@ pub(crate) fn step(node: NodeRef, step: WorldStep) -> Progress {
             Progress::Done
         }
         WorldStep::Quiesce => quiesce(node),
+        // Endpoints left only in each other's inboxes outlive every process.
+        WorldStep::DestroyObjects => {
+            let Some(world) = registry::hold(node) else {
+                panic!("dying world {} lost its record", node.node);
+            };
+            crate::channel::dissolve(&world);
+            Progress::Done
+        }
         // What these release is held only by the world's processes, whose teardowns ran in Quiesce.
         WorldStep::AbandonQueuesAndTables
-        | WorldStep::DestroyObjects
         | WorldStep::ClearSpaces
         | WorldStep::RevokeMappers
         | WorldStep::Reclaim

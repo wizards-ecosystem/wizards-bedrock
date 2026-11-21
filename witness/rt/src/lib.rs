@@ -10,8 +10,8 @@ use core::ptr;
 use core::sync::atomic::{AtomicBool, Ordering, compiler_fence};
 
 use native_abi::ring::{
-    COMPLETION_BYTES, COMPLETIONS, COMPLETIONS_AT, Completion, ENTRIES_AT, SUBMISSION_BYTES,
-    SUBMISSIONS, Submission, header,
+    COMPLETION_BYTES, COMPLETIONS, COMPLETIONS_AT, Completion, DATA_BYTES, ENTRIES_AT,
+    SUBMISSION_BYTES, SUBMISSIONS, Submission, header,
 };
 use native_abi::{Call, GATE_VECTOR, entry, witness};
 
@@ -346,6 +346,41 @@ impl Ring {
     pub fn release_completion_head(&mut self, head: u32) {
         compiler_fence(Ordering::Release);
         self.store(header::COMPLETION_HEAD, head);
+    }
+}
+
+static DATA_TAKEN: AtomicBool = AtomicBool::new(false);
+
+// Buffer 0, mapped where the entry block says; `take` hands out one view.
+#[derive(Debug)]
+pub struct Data {
+    base: usize,
+}
+
+impl Data {
+    pub fn take(entry: &Entry) -> Option<Self> {
+        (!DATA_TAKEN.swap(true, Ordering::AcqRel)).then_some(Self {
+            base: entry.buffer as usize,
+        })
+    }
+
+    pub fn write(&mut self, at: usize, bytes: &[u8]) {
+        assert!(at + bytes.len() <= DATA_BYTES, "a data write left buffer 0");
+        for (offset, byte) in bytes.iter().enumerate() {
+            let target = ptr::with_exposed_provenance_mut::<u8>(self.base + at + offset);
+            // SAFETY: the page is mapped writable for the program's life, and the byte lies
+            // inside it.
+            unsafe { target.write_volatile(*byte) }
+        }
+    }
+
+    pub fn read(&self, at: usize, into: &mut [u8]) {
+        assert!(at + into.len() <= DATA_BYTES, "a data read left buffer 0");
+        for (offset, byte) in into.iter_mut().enumerate() {
+            let source = ptr::with_exposed_provenance::<u8>(self.base + at + offset);
+            // SAFETY: as in `write`.
+            *byte = unsafe { source.read_volatile() };
+        }
     }
 }
 

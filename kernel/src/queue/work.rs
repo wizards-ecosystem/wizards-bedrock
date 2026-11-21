@@ -457,7 +457,9 @@ impl Queue {
         }
         let phase = match &mut entry.kind {
             PendingKind::OpenAt { phase } | PendingKind::Read { phase, .. } => phase,
-            PendingKind::Timer { .. } | PendingKind::Kill => return WorkClaim::Stale,
+            PendingKind::Timer { .. } | PendingKind::Kill | PendingKind::ChannelRead { .. } => {
+                return WorkClaim::Stale;
+            }
         };
         if *phase != WorkPhase::Queued {
             return WorkClaim::Stale;

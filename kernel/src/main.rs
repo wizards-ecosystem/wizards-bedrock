@@ -10,6 +10,7 @@ mod acpi;
 mod arch;
 mod arena;
 mod banner;
+mod channel;
 mod console;
 mod dev;
 mod devfs;

@@ -3,12 +3,13 @@ use world_tree::NodeRef;
 use wost::mm::slab::Removal;
 
 use crate::arena::Local;
+use crate::channel::{self, Endpoint};
 use crate::memory::MemoryObject;
 use crate::world::World;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum ObjectType {
-    Channel,
+    Endpoint,
     File,
     Directory,
     Memory,
@@ -18,7 +19,7 @@ pub(crate) enum ObjectType {
 impl ObjectType {
     pub(crate) const fn per_type_rights(self) -> Rights {
         match self {
-            Self::Channel => Rights::NONE,
+            Self::Endpoint => Rights::READ.union(Rights::WRITE),
             Self::File => Rights::READ,
             Self::Directory => Rights::TRAVERSE.union(Rights::ENUMERATE),
             Self::Memory => Rights::READ
@@ -41,7 +42,7 @@ pub(crate) const fn directory(directory: crate::vfs::Directory) -> ObjectRef {
 // A copy names the object; only `acquire` and `release` change what keeps it alive.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum ObjectRef {
-    Channel(Local<Channel>),
+    Endpoint(Local<Endpoint>),
     File(crate::vfs::File),
     Directory(crate::vfs::Directory),
     Memory(Local<MemoryObject>),
@@ -52,7 +53,7 @@ pub(crate) enum ObjectRef {
 impl ObjectRef {
     pub(crate) fn kind(&self) -> ObjectType {
         match self {
-            Self::Channel(_) => ObjectType::Channel,
+            Self::Endpoint(_) => ObjectType::Endpoint,
             Self::File(_) => ObjectType::File,
             Self::Directory(_) => ObjectType::Directory,
             Self::Memory(_) => ObjectType::Memory,
@@ -63,21 +64,21 @@ impl ObjectRef {
     pub(crate) const fn as_file(&self) -> Option<&crate::vfs::File> {
         match self {
             Self::File(file) => Some(file),
-            Self::Channel(_) | Self::Directory(_) | Self::Memory(_) | Self::World(_) => None,
+            Self::Endpoint(_) | Self::Directory(_) | Self::Memory(_) | Self::World(_) => None,
         }
     }
 
     pub(crate) const fn as_directory(&self) -> Option<&crate::vfs::Directory> {
         match self {
             Self::Directory(directory) => Some(directory),
-            Self::Channel(_) | Self::File(_) | Self::Memory(_) | Self::World(_) => None,
+            Self::Endpoint(_) | Self::File(_) | Self::Memory(_) | Self::World(_) => None,
         }
     }
 
     // One more strong reference for a second handle; `false` when the object is already gone.
     pub(crate) fn acquire(self, world: &World) -> bool {
         match self {
-            Self::Channel(channel) => world.channels.acquire(channel).is_ok(),
+            Self::Endpoint(endpoint) => world.endpoints.acquire(endpoint).is_ok(),
             Self::Memory(memory) => world.memories.acquire(memory).is_ok(),
             Self::File(_) | Self::Directory(_) | Self::World(_) => true,
         }
@@ -85,9 +86,7 @@ impl ObjectRef {
 
     pub(crate) fn release(self, world: &World) {
         match self {
-            Self::Channel(channel) => {
-                let _ = world.channels.destroy(channel);
-            }
+            Self::Endpoint(endpoint) => channel::release(world, endpoint),
             // Every hold is covered by its holder's strong reference, so the last one meets none.
             Self::Memory(memory) => {
                 if let Err(Removal::Borrowed) = world.memories.destroy(memory) {
@@ -97,15 +96,4 @@ impl ObjectRef {
             Self::File(_) | Self::Directory(_) | Self::World(_) => {}
         }
     }
-}
-
-#[derive(Debug)]
-pub(crate) struct Channel;
-
-// The bootstrap identity: a channel object in the world, held by the table's first entry.
-pub(crate) fn bootstrap_identity(
-    earmark: &mut wost::mm::pool::Earmark,
-    world: &World,
-) -> ObjectRef {
-    ObjectRef::Channel(world.channels.insert(earmark, || Channel))
 }

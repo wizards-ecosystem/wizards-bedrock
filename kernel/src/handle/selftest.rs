@@ -6,9 +6,10 @@ use wost::mm::pool::earmark;
 use wost::mm::slab::Hold;
 
 use super::{HandleError, Table, TableRef};
-use crate::object;
+use crate::channel::{self, Endpoint};
+use crate::object::ObjectRef;
 use crate::thread::ThreadContext;
-use crate::world::{self, ChannelPool, TablePool, World, registry};
+use crate::world::{self, TablePool, World, registry};
 
 impl Table {
     pub(crate) fn slot_of(&self, handle: u64) -> Option<Slot> {
@@ -58,10 +59,12 @@ impl TestTable {
         rights: Rights,
     ) -> Result<u64, HandleError> {
         let world = self.world();
-        let frames = ChannelPool::frames_for(1).ok_or(HandleError::QuotaExhausted)?;
+        let frames = Endpoint::frames_for(1).ok_or(HandleError::QuotaExhausted)?;
         let mut earmark =
             earmark(context, world.arena(), frames).map_err(|_| HandleError::QuotaExhausted)?;
-        let channel = object::bootstrap_identity(&mut earmark, world);
+        let channel = channel::alone(&mut earmark, world)
+            .map(ObjectRef::Endpoint)
+            .ok_or(HandleError::QuotaExhausted)?;
         self.insert(context, channel, rights).inspect_err(|_| {
             channel.release(world);
         })

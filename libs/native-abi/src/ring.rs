@@ -72,6 +72,11 @@ pub mod status {
     pub const NO_ADDRESS: u32 = 16;
     // The object or its world is gone or dying.
     pub const DEAD: u32 = 17;
+    // The inbox has no room for the message.
+    pub const FULL: u32 = 18;
+    pub const PEER_CLOSED: u32 = 19;
+    // The head message exceeds the declared capacity and stays; value and extra give its size.
+    pub const TOO_SMALL: u32 = 22;
     // A world limit or a fixed per-object limit.
     pub const LIMIT: u32 = 23;
 }
@@ -106,6 +111,9 @@ pub enum Opcode {
     WorldCreate,
     WorldKill,
     WorldInspect,
+    ChannelCreate,
+    ChannelWrite,
+    ChannelRead,
     Unknown(u32),
 }
 
@@ -129,6 +137,9 @@ impl Opcode {
             18 => Self::WorldCreate,
             19 => Self::WorldKill,
             20 => Self::WorldInspect,
+            24 => Self::ChannelCreate,
+            25 => Self::ChannelWrite,
+            26 => Self::ChannelRead,
             other => Self::Unknown(other),
         }
     }
@@ -152,6 +163,9 @@ impl Opcode {
             Self::WorldCreate => 18,
             Self::WorldKill => 19,
             Self::WorldInspect => 20,
+            Self::ChannelCreate => 24,
+            Self::ChannelWrite => 25,
+            Self::ChannelRead => 26,
             Self::Unknown(other) => other,
         }
     }

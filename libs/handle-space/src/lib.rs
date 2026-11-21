@@ -182,6 +182,8 @@ impl Slot {
 pub enum Entry {
     Free(u64),
     Live(u64),
+    // Taken by a channel write: it resolves for nothing until restored or erased.
+    Moving(u64),
     Retired,
 }
 
@@ -197,7 +199,7 @@ impl Entry {
     pub const fn fill(self) -> Option<(Self, u64)> {
         match self {
             Self::Free(generation) => Some((Self::Live(generation), generation)),
-            Self::Live(_) | Self::Retired => None,
+            Self::Live(_) | Self::Moving(_) | Self::Retired => None,
         }
     }
 
@@ -218,7 +220,7 @@ impl Entry {
                 Some(next) if next < GENERATIONS => Some(Self::Free(next)),
                 _ => Some(Self::Retired),
             },
-            Self::Free(_) | Self::Live(_) | Self::Retired => None,
+            Self::Free(_) | Self::Live(_) | Self::Moving(_) | Self::Retired => None,
         }
     }
 
@@ -240,7 +242,53 @@ impl Entry {
             Self::Live(live) if live == generation && generation < GENERATIONS - 1 => {
                 Some((Self::Live(generation + 1), generation + 1))
             }
-            Self::Free(_) | Self::Live(_) | Self::Retired => None,
+            Self::Free(_) | Self::Live(_) | Self::Moving(_) | Self::Retired => None,
+        }
+    }
+
+    #[verus_spec(r =>
+        ensures
+            match r {
+                Some(next) => self == Entry::Live(generation) && next == Entry::Moving(generation),
+                None => self != Entry::Live(generation),
+            },
+    )]
+    pub const fn take(self, generation: u64) -> Option<Self> {
+        match self {
+            Self::Live(live) if live == generation => Some(Self::Moving(generation)),
+            Self::Free(_) | Self::Live(_) | Self::Moving(_) | Self::Retired => None,
+        }
+    }
+
+    #[verus_spec(r =>
+        ensures
+            match r {
+                Some(next) => self == Entry::Moving(generation) && next == Entry::Live(generation),
+                None => self != Entry::Moving(generation),
+            },
+    )]
+    pub const fn restore(self, generation: u64) -> Option<Self> {
+        match self {
+            Self::Moving(moving) if moving == generation => Some(Self::Live(generation)),
+            Self::Free(_) | Self::Live(_) | Self::Moving(_) | Self::Retired => None,
+        }
+    }
+
+    // A committed move empties the slot as a close would.
+    #[verus_spec(r =>
+        ensures
+            match r {
+                Some(next) => self == Entry::Moving(generation)
+                    && proof::retires_rather_than_repeats(generation, next),
+                None => self != Entry::Moving(generation),
+            },
+    )]
+    pub const fn erase(self, generation: u64) -> Option<Self> {
+        match self {
+            Self::Moving(moving) if moving == generation => {
+                Self::Live(generation).empty(generation)
+            }
+            Self::Free(_) | Self::Live(_) | Self::Moving(_) | Self::Retired => None,
         }
     }
 

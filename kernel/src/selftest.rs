@@ -71,6 +71,10 @@ const CHECKS: &[Check] = &[
         processes::memory_refusals_name_their_rule,
     ),
     (
+        "channel moves conserve handles",
+        processes::channel_moves_conserve_handles,
+    ),
+    (
         "two spaces map one address to different memory",
         address_spaces::two_spaces_map_one_address_to_different_memory,
     ),

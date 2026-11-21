@@ -1,6 +1,5 @@
 use core::fmt;
 
-use native_abi::Rights;
 use world_tree::NodeRef;
 use wost::arch::current::paging::{ActivateError, AddressSpace, MapError, UserAccess};
 use wost::arch::current::{cpu, xstate};
@@ -10,13 +9,15 @@ use x86_paging::PAGE_SIZE;
 use super::call::cross;
 use super::load::{self, LoadError, Plan};
 use super::{Launch, STACK_BYTES, Spawned};
+use crate::channel::{self, Endpoint};
 use crate::handle::{HandleError, Table, TableRef};
 use crate::memory::{Kind, MemoryObject};
+use crate::object::ObjectRef;
 use crate::process::{Authority, Objects, ObservationRef, ProcessRef, Space};
 use crate::queue::{self, QueueRef, SharedQueue};
 use crate::space::{self, Mapping, Page, Target};
+use crate::thread;
 use crate::world::{self, World, registry};
-use crate::{object, thread};
 
 #[derive(Debug)]
 struct ProcessConstruction {
@@ -210,9 +211,11 @@ fn build(
         table: TableRef::create(&mut earmark, world_ref, world),
     };
     // Created before the thread can observe the table it names.
-    let bootstrap = object::bootstrap_identity(&mut earmark, world);
+    let Some(bootstrap) = channel::alone(&mut earmark, world).map(ObjectRef::Endpoint) else {
+        panic!("a spawn's earmark missed its birth endpoint");
+    };
     let (_, table) = objects.table.hold().ok_or(SpawnError::NoWorld)?;
-    let handle = match table.insert(context, bootstrap, Rights::UNIVERSAL) {
+    let handle = match table.insert(context, bootstrap, channel::RIGHTS) {
         Ok(handle) => handle,
         Err(reason) => {
             bootstrap.release(world);
@@ -351,7 +354,7 @@ fn earmark(
         .and_then(|((record, contents), tables)| record.checked_add(contents)?.checked_add(tables));
     let frames = world::TablePool::frames_for(1)
         .zip(QueueRef::frames_for())
-        .zip(world::ChannelPool::frames_for(1))
+        .zip(Endpoint::frames_for(1))
         .zip(records)
         .zip(stack.zip(plan.frames()))
         .and_then(|((((table, queue), channel), records), (stack, image))| {

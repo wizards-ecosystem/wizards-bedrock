@@ -8,10 +8,6 @@ pub const DESCRIPTORS: u8 = 16;
 pub const BYTES: u16 = 2304;
 #[verus_verify]
 pub const HANDLES: u16 = 32;
-#[verus_verify]
-pub const MESSAGE_BYTES: u16 = 2048;
-#[verus_verify]
-pub const MESSAGE_HANDLES: u16 = 16;
 
 #[verus_verify]
 const SLOTS: usize = DESCRIPTORS as usize;
@@ -43,7 +39,7 @@ impl Descriptor {
     #[verus_spec(r =>
         ensures
             r == self.spec_bytes(),
-            r <= MESSAGE_BYTES,
+            r <= BYTES,
     )]
     pub fn bytes(self) -> u16 {
         proof! {
@@ -55,7 +51,7 @@ impl Descriptor {
     #[verus_spec(r =>
         ensures
             r == self.spec_handles(),
-            r <= MESSAGE_HANDLES,
+            r <= HANDLES,
     )]
     pub fn handles(self) -> u16 {
         proof! {
@@ -183,17 +179,12 @@ impl Inbox {
         ensures
             match r {
                 Ok(()) => crate::proof::inbox_admits(*self, bytes, handles),
-                Err(InboxRefusal::TooLarge) => bytes > MESSAGE_BYTES || handles > MESSAGE_HANDLES,
-                Err(InboxRefusal::Full) => bytes <= MESSAGE_BYTES && handles <= MESSAGE_HANDLES
-                    && !crate::proof::inbox_admits(*self, bytes, handles),
+                Err(InboxRefusal::Full) => !crate::proof::inbox_admits(*self, bytes, handles),
             },
     )]
     pub fn admits(&self, bytes: u16, handles: u16) -> Result<(), InboxRefusal> {
         proof! {
             use_type_invariant(self);
-        }
-        if bytes > MESSAGE_BYTES || handles > MESSAGE_HANDLES {
-            return Err(InboxRefusal::TooLarge);
         }
         if self.count >= DESCRIPTORS
             || bytes > BYTES - self.bytes_used
@@ -365,6 +356,5 @@ impl Inbox {
 #[verus_verify]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum InboxRefusal {
-    TooLarge,
     Full,
 }

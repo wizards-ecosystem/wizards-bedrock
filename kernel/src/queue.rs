@@ -15,12 +15,14 @@ use wost::mm::{SharedBytes, SharedFrame, SharedRing};
 use wost::sync::{Leaf, SpinLock};
 
 use crate::arena::Local;
+use crate::channel::Endpoint;
 use crate::handle::{Table, TableRef};
 use crate::thread::ThreadContext;
 use crate::timepage::WorldClock;
 use crate::wait::WaitQueue;
 use crate::world::{QueuePool, World, registry};
 
+mod channel;
 mod memory;
 mod ring;
 #[cfg(feature = "selftest")]
@@ -64,11 +66,21 @@ enum PendingKind {
     },
     // Ends when the world's teardown credits its frames; a cancel ends only the wait.
     Kill,
+    // Armed on its endpoint until a write readies it; served at the next ring wait.
+    ChannelRead {
+        handle: u64,
+        at: u64,
+        endpoint: Local<Endpoint>,
+        ready: bool,
+    },
 }
 
 impl PendingKind {
     const fn is_cancellable(self) -> bool {
-        matches!(self, Self::Timer { .. } | Self::Kill) || self.is_queued_work()
+        matches!(
+            self,
+            Self::Timer { .. } | Self::Kill | Self::ChannelRead { .. }
+        ) || self.is_queued_work()
     }
 
     const fn is_queued_work(self) -> bool {
@@ -86,7 +98,7 @@ impl PendingKind {
     const fn deadline(self) -> Option<u64> {
         match self {
             Self::Timer { deadline_ns } => Some(deadline_ns),
-            Self::OpenAt { .. } | Self::Read { .. } | Self::Kill => None,
+            Self::OpenAt { .. } | Self::Read { .. } | Self::Kill | Self::ChannelRead { .. } => None,
         }
     }
 }
@@ -148,6 +160,8 @@ pub(crate) struct Queue {
     pending: SpinLock<Leaf, PendingTable>,
     // Kernel-owned, so ring 3 cannot forge the edge a waiter samples before it sleeps.
     served: AtomicUsize,
+    // Bumped by each write that readies a read here, so a sleeping waiter sees it.
+    readied: AtomicUsize,
     clock: &'static WorldClock,
 }
 
@@ -261,6 +275,7 @@ impl Queue {
             waiters: WaitQueue::new(),
             pending: SpinLock::new(PendingTable::new()),
             served: AtomicUsize::new(0),
+            readied: AtomicUsize::new(0),
             clock,
         }
     }
@@ -338,6 +353,9 @@ impl Queue {
             Opcode::WorldCreate => world::create(self, process, submission),
             Opcode::WorldKill => return world::kill(self, process, submission),
             Opcode::WorldInspect => world::inspect(process, submission),
+            Opcode::ChannelCreate => channel::create(process, submission),
+            Opcode::ChannelWrite => channel::write(self, process, submission),
+            Opcode::ChannelRead => return channel::read(self, process, submission),
             Opcode::Unknown(_) => refuse(token, status::UNKNOWN_OPCODE),
         })
     }
@@ -438,18 +456,26 @@ impl Queue {
     }
 
     fn settle_pending(&self, index: usize, entry: Pending, status: u32, value: u64) {
-        self.post(Completion {
-            token: entry.token,
-            status,
-            value,
-            extra: 0,
-        });
+        self.settle_with(
+            index,
+            entry,
+            Completion {
+                token: entry.token,
+                status,
+                value,
+                extra: 0,
+            },
+        );
+    }
+
+    fn settle_with(&self, index: usize, entry: Pending, completion: Completion) {
+        self.post(completion);
         let mut pending = self.pending.lock_leaf();
         let Some(current) = pending.slots.get(index).copied().flatten() else {
             panic!("terminal work lost its pending entry");
         };
         assert!(
-            entry.settling && current == entry,
+            current.settling && current.id == entry.id,
             "terminal work no longer owns its pending entry"
         );
         pending.slots[index] = None;
@@ -466,6 +492,7 @@ impl Queue {
             return refuse(submission.token, status::NOT_FOUND);
         };
         self.settle_pending(index, entry, status::CANCELLED, 0);
+        Self::disarm(here, index, entry);
         // Unclaimed work goes now, so a queued OpenAt returns its slot promise before this reports.
         drop(FILE_WORK.remove(here, index, entry.id));
         self.served.fetch_add(1, Ordering::Release);
@@ -503,6 +530,7 @@ impl Queue {
         while let Some((index, entry)) = self.begin_settlement(|entry| entry.kind.is_cancellable())
         {
             self.settle_pending(index, entry, status::CANCELLED, 0);
+            Self::disarm(here, index, entry);
             drop(FILE_WORK.remove(here, index, entry.id));
             ended += 1;
         }
@@ -528,19 +556,54 @@ impl Queue {
             .min()
     }
 
-    pub(crate) fn wait(&self, context: &mut ThreadContext) -> usize {
+    pub(crate) fn wait(
+        &self,
+        context: &mut ThreadContext,
+        here: QueueRef,
+        table: TableRef,
+    ) -> usize {
         let before = self.served_count();
-        let due = self.expire(crate::time::now_ns());
+        let readied = self.readied.load(Ordering::Acquire);
+        let due = self.expire(crate::time::now_ns()) + self.serve_ready(context, here, table);
         if due > 0 || self.is_quiet() {
             return self.served_since(before);
         }
 
         self.waiters
             .wait_until(context, self.earliest_deadline(), || {
-                self.served_count() != before
+                self.served_count() != before || self.readied.load(Ordering::Acquire) != readied
             });
         self.expire(crate::time::now_ns());
+        self.serve_ready(context, here, table);
         self.served_since(before)
+    }
+
+    // Each ready read is performed here, in the reader's context, and pays for what it installs.
+    fn serve_ready(&self, context: &mut ThreadContext, here: QueueRef, table: TableRef) -> usize {
+        let Some((world, held)) = table.hold() else {
+            return 0;
+        };
+        let mut served = 0;
+        while let Some((index, entry)) = self.begin_settlement(|entry| {
+            matches!(entry.kind, PendingKind::ChannelRead { ready: true, .. })
+        }) {
+            let process = Process {
+                context: &mut *context,
+                world: &world,
+                table: &held,
+                table_ref: table,
+                here,
+            };
+            if let Some(completion) = channel::serve_ready(self, process, index, entry) {
+                self.settle_with(index, entry, completion);
+                served += 1;
+            }
+        }
+        if served > 0 {
+            self.served.fetch_add(served, Ordering::Release);
+            self.waiters.wake_all();
+        }
+        served
     }
 
     pub(crate) fn served_since(&self, before: usize) -> usize {
@@ -585,7 +648,7 @@ impl Fields {
                 argument: true,
                 ..none
             },
-            Opcode::Uptime => none,
+            Opcode::Uptime | Opcode::ChannelCreate => none,
             Opcode::Duplicate => Self {
                 handle: true,
                 argument: true,
@@ -648,6 +711,11 @@ impl Fields {
                 ..none
             },
             Opcode::WorldCreate => Self {
+                buffer: true,
+                ..none
+            },
+            Opcode::ChannelWrite | Opcode::ChannelRead => Self {
+                handle: true,
                 buffer: true,
                 ..none
             },

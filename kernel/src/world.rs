@@ -13,9 +13,9 @@ use wost::mm::pool::{self, ArenaId, ColourMask, FrameKind, Refused};
 use wost::sync::{Leaf, SpinLock};
 
 use crate::arena::Pool;
+use crate::channel::Endpoint;
 use crate::handle::Table;
 use crate::memory::{CodeQuota, MemoryObject};
-use crate::object::Channel;
 use crate::process::{Observation, Process};
 use crate::queue::Queue;
 use crate::thread::ThreadContext;
@@ -69,7 +69,7 @@ pub(crate) struct World {
     pub(crate) code: CodeQuota,
     pub(crate) tables: TablePool,
     pub(crate) queues: QueuePool,
-    pub(crate) channels: ChannelPool,
+    pub(crate) endpoints: EndpointPool,
     pub(crate) processes: ProcessPool,
     pub(crate) observations: ObservationPool,
     pub(crate) memories: MemoryPool,
@@ -77,7 +77,7 @@ pub(crate) struct World {
 
 pub(crate) type TablePool = Pool<Table, 16>;
 pub(crate) type QueuePool = Pool<Queue, 2>;
-pub(crate) type ChannelPool = Pool<Channel, 64>;
+pub(crate) type EndpointPool = Pool<Endpoint, 2>;
 pub(crate) type ProcessPool = Pool<Process, 4>;
 pub(crate) type ObservationPool = Pool<Observation, 16>;
 pub(crate) type MemoryPool = Pool<MemoryObject, 16>;
@@ -99,7 +99,7 @@ impl World {
             code: CodeQuota::new(CODE_PAGES),
             tables: Pool::new(),
             queues: Pool::new(),
-            channels: Pool::new(),
+            endpoints: Pool::new(),
             processes: Pool::new(),
             observations: Pool::new(),
             memories: Pool::new(),
@@ -118,7 +118,7 @@ impl World {
     fn release(self) {
         self.tables.close();
         self.queues.close();
-        self.channels.close();
+        self.endpoints.close();
         self.processes.close();
         self.observations.close();
         self.memories.close();

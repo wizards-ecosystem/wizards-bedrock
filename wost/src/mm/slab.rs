@@ -128,6 +128,10 @@ impl<T, const N: usize> ObjectPage<T, N> {
         self.slot_state().live()
     }
 
+    pub fn first_live(&self) -> Option<Issued> {
+        self.slot_state().first_live()
+    }
+
     // The least generation a later page at this page's index may start from; `None` once retired.
     pub fn floor(&self) -> Option<u32> {
         self.slot_state().floor_after(0)

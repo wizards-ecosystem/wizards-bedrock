@@ -92,6 +92,18 @@ impl<T, const N: usize> Pool<T, N> {
         }
     }
 
+    // Some object still live, for a teardown that must empty the pool.
+    pub(crate) fn any(&self) -> Option<Local<T>> {
+        let mut state = self.state.lock_leaf();
+        (0..state.directory.ordinals()).find_map(|ordinal| {
+            let issued = state.directory.get_mut(ordinal)?.page.first_live()?;
+            Some(Local::new(
+                Index::new(ordinal, issued.slot)?,
+                issued.generation,
+            ))
+        })
+    }
+
     pub(crate) fn hold(&self, local: Local<T>) -> Option<Hold<T>>
     where
         T: Sync,
@@ -121,7 +133,7 @@ impl<T, const N: usize> Pool<T, N> {
         page.page.acquire(local.index().slot(), local.generation())
     }
 
-    fn release(&self, local: Local<T>) -> Result<Released, Refusal> {
+    pub(crate) fn release(&self, local: Local<T>) -> Result<Released, Refusal> {
         let mut state = self.state.lock_leaf();
         let page = state
             .directory
@@ -131,7 +143,7 @@ impl<T, const N: usize> Pool<T, N> {
     }
 
     // Keeps one empty page; any other page that empties closes, and its index keeps a floor.
-    fn remove(&self, local: Local<T>) -> Result<T, Removal> {
+    pub(crate) fn remove(&self, local: Local<T>) -> Result<T, Removal> {
         let (value, closed) = {
             let mut guard = self.state.lock_leaf();
             let state = &mut *guard;

@@ -337,9 +337,9 @@ impl crate::Descriptor {
 
 pub open spec fn descriptor_fits(descriptor: crate::Descriptor) -> bool {
     &&& descriptor.spec_bytes_at() < crate::BYTES
-    &&& descriptor.spec_bytes() <= crate::MESSAGE_BYTES
+    &&& descriptor.spec_bytes() <= crate::BYTES
     &&& descriptor.spec_handles_at() < crate::HANDLES
-    &&& descriptor.spec_handles() <= crate::MESSAGE_HANDLES
+    &&& descriptor.spec_handles() <= crate::HANDLES
 }
 
 pub open spec fn spans_cover(spans: [crate::Span; 2], at: u16, len: u16, capacity: u16) -> bool {
@@ -414,8 +414,6 @@ pub open(crate) spec fn tiled(inbox: crate::Inbox, k: int) -> bool {
 }
 
 pub open(crate) spec fn inbox_admits(inbox: crate::Inbox, bytes: u16, handles: u16) -> bool {
-    &&& bytes <= crate::MESSAGE_BYTES
-    &&& handles <= crate::MESSAGE_HANDLES
     &&& inbox.count < 16
     &&& inbox.bytes_used + bytes <= crate::BYTES
     &&& inbox.handles_used + handles <= crate::HANDLES
