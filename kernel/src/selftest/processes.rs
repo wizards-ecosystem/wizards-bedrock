@@ -469,7 +469,7 @@ fn waits_until(done: impl Fn() -> bool) {
     }
 }
 
-fn last_rites_for(spawned: &user::Spawned) -> Rites {
+pub(super) fn last_rites_for(spawned: &user::Spawned) -> Rites {
     loop {
         if let Some(rites) = spawned.observation.rites() {
             return rites;

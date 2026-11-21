@@ -80,7 +80,7 @@ pub(super) fn sibling_worlds_keep_their_own_clock_and_randomness(
 // The vector that ended a counter read, and the draw of a program that checked its precision.
 fn served_in(context: &mut ThreadContext, world: NodeRef, precision_ns: u64) -> Option<(u64, u64)> {
     let counter = user::spawn_in(context, world, None, "user-rdtsc", 12, READ_COUNTER, 0).ok()?;
-    let Some(Record::Fault(Fault { vector, .. })) = last_rites_for(&counter, 2_000)?.ending else {
+    let Some(Record::Fault(Fault { vector, .. })) = last_rites_for(&counter).ending else {
         return None;
     };
     drop(counter);
@@ -94,7 +94,7 @@ fn served_in(context: &mut ThreadContext, world: NodeRef, precision_ns: u64) -> 
         precision_ns,
     )
     .ok()?;
-    let Some(Record::Exit(Exit { status: draw })) = last_rites_for(&served, 2_000)?.ending else {
+    let Some(Record::Exit(Exit { status: draw })) = last_rites_for(&served).ending else {
         return None;
     };
     Some((vector, draw))
