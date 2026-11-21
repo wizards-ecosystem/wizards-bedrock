@@ -75,7 +75,9 @@ impl WorldClock {
 
     // The world's frames go back once every space that mapped the page has dropped it.
     pub(crate) fn stop(&self) {
-        drop(self.page.lock_leaf().take());
+        // Dropped after the guard, because releasing the frames takes the pool's leaf locks.
+        let page = self.page.lock_leaf().take();
+        drop(page);
     }
 
     // Rounded down to the precision and raised by a maximum, so no reader sees time go back.
