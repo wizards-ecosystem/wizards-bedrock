@@ -9,7 +9,6 @@ use wost::arch::current::usercopy;
 use wost::mm;
 use x86_tables::exception;
 
-use super::runs_until;
 use super::threads::{STOP_SPINNING, light_spinner, yields_until};
 use super::worlds;
 use crate::arch::current::trap;
@@ -38,7 +37,7 @@ pub(super) fn an_unserved_call_is_refused_without_stopping_the_machine(
     let Ok(spawned) = user::spawn_probing(context) else {
         return false;
     };
-    let exited = last_rites_for(&spawned, 2_000).is_some_and(|rites| agreed(&rites));
+    let exited = agreed(&last_rites_for(&spawned));
     let (refused, number) = user::refusals();
 
     exited
@@ -53,23 +52,17 @@ pub(super) fn a_faulting_program_dies_alone(context: &mut ThreadContext) -> bool
         return false;
     };
 
-    if !runs_until(2000, || {
-        let fault = trap::last_user_fault();
-        fault.count > before.count && fault.slot == spawned.slot
-    }) {
-        let _ = last_rites_for(&spawned, 0);
-        return false;
-    }
+    last_rites_for(&spawned);
     let fault = trap::last_user_fault();
 
     // `rax` still holds the FAULT argument (1), which survives the dispatch to the `ud2`.
-    let this_child = fault.slot == spawned.slot && fault.rax == behaviour::FAULT;
+    let this_child =
+        fault.count > before.count && fault.slot == spawned.slot && fault.rax == behaviour::FAULT;
     let it_was_the_ud2 = fault.vector == u64::from(exception::INVALID_OPCODE);
     let in_user_memory = fault.stack_pointer < usercopy::USER_END;
-    let retired = last_rites_for(&spawned, 2_000).is_some();
     let observed = observed_once(&spawned, Status::Faulted(exception::INVALID_OPCODE));
 
-    this_child && it_was_the_ud2 && in_user_memory && retired && observed
+    this_child && it_was_the_ud2 && in_user_memory && observed
 }
 
 // `rax` still holds the argument only if the trapped `rdtsc` never retired.
@@ -100,20 +93,14 @@ fn retired_by_protection_fault(
         return false;
     };
 
-    if !runs_until(2000, || {
-        let fault = trap::last_user_fault();
-        fault.count > before.count && fault.slot == spawned.slot
-    }) {
-        let _ = last_rites_for(&spawned, 0);
-        return false;
-    }
+    last_rites_for(&spawned);
     let fault = trap::last_user_fault();
 
-    let this_child = fault.slot == spawned.slot && fault.rax == marker;
+    let this_child =
+        fault.count > before.count && fault.slot == spawned.slot && fault.rax == marker;
     let trapped = fault.vector == u64::from(exception::GENERAL_PROTECTION);
-    let retired = last_rites_for(&spawned, 2_000).is_some();
 
-    this_child && trapped && retired
+    this_child && trapped
 }
 
 // A refusal is process-local: the timer keeps arriving and a clean successor still crosses.
@@ -136,15 +123,11 @@ pub(super) fn a_noncanonical_user_return_stack_retires_only_its_program(
     let Ok(successor) = user::spawn_for_bootstrap(context) else {
         return false;
     };
-    let successor_retired = last_rites_for(&successor, 2_000).is_some();
+    last_rites_for(&successor);
     let successor_call = trap::last_syscall();
     let successor_ran = successor_call.count > calls.count && successor_call.slot == successor.slot;
 
-    stack_refused
-        && flags_refused
-        && successor_retired
-        && successor_ran
-        && time::expiries() > expiries
+    stack_refused && flags_refused && successor_ran && time::expiries() > expiries
 }
 
 fn invalid_return_is_refused(
@@ -156,14 +139,9 @@ fn invalid_return_is_refused(
     let Ok(spawned) = spawn(context) else {
         return false;
     };
-    if !runs_until(2_000, || {
-        let refused = trap::last_invalid_user_return();
-        refused.count > before.count && refused.slot == spawned.slot
-    }) {
-        let _ = last_rites_for(&spawned, 0);
-        return false;
-    }
-    names_the_fault(&trap::last_invalid_user_return()) && last_rites_for(&spawned, 2_000).is_some()
+    last_rites_for(&spawned);
+    let refused = trap::last_invalid_user_return();
+    refused.count > before.count && refused.slot == spawned.slot && names_the_fault(&refused)
 }
 
 // A ring-3 fetch fault in the copy window retires the program; `rax` holds where it jumped.
@@ -174,29 +152,17 @@ pub(super) fn a_program_cannot_aim_at_the_copy_window(context: &mut ThreadContex
     let Ok(spawned) = user::spawn_into_the_copy_window(context) else {
         return false;
     };
-    if !runs_until(2000, || {
-        let fault = trap::last_user_fault();
-        fault.count > before.count && fault.slot == spawned.slot
-    }) {
-        let _ = last_rites_for(&spawned, 0);
-        return false;
-    }
+    last_rites_for(&spawned);
 
     let fault = trap::last_user_fault();
     let (start, end) = usercopy::fault_window();
 
-    let this_child = fault.slot == spawned.slot && fault.rax == start;
+    let this_child = fault.count > before.count && fault.slot == spawned.slot && fault.rax == start;
     let page_fault = fault.vector == u64::from(exception::PAGE_FAULT);
-    let retired = last_rites_for(&spawned, 2_000).is_some();
     let not_recovered = trap::user_copy_recoveries() == recoveries_before;
     let real_window = start < end;
 
-    this_child && page_fault && retired && not_recovered && real_window
-}
-
-// The witness's ending once it retired, or `None` if it never did within `ms`.
-fn ending_of(spawned: &user::Spawned, ms: u64) -> Option<Record> {
-    last_rites_for(spawned, ms)?.ending
+    this_child && page_fault && not_recovered && real_window
 }
 
 // The fault was raised in ring 3 code, not on the address the program reached for.
@@ -214,7 +180,7 @@ pub(super) fn a_program_cannot_read_the_kernel(context: &mut ThreadContext) -> b
         return false;
     };
     matches!(
-        ending_of(&spawned, 2_000),
+        last_rites_for(&spawned).ending,
         Some(Record::Fault(Fault { vector, error, address: faulted, rip }))
             if vector == u64::from(exception::PAGE_FAULT)
                 && error == PRESENT_USER_READ
@@ -231,7 +197,7 @@ pub(super) fn a_syscall_instruction_never_enters_the_kernel(context: &mut Thread
         return false;
     };
     let ended = matches!(
-        ending_of(&spawned, 2_000),
+        last_rites_for(&spawned).ending,
         Some(Record::Fault(Fault { vector, rip, .. }))
             if vector == u64::from(exception::INVALID_OPCODE) && in_user_code(rip)
     );
@@ -249,7 +215,8 @@ pub(super) fn ring_wait_sleeps_only_while_work_is_in_flight(context: &mut Thread
     let Ok(spawned) = user::spawn_waiting_on_the_ring(context) else {
         return false;
     };
-    last_rites_for(&spawned, 2_000).is_some_and(|rites| agreed(&rites) && rites.served == 1)
+    let rites = last_rites_for(&spawned);
+    agreed(&rites) && rites.served == 1
 }
 
 // Every memory refusal names its rule, and a seal leaves exactly one handle without `WRITE`.
@@ -257,11 +224,8 @@ pub(super) fn memory_refusals_name_their_rule(context: &mut ThreadContext) -> bo
     let Ok(spawned) = user::spawn_refusing_memory(context) else {
         return false;
     };
-    last_rites_for(&spawned, 10_000).is_some_and(|rites| {
-        agreed(&rites)
-            && rites.served == 16 + 2 * witness::FRESH_MAPS as usize
-            && rites.handles == 5
-    })
+    let rites = last_rites_for(&spawned);
+    agreed(&rites) && rites.served == 16 + 2 * witness::FRESH_MAPS as usize && rites.handles == 5
 }
 
 // Handles a refused write named stay, committed messages are read once in order, and a writer and
@@ -317,7 +281,7 @@ pub(super) fn channel_moves_conserve_handles(context: &mut ThreadContext) -> boo
     drop(writer);
     let delivered = paid
         && worlds::killed(context, writer_world, root, before_kill + writer_reserved)
-        && last_rites_for(&reader, 10_000).is_some_and(|rites| agreed(&rites));
+        && agreed(&last_rites_for(&reader));
     drop(reader);
     delivered
         && worlds::killed(
@@ -364,7 +328,7 @@ pub(super) fn calls_end_once(context: &mut ThreadContext) -> bool {
     drop(server);
     let settled = held
         && worlds::killed(context, server_world, root, before + server_reserved)
-        && last_rites_for(&client, 10_000).is_some_and(|rites| agreed(&rites));
+        && agreed(&last_rites_for(&client));
     drop(client);
     settled
         && worlds::killed(
@@ -396,7 +360,7 @@ pub(super) fn a_thread_base_is_taken_only_inside_user_memory(context: &mut Threa
     let Ok(spawned) = user::spawn_setting_its_thread_base(context) else {
         return false;
     };
-    last_rites_for(&spawned, 2_000).is_some_and(|rites| agreed(&rites))
+    agreed(&last_rites_for(&spawned))
 }
 
 const SEGMENT_FLAGS: usize = elf64::HEADER_BYTES + 4;
@@ -484,9 +448,7 @@ impl AllocatorSnapshot {
 
 // Forty programs through sixteen slots beside a spinner: the worker must reclaim each one.
 pub(super) fn a_dead_program_gives_its_memory_back(context: &mut ThreadContext) -> bool {
-    if !runs_until(2000, crate::reaper::is_idle) {
-        return false;
-    }
+    waits_until(crate::reaper::is_idle);
     let before = AllocatorSnapshot::capture();
     let free_slots = thread::free_slots();
     STOP_SPINNING.store(0, Ordering::Release);
@@ -497,13 +459,10 @@ pub(super) fn a_dead_program_gives_its_memory_back(context: &mut ThreadContext) 
     let mut ran = 0;
     for _ in 0..40 {
         let retirements = thread::retirements();
-        if user::spawn_for_bootstrap(context).is_err()
-            || !runs_until(2000, || {
-                thread::retirements() > retirements && crate::reaper::is_idle()
-            })
-        {
+        if user::spawn_for_bootstrap(context).is_err() {
             break;
         }
+        waits_until(|| thread::retirements() > retirements && crate::reaper::is_idle());
         ran += 1;
     }
     STOP_SPINNING.store(1, Ordering::Release);
@@ -512,13 +471,20 @@ pub(super) fn a_dead_program_gives_its_memory_back(context: &mut ThreadContext) 
     ran == 40 && settled && AllocatorSnapshot::capture().has_same_ownership(&before)
 }
 
-// A late program would run beside the next check, so this returns only once it retired.
-pub(super) fn last_rites_for(spawned: &user::Spawned, ms: u64) -> Option<Rites> {
-    let in_time = runs_until(ms, || spawned.observation.rites().is_some());
-    while spawned.observation.rites().is_none() {
+// Guest time stretches with host load, so these waits have no budget: a hang is the harness's timeout.
+fn waits_until(done: impl Fn() -> bool) {
+    while !done() {
         core::hint::spin_loop();
     }
-    in_time.then(|| spawned.observation.rites()).flatten()
+}
+
+fn last_rites_for(spawned: &user::Spawned) -> Rites {
+    loop {
+        if let Some(rites) = spawned.observation.rites() {
+            return rites;
+        }
+        core::hint::spin_loop();
+    }
 }
 
 // Written by the teardown once, and refused for good after that.
@@ -540,9 +506,7 @@ pub(super) fn a_program_drives_its_own_ring(context: &mut ThreadContext) -> bool
     let Ok(echoing) = user::run(context) else {
         return false;
     };
-    let Some(echoed) = last_rites_for(&echoing, 2_000) else {
-        return false;
-    };
+    let echoed = last_rites_for(&echoing);
     let call = trap::last_syscall();
     let crossed = call.count > calls_before
         && call.slot == echoing.slot
@@ -553,9 +517,7 @@ pub(super) fn a_program_drives_its_own_ring(context: &mut ThreadContext) -> bool
     let Ok(duplicating) = user::spawn_duplicating(context) else {
         return false;
     };
-    let Some(duplicated) = last_rites_for(&duplicating, 2_000) else {
-        return false;
-    };
+    let duplicated = last_rites_for(&duplicating);
 
     crossed
         && smap_held
