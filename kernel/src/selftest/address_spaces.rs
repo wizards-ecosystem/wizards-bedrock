@@ -266,8 +266,8 @@ pub(super) fn an_active_unmap_exposes_only_its_replacement(context: &mut ThreadC
         && second_removed
 }
 
+// It counts only its own space's tables: other threads move global and root-world frames meanwhile.
 pub(super) fn a_bound_space_is_not_reclaimed(context: &mut ThreadContext) -> bool {
-    let free_before = mm::free_frames();
     let Some(mut space) = user_space(context) else {
         return false;
     };
@@ -286,7 +286,7 @@ pub(super) fn a_bound_space_is_not_reclaimed(context: &mut ThreadContext) -> boo
         }
     };
 
-    let held = mm::free_frames();
+    let tables = space.table_frames();
     let refused = matches!(
         space.reclaim(None),
         Err(paging::ReclaimFailure {
@@ -294,11 +294,14 @@ pub(super) fn a_bound_space_is_not_reclaimed(context: &mut ThreadContext) -> boo
             ..
         }) if found == root
     ) && !space.is_reclaimed()
-        && mm::free_frames() == held;
+        && space.table_frames() == tables;
 
     let released = task::release_uninstalled(binding);
-    let reclaimed =
-        space.reclaim(Some(released)).is_ok_and(|tables| tables > 0) && space.is_reclaimed();
+    let reclaimed = tables > 0
+        && space
+            .reclaim(Some(released))
+            .is_ok_and(|returned| returned == tables)
+        && space.is_reclaimed();
     let once_only = matches!(
         space.reclaim(None),
         Err(paging::ReclaimFailure {
@@ -308,7 +311,7 @@ pub(super) fn a_bound_space_is_not_reclaimed(context: &mut ThreadContext) -> boo
     );
     drop(space);
 
-    bound_once && refused && reclaimed && once_only && mm::free_frames() == free_before
+    bound_once && refused && reclaimed && once_only
 }
 
 // The blocker sits on the second page, so a refusal that kept the first page would show.
