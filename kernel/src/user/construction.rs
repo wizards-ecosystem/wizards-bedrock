@@ -130,8 +130,10 @@ pub(crate) fn spawn(
     argument: u64,
     operand: u64,
 ) -> Result<Spawned, SpawnError> {
-    let root = world::root().ok_or(SpawnError::NoWorld)?;
-    spawn_in(context, root, None, name, which, argument, operand)
+    match world::root() {
+        Some(root) => spawn_in(context, root, None, name, which, argument, operand),
+        None => admitted_isolation().and(Err(SpawnError::NoWorld)),
+    }
 }
 
 // A program in the given world, its objects charged to that world's arena; `birth` is an endpoint

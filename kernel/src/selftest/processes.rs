@@ -312,9 +312,13 @@ pub(super) fn channel_moves_conserve_handles(context: &mut ThreadContext) -> boo
             && world::inspect(writer_world).is_some_and(|(_, used)| used + MOVED <= sent)
             && world::inspect(reader_world).is_some_and(|(_, used)| used == rested + MOVED)
     });
+    // A spawner's observation lives in the program's world, so it goes before that world does.
     drop(writer);
-    paid && worlds::killed(context, writer_world, root, before_kill + writer_reserved)
-        && last_rites_for(&reader, 10_000).is_some_and(|rites| agreed(&rites))
+    let delivered = paid
+        && worlds::killed(context, writer_world, root, before_kill + writer_reserved)
+        && last_rites_for(&reader, 10_000).is_some_and(|rites| agreed(&rites));
+    drop(reader);
+    delivered
         && worlds::killed(
             context,
             reader_world,
