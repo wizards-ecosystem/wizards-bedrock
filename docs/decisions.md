@@ -253,6 +253,14 @@ number and is added here, as one entry or as an amending id on the entry it chan
   wait and places it, and waits until the world's thread pool is empty, because the records and
   stacks are frames of the arena it dissolves. A thread joins at creation and leaves when the
   reaper frees its record, and rejoins if that removal is refused.
+- **D-595** A run queue reaches its threads through holds of their records and worlds, cloned
+  without a lock, never through the registry: queue links in both directions, sleeper links, the
+  running thread and the idle thread. A link is dropped when its thread leaves the list, so a hold
+  never outlives the thread's time on a queue, a sleeper list or a processor, and teardown, which
+  already waits for the world's thread pool to empty, waits for nothing new. The queue keeps the
+  weighted average vruntime as running sums (`eevdf::Load`, Linux's `avg_vruntime`), so only the
+  pick walks the queue; sleepers stay in deadline order, so the alarm and the wake-up read the
+  head (amends D-582).
 
 ## Memory
 

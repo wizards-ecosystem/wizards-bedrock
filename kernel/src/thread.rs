@@ -3,7 +3,7 @@ use core::ops::Deref;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use boot_record::{Ran, Record};
-use eevdf::{BASE_WEIGHT, Entity};
+use eevdf::{BASE_WEIGHT, Entity, Load, Pick};
 use stack_layout::StackLayout;
 use wake_state::{Event, State as Wake, Word};
 use world_tree::NodeRef;
@@ -125,16 +125,26 @@ impl ThreadRef {
         let world = registry::hold(self.world)?;
         let thread = world.threads.hold(self.thread)?;
         Some(Resolved {
+            at: self,
             thread,
             _world: world,
         })
     }
 }
 
-// The thread first, so its borrow ends before the world's.
+// The thread first, so its borrow ends before the world's. A clone takes no lock, so the run
+// queue and sleepers link threads by these and reach them without the registry.
+#[derive(Clone)]
 struct Resolved {
+    at: ThreadRef,
     thread: Hold<Thread>,
     _world: Hold<World>,
+}
+
+impl fmt::Debug for Resolved {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self.at, formatter)
+    }
 }
 
 impl Deref for Resolved {
@@ -158,19 +168,20 @@ struct Wait {
 }
 
 // Each link changes only under the lock of the list it is in: a run queue, a wait list, a run
-// queue's sleepers or the reaper's list.
+// queue's sleepers or the reaper's list. A thread's entity is fixed while it is queued.
 #[derive(Debug)]
 struct Sched {
     entity: Entity,
     started: u64,
     lag: i64,
     cpu: usize,
-    next: Option<ThreadRef>,
+    previous: Option<Resolved>,
+    next: Option<Resolved>,
     wait: Option<Wait>,
     listed: bool,
     wait_next: Option<ThreadRef>,
     sleeping_on: Option<usize>,
-    sleeper_next: Option<ThreadRef>,
+    sleeper_next: Option<Resolved>,
     reap_next: Option<ThreadRef>,
     member_previous: Option<Local<Thread>>,
     member_next: Option<Local<Thread>>,
@@ -183,6 +194,7 @@ impl Sched {
             started: 0,
             lag: 0,
             cpu,
+            previous: None,
             next: None,
             wait: None,
             listed: false,
@@ -250,14 +262,16 @@ enum Mode {
 
 #[derive(Debug)]
 struct RunQueue {
-    first: Option<ThreadRef>,
-    last: Option<ThreadRef>,
+    first: Option<Resolved>,
+    last: Option<Resolved>,
     ready: usize,
-    // Threads blocked on this processor with a deadline, which its alarm ends.
-    sleepers: Option<ThreadRef>,
-    current: Option<ThreadRef>,
+    // The queued threads' entities, which stay fixed while they are queued.
+    load: Load,
+    // Threads blocked on this processor with a deadline, which its alarm ends, earliest first.
+    sleepers: Option<Resolved>,
+    current: Option<Resolved>,
     // Never queued: any weight, however small, would win it the processor now and then.
-    idle: Option<ThreadRef>,
+    idle: Option<Resolved>,
 }
 
 impl RunQueue {
@@ -265,240 +279,245 @@ impl RunQueue {
         first: None,
         last: None,
         ready: 0,
+        load: Load::EMPTY,
         sleepers: None,
         current: None,
         idle: None,
     };
 
-    fn push(&mut self, thread: ThreadRef) {
-        sched_of(thread, |sched| sched.next = None);
-        match self.last {
-            Some(last) => sched_of(last, |sched| sched.next = Some(thread)),
-            None => self.first = Some(thread),
+    fn is_idle(&self, thread: ThreadRef) -> bool {
+        self.idle.as_ref().is_some_and(|idle| idle.at == thread)
+    }
+
+    fn push(&mut self, thread: &Resolved) {
+        let last = self.last.replace(thread.clone());
+        let entity = sched(thread, |sched| {
+            sched.previous = last.clone();
+            sched.next = None;
+            sched.entity
+        });
+        self.load.add(&entity);
+        match last {
+            Some(last) => sched(&last, |sched| sched.next = Some(thread.clone())),
+            None => self.first = Some(thread.clone()),
         }
-        self.last = Some(thread);
         self.ready += 1;
     }
 
-    fn remove(&mut self, thread: ThreadRef) {
-        let mut previous = None;
-        let mut cursor = self.first;
-        while let Some(at) = cursor {
-            let next = sched_of(at, |sched| sched.next);
-            if at == thread {
-                match previous {
-                    Some(previous) => sched_of(previous, |sched| sched.next = next),
-                    None => self.first = next,
-                }
-                if self.last == Some(thread) {
-                    self.last = previous;
-                }
-                sched_of(thread, |sched| sched.next = None);
-                self.ready -= 1;
-                return;
-            }
-            previous = cursor;
-            cursor = next;
+    // A thread on no queue has no previous and is not first, so removing it changes nothing.
+    fn remove(&mut self, thread: &Resolved) {
+        let first = self.first.as_ref().map(|first| first.at);
+        let Some((previous, next, entity)) = sched(thread, |sched| {
+            (sched.previous.is_some() || first == Some(thread.at))
+                .then(|| (sched.previous.take(), sched.next.take(), sched.entity))
+        }) else {
+            return;
+        };
+        self.load.remove(&entity);
+        match &next {
+            Some(next) => sched(next, |sched| sched.previous = previous.clone()),
+            None => self.last = previous.clone(),
         }
+        match previous {
+            Some(previous) => sched(&previous, |sched| sched.next = next),
+            None => self.first = next,
+        }
+        self.ready -= 1;
     }
 
-    fn entities(&self) -> Entities {
-        Entities { cursor: self.first }
-    }
-
-    fn normal_current(&self) -> Option<ThreadRef> {
-        self.current.filter(|current| Some(*current) != self.idle)
+    fn normal_current(&self) -> Option<&Resolved> {
+        self.current
+            .as_ref()
+            .filter(|current| !self.is_idle(current.at))
     }
 
     fn average(&self, with_current: bool) -> Option<u64> {
         let current = with_current
             .then(|| self.normal_current())
             .flatten()
-            .map(|current| sched_of(current, |sched| sched.entity));
-        eevdf::average_vruntime(self.entities().map(|(_, entity)| entity).chain(current))
+            .map(|current| sched(current, |sched| sched.entity));
+        self.load.average(current.as_ref())
     }
 
-    fn choose(&self, mode: Mode) -> Option<ThreadRef> {
+    fn choose(&self, mode: Mode) -> Option<Resolved> {
         // The idle thread answers only when there is no other, never replacing a normal thread.
         let Some(average) = self.average(mode != Mode::Leave) else {
-            return self.idle.filter(|idle| Some(*idle) != self.current);
+            let current = self.current.as_ref().map(|current| current.at);
+            return self.idle.clone().filter(|idle| Some(idle.at) != current);
         };
         let current = (mode == Mode::Preempt)
             .then(|| self.normal_current())
             .flatten();
-        let candidates = || {
-            self.entities()
-                .chain(current.map(|current| (current, sched_of(current, |sched| sched.entity))))
-        };
-        match eevdf::pick(candidates(), average) {
+        let mut pick = Pick::new(average);
+        let mut best = None;
+        let mut cursor = self.first.clone();
+        while let Some(at) = cursor {
+            let (entity, next) = sched(&at, |sched| (sched.entity, sched.next.clone()));
+            if pick.offer(&entity) {
+                best = Some(at);
+            }
+            cursor = next;
+        }
+        if let Some(current) = current
+            && pick.offer(&sched(current, |sched| sched.entity))
+        {
+            best = Some(current.clone());
+        }
+        match best {
             Some(thread) => Some(thread),
             // With the running thread excluded, nobody eligible is honest: it keeps the CPU.
             None if mode == Mode::Yield => None,
             // With everyone considered `eevdf` always finds someone; first in line is the backstop.
-            None => candidates().next().map(|(thread, _)| thread),
+            None => self.first.clone().or_else(|| current.cloned()),
         }
     }
 
-    fn next_event(&self, running: ThreadRef, now: u64) -> Option<u64> {
-        let runnable = self.ready + usize::from(Some(running) != self.idle);
-        let held = resolved(running);
-        let remaining = sched(&held, |sched| sched.entity.remaining_slice());
+    fn next_event(&self, now: u64) -> Option<u64> {
+        let running = self.current.as_ref()?;
+        let runnable = self.ready + usize::from(!self.is_idle(running.at));
+        let remaining = sched(running, |sched| sched.entity.remaining_slice());
         let slice_end = (runnable > 1).then(|| now.saturating_add(remaining));
         // Only while a thread with a world clock runs, so an idle kernel still takes no alarm.
-        let clock_refresh = held
+        let clock_refresh = running
             .clock
             .map(|clock| now.saturating_add(clock.refresh_interval_ns()));
-        drop(held);
-        let mut earliest_sleeper = None;
-        let mut cursor = self.sleepers;
-        while let Some(at) = cursor {
-            let (deadline, next) = sched_of(at, |sched| {
-                (
-                    sched.wait.and_then(|wait| wait.deadline),
-                    sched.sleeper_next,
-                )
-            });
-            earliest_sleeper = earliest(earliest_sleeper, deadline);
-            cursor = next;
-        }
+        let earliest_sleeper = self.sleepers.as_ref().and_then(sleeper_deadline);
         earliest(earliest(slice_end, earliest_sleeper), clock_refresh)
     }
 
     // The slice runs from here, so a decision slower than what is left of it never bills the
     // arriving thread for time it spent waiting to be switched in.
-    fn hand_over(&self, running: ThreadRef) -> Option<u64> {
+    fn hand_over(&self) -> Option<u64> {
         let now = time::scheduler_now_ns();
-        sched_of(running, |sched| sched.started = now);
-        self.next_event(running, now)
+        if let Some(running) = &self.current {
+            sched(running, |sched| sched.started = now);
+        }
+        self.next_event(now)
     }
 
     // The arriving thread's processor is this one, and it may not yet be off its last one.
-    fn place(&mut self, thread: ThreadRef, held: &Thread) {
+    fn place(&mut self, thread: &Resolved) {
         let average = self.average(true);
-        sched(held, |sched| {
+        sched(thread, |sched| {
             let average = average.unwrap_or(sched.entity.vruntime());
             sched.entity.place(average, sched.lag, SLICE_NS);
         });
         self.push(thread);
     }
 
+    // After every sleeper due no later than `deadline`, so equal deadlines wake in order.
+    fn sleep(&mut self, cpu: usize, thread: &Resolved, deadline: u64) {
+        let mut previous: Option<Resolved> = None;
+        let mut cursor = self.sleepers.clone();
+        while let Some(at) = cursor {
+            if sleeper_deadline(&at).is_some_and(|due| due > deadline) {
+                break;
+            }
+            cursor = sched(&at, |sched| sched.sleeper_next.clone());
+            previous = Some(at);
+        }
+        let next = match &previous {
+            Some(previous) => sched(previous, |sched| sched.sleeper_next.replace(thread.clone())),
+            None => self.sleepers.replace(thread.clone()),
+        };
+        sched(thread, |sched| {
+            sched.sleeper_next = next;
+            sched.sleeping_on = Some(cpu);
+        });
+    }
+
     // A revoked clock wakes every sleeper: none may stay parked on an unreachable deadline.
     fn wake_due(&mut self, now: u64) {
         let clock_live = time::is_calibrated();
-        let mut previous = None;
-        let mut cursor = self.sleepers;
-        while let Some(at) = cursor {
-            let held = resolved(at);
-            let (next, wait) = sched(&held, |sched| (sched.sleeper_next, sched.wait));
-            let deadline = wait.and_then(|wait| wait.deadline);
-            if clock_live && deadline.is_some_and(|deadline| deadline > now) {
-                previous = cursor;
-                cursor = next;
-                continue;
+        while let Some(first) = self.sleepers.take() {
+            if clock_live && sleeper_deadline(&first).is_some_and(|deadline| deadline > now) {
+                self.sleepers = Some(first);
+                return;
             }
-            match previous {
-                Some(previous) => sched_of(previous, |sched| sched.sleeper_next = next),
-                None => self.sleepers = next,
-            }
-            sched(&held, |sched| {
-                sched.sleeper_next = None;
+            let wait = sched(&first, |sched| {
+                self.sleepers = sched.sleeper_next.take();
                 sched.sleeping_on = None;
+                sched.wait
             });
             // It blocked on this processor, whose switch away finished before this lock returned.
             if let Some(wait) = wait
-                && claim(&held, wait.sequence) == Some(Wake::Waking)
+                && claim(&first, wait.sequence) == Some(Wake::Waking)
             {
-                self.place(at, &held);
+                self.place(&first);
                 assert!(
-                    advance(&held, Event::Place).is_some(),
+                    advance(&first, Event::Place).is_some(),
                     "a claimed sleeper could not be placed"
                 );
             }
-            cursor = next;
         }
     }
 
-    fn unlink_sleeper(&mut self, cpu: usize, thread: ThreadRef) {
-        if sched_of(thread, |sched| sched.sleeping_on) != Some(cpu) {
+    fn unlink_sleeper(&mut self, cpu: usize, thread: &Resolved) {
+        if sched(thread, |sched| sched.sleeping_on) != Some(cpu) {
             return;
         }
-        let mut previous = None;
-        let mut cursor = self.sleepers;
+        let mut previous: Option<Resolved> = None;
+        let mut cursor = self.sleepers.clone();
         while let Some(at) = cursor {
-            let next = sched_of(at, |sched| sched.sleeper_next);
-            if at == thread {
+            if at.at == thread.at {
+                let next = sched(thread, |sched| {
+                    sched.sleeping_on = None;
+                    sched.sleeper_next.take()
+                });
                 match previous {
-                    Some(previous) => sched_of(previous, |sched| sched.sleeper_next = next),
+                    Some(previous) => sched(&previous, |sched| sched.sleeper_next = next),
                     None => self.sleepers = next,
                 }
-                sched_of(thread, |sched| {
-                    sched.sleeper_next = None;
-                    sched.sleeping_on = None;
-                });
                 return;
             }
-            previous = cursor;
-            cursor = next;
+            cursor = sched(&at, |sched| sched.sleeper_next.clone());
+            previous = Some(at);
         }
     }
 
     // The first ready thread off every processor leaves, carrying its lag from this queue's average.
-    fn take_off_cpu(&mut self, thief: usize) -> Option<ThreadRef> {
+    fn take_off_cpu(&mut self, thief: usize) -> Option<Resolved> {
         let average = self.average(true);
-        let mut cursor = self.first;
+        let mut cursor = self.first.clone();
         while let Some(at) = cursor {
-            let held = resolved(at);
-            let next = sched(&held, |sched| sched.next);
-            if !held.task.is_on_cpu() {
-                drop(held);
-                self.remove(at);
-                sched_of(at, |sched| {
+            if !at.task.is_on_cpu() {
+                self.remove(&at);
+                sched(&at, |sched| {
                     sched.lag = sched.entity.lag(average.unwrap_or(sched.entity.vruntime()));
                     sched.cpu = thief;
                 });
                 return Some(at);
             }
-            cursor = next;
+            cursor = sched(&at, |sched| sched.next.clone());
         }
         None
     }
 
     // `next` leaves the queue and is claimed, so no other processor can pick it or free it.
-    fn switch_in(&mut self, cpu: usize, next: ThreadRef, now: u64) -> Claimed {
-        self.remove(next);
-        self.current = Some(next);
-        let held = resolved(next);
-        sched(&held, |sched| {
+    fn switch_in(&mut self, cpu: usize, next: Resolved, now: u64) -> Claimed {
+        self.remove(&next);
+        sched(&next, |sched| {
             sched.started = now;
             sched.cpu = cpu;
         });
-        *NAMES[cpu].lock_leaf() = held.name;
+        *NAMES[cpu].lock_leaf() = next.name;
         let bit = 1 << cpu;
-        if Some(next) == self.idle {
+        if self.is_idle(next.at) {
             IDLE.fetch_or(bit, Ordering::AcqRel);
         } else {
             IDLE.fetch_and(!bit, Ordering::AcqRel);
             RAN.fetch_or(bit, Ordering::Relaxed);
         }
-        held.task
-            .claim()
-            .unwrap_or_else(|| panic!("thread {} was picked while it is on a processor", held.name))
+        let claimed = next.task.claim().unwrap_or_else(|| {
+            panic!("thread {} was picked while it is on a processor", next.name)
+        });
+        self.current = Some(next);
+        claimed
     }
 }
 
-struct Entities {
-    cursor: Option<ThreadRef>,
-}
-
-impl Iterator for Entities {
-    type Item = (ThreadRef, Entity);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let at = self.cursor?;
-        let (entity, next) = sched_of(at, |sched| (sched.entity, sched.next));
-        self.cursor = next;
-        Some((at, entity))
-    }
+fn sleeper_deadline(thread: &Resolved) -> Option<u64> {
+    sched(thread, |sched| sched.wait.and_then(|wait| wait.deadline))
 }
 
 // Every switch happens after its guard drops, with interrupts off throughout.
@@ -556,8 +575,8 @@ pub(crate) fn report_processors() {
     crate::info!("{}", Record::Ran(Ran { processors }));
 }
 
-fn charge(thread: ThreadRef, now: u64) {
-    sched_of(thread, |sched| {
+fn charge(thread: &Thread, now: u64) {
+    sched(thread, |sched| {
         sched.entity.charge(now.saturating_sub(sched.started));
         sched.started = now;
         if sched.entity.slice_is_spent() {
@@ -703,18 +722,19 @@ pub(crate) fn stop_world(node: NodeRef) -> bool {
         let members = world.members.lock_ranked();
         let mut cursor = members.first;
         while let Some(at) = cursor {
-            let held = member(&world, at);
+            let held = Resolved {
+                at: ThreadRef {
+                    world: node,
+                    thread: at,
+                },
+                thread: member(&world, at),
+                _world: world.clone(),
+            };
             let (wait, next) = sched(&held, |sched| (sched.wait, sched.member_next));
             if let Some(wait) = wait
                 && claim(&held, wait.sequence) == Some(Wake::Waking)
             {
-                place_woken(
-                    ThreadRef {
-                        world: node,
-                        thread: at,
-                    },
-                    &held,
-                );
+                place_woken(&held);
                 woken = true;
             }
             cursor = next;
@@ -830,9 +850,10 @@ pub(crate) fn adopt_boot(context: &mut ThreadContext) {
         world: root,
         thread,
     };
-    resolved(thread).task.name(thread.tag());
+    let held = resolved(thread);
+    held.task.name(thread.tag());
     *NAMES[0].lock_leaf() = "boot";
-    QUEUES[0].lock(context).current = Some(thread);
+    QUEUES[0].lock(context).current = Some(held);
     SCHEDULING.fetch_or(1, Ordering::AcqRel);
     RAN.fetch_or(1, Ordering::Relaxed);
 }
@@ -858,6 +879,7 @@ pub(crate) fn start_idle(context: &mut ThreadContext) {
         };
         match create(context, root, prepared) {
             Ok(idle) => {
+                let idle = resolved(idle);
                 QUEUES[cpu].lock(context).idle = Some(idle);
                 notify(cpu);
             }
@@ -874,6 +896,7 @@ pub(crate) fn run_processor(cpu: usize) -> ! {
             let mut queue = QUEUES[cpu].lock_ranked();
             queue
                 .idle
+                .clone()
                 .map(|idle| queue.switch_in(cpu, idle, time::scheduler_now_ns()))
         };
         if let Some(claimed) = claimed {
@@ -905,8 +928,7 @@ fn steal(context: &mut ThreadContext) -> bool {
     let Some(taken) = QUEUES[source].lock(context).take_off_cpu(me) else {
         return false;
     };
-    let mut queue = QUEUES[me].lock(context);
-    queue.place(taken, &resolved(taken));
+    QUEUES[me].lock(context).place(&taken);
     true
 }
 
@@ -1018,16 +1040,18 @@ fn mark_runnable(thread: ThreadRef) {
     let saved = interrupt::disable();
     let now = time::scheduler_now_ns();
     let cpu = target_for(this_processor());
+    let held = resolved(thread);
     let event = {
         let mut queue = QUEUES[cpu].lock_ranked();
         let average = queue.average(true).unwrap_or(0);
-        sched_of(thread, |sched| {
+        sched(&held, |sched| {
             sched.entity.place(average, 0, SLICE_NS);
             sched.cpu = cpu;
         });
-        queue.push(thread);
-        queue.current.map(|current| queue.next_event(current, now))
+        queue.push(&held);
+        queue.current.is_some().then(|| queue.next_event(now))
     };
+    drop(held);
     if cpu == this_processor() {
         if let Some(event) = event {
             reschedule_timer(event);
@@ -1054,24 +1078,23 @@ fn give_way(context: &mut ThreadContext, mode: Mode) {
     let cpu = this_processor();
     let (next, event) = {
         let mut queue = QUEUES[cpu].lock(context);
-        let Some(current) = queue.current else {
+        let Some(current) = queue.current.clone() else {
             drop(queue);
             saved.restore();
             return;
         };
-        charge(current, now);
+        charge(&current, now);
         queue.wake_due(now);
         let next = queue
             .choose(mode)
-            .filter(|next| *next != current)
+            .filter(|next| next.at != current.at)
             .map(|next| {
-                if Some(current) != queue.idle {
-                    queue.push(current);
+                if !queue.is_idle(current.at) {
+                    queue.push(&current);
                 }
                 queue.switch_in(cpu, next, now)
             });
-        let running = queue.current.unwrap_or(current);
-        (next, queue.hand_over(running))
+        (next, queue.hand_over())
     };
 
     reschedule_timer(event);
@@ -1168,19 +1191,21 @@ fn block(
     let now = time::scheduler_now_ns();
     let cpu = this_processor();
     let mut queue = QUEUES[cpu].lock(context);
-    charge(me, now);
+    let Some(held) = queue.current.clone().filter(|current| current.at == me) else {
+        panic!("a thread blocked while another ran");
+    };
+    charge(&held, now);
     queue.wake_due(now);
     let average = queue.average(true);
     let Some(next) = queue.choose(Mode::Leave) else {
         // A sole runnable thread remains charged while it waits, because it still owns the CPU.
-        let event = queue.next_event(me, now);
+        let event = queue.next_event(now);
         drop(queue);
         reschedule_timer(earliest(event, until));
         // Enabling and halting must be one step (`sti; hlt`), or the waking interrupt is lost.
         if saved.were_enabled() {
             saved.wait_for_interrupt();
         }
-        let held = resolved(me);
         let _ = claim(&held, sequence);
         assert!(
             advance(&held, Event::Resume).is_some(),
@@ -1188,33 +1213,26 @@ fn block(
         );
         return;
     };
-    let held = resolved(me);
     if advance(&held, Event::Block).is_none() {
         // A waker claimed the wait after it registered: it is over before it blocked.
         assert!(
             advance(&held, Event::Resume).is_some(),
             "a woken thread could not resume"
         );
-        drop(held);
-        let event = queue.next_event(me, now);
+        let event = queue.next_event(now);
         drop(queue);
         reschedule_timer(event);
         return;
     }
-    let sleepers = queue.sleepers;
     sched(&held, |sched| {
         sched.lag = sched.entity.lag(average.unwrap_or(0));
-        if until.is_some() {
-            sched.sleeper_next = sleepers;
-            sched.sleeping_on = Some(cpu);
-        }
     });
-    if until.is_some() {
-        queue.sleepers = Some(me);
+    if let Some(deadline) = until {
+        queue.sleep(cpu, &held, deadline);
     }
     drop(held);
     let claimed = queue.switch_in(cpu, next, now);
-    let event = queue.hand_over(next);
+    let event = queue.hand_over();
     drop(queue);
     reschedule_timer(event);
     if let Err(reason) = task::switch_to(claimed) {
@@ -1224,13 +1242,14 @@ fn block(
 
 // Woken or not, the thread leaves every list its wait put it on.
 fn finish_wait(context: &mut ThreadContext, me: ThreadRef, list: Option<&WaitList>) {
-    if let Some(cpu) = sched_of(me, |sched| sched.sleeping_on) {
-        QUEUES[cpu].lock(context).unlink_sleeper(cpu, me);
+    let held = resolved(me);
+    if let Some(cpu) = sched(&held, |sched| sched.sleeping_on) {
+        QUEUES[cpu].lock(context).unlink_sleeper(cpu, &held);
     }
     if let Some(list) = list {
         list.lock(context).unlink(me);
     }
-    sched_of(me, |sched| sched.wait = None);
+    sched(&held, |sched| sched.wait = None);
 }
 
 // A linked thread whose wait already ended is skipped: its sequence no longer matches.
@@ -1246,7 +1265,7 @@ pub(crate) fn wake_waiters(list: &WaitList) -> usize {
             match claim(&held, wait.sequence) {
                 Some(Wake::Woken) => woken += 1,
                 Some(Wake::Waking) => {
-                    place_woken(waiter, &held);
+                    place_woken(&held);
                     woken += 1;
                 }
                 _ => {}
@@ -1262,14 +1281,14 @@ pub(crate) fn wake_waiters(list: &WaitList) -> usize {
 }
 
 // Its stack and record stay its last processor's until the thread after it there lets them go.
-fn place_woken(thread: ThreadRef, held: &Thread) {
+fn place_woken(held: &Resolved) {
     while held.task.is_on_cpu() {
         core::hint::spin_loop();
     }
     let cpu = target_for(sched(held, |sched| sched.cpu));
     sched(held, |sched| sched.cpu = cpu);
     let mut queue = QUEUES[cpu].lock_ranked();
-    queue.place(thread, held);
+    queue.place(held);
     assert!(
         advance(held, Event::Place).is_some(),
         "a claimed thread could not be placed"
@@ -1318,23 +1337,22 @@ pub(crate) fn reschedule(frame: &TrapFrame) {
     let cpu = this_processor();
     let (next, event) = {
         let mut queue = QUEUES[cpu].lock_ranked();
-        let Some(current) = queue.current else {
+        let Some(current) = queue.current.clone() else {
             return;
         };
-        charge(current, now);
+        charge(&current, now);
         queue.wake_due(now);
         let next = switchable
             .then(|| queue.choose(Mode::Preempt))
             .flatten()
-            .filter(|next| *next != current)
+            .filter(|next| next.at != current.at)
             .map(|next| {
-                if Some(current) != queue.idle {
-                    queue.push(current);
+                if !queue.is_idle(current.at) {
+                    queue.push(&current);
                 }
                 queue.switch_in(cpu, next, now)
             });
-        let running = queue.current.unwrap_or(current);
-        (next, queue.hand_over(running))
+        (next, queue.hand_over())
     };
 
     reschedule_timer(event);
@@ -1358,23 +1376,26 @@ pub(crate) fn exit(context: &mut ThreadContext) -> ! {
     let Some(me) = current() else {
         panic!("a thread with no record cannot exit");
     };
-    assert!(resolved(me).entry.is_some(), "the boot thread cannot exit");
+    let held = resolved(me);
+    assert!(held.entry.is_some(), "the boot thread cannot exit");
     crate::reaper::submit(context, me);
     let now = time::scheduler_now_ns();
     let cpu = this_processor();
     let mut queue = QUEUES[cpu].lock(context);
     // Charged before it leaves, so the last slice is accounted like every other.
-    charge(me, now);
+    charge(&held, now);
     queue.wake_due(now);
     assert!(
-        advance(&resolved(me), Event::Exit).is_some(),
+        advance(&held, Event::Exit).is_some(),
         "an exiting thread was not running"
     );
+    // This stack never unwinds, and the reaper frees the record only once no hold borrows it.
+    drop(held);
     let Some(next) = queue.choose(Mode::Leave) else {
         panic!("nothing is runnable after a thread exited");
     };
     let claimed = queue.switch_in(cpu, next, now);
-    let event = queue.hand_over(next);
+    let event = queue.hand_over();
     drop(queue);
     reschedule_timer(event);
     let reason = task::exit_to(claimed);

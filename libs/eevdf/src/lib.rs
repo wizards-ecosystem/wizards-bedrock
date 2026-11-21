@@ -1,8 +1,6 @@
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
-use core::borrow::Borrow;
-
 // Linux's `NICE_0_LOAD`: at this weight one unit of real time is one unit of virtual time.
 pub const BASE_WEIGHT: u32 = 1024;
 
@@ -101,37 +99,89 @@ impl Entity {
     }
 }
 
-// Offsets are taken from the first entity and the result floored so someone is eligible.
-pub fn average_vruntime<E: Borrow<Entity>>(entities: impl IntoIterator<Item = E>) -> Option<u64> {
-    let mut entities = entities.into_iter();
-    let first = entities.next()?;
-    let origin = first.borrow().vruntime;
-
-    let (mut weighted, mut weight) = (0i128, 0i128);
-    for entity in core::iter::once(first).chain(entities) {
-        let entity = entity.borrow();
-        let offset = entity.vruntime.wrapping_sub(origin) as i64;
-        weighted += i128::from(offset) * i128::from(entity.weight);
-        weight += i128::from(entity.weight);
-    }
-    let offset = weighted.div_euclid(weight);
-    Some(origin.wrapping_add(offset as u64))
+// Linux's `avg_vruntime` as running sums: `origin` is the floored mean, `0 <= above < weight`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Load {
+    origin: u64,
+    above: i128,
+    weight: u64,
 }
 
-pub fn pick<K: Copy, E: Borrow<Entity>>(
-    entities: impl IntoIterator<Item = (K, E)>,
-    average: u64,
-) -> Option<K> {
-    let mut best: Option<(K, u64)> = None;
-    for (key, entity) in entities {
-        let entity = entity.borrow();
-        if !entity.is_eligible(average) {
-            continue;
+impl Load {
+    pub const EMPTY: Self = Self {
+        origin: 0,
+        above: 0,
+        weight: 0,
+    };
+
+    fn offset(&self, entity: &Entity) -> i128 {
+        i128::from(entity.vruntime.wrapping_sub(self.origin) as i64) * i128::from(entity.weight)
+    }
+
+    pub fn add(&mut self, entity: &Entity) {
+        if self.weight == 0 {
+            self.origin = entity.vruntime;
         }
-        match best {
-            Some((_, deadline)) if !before(entity.deadline, deadline) => {}
-            _ => best = Some((key, entity.deadline)),
+        self.above += self.offset(entity);
+        self.weight += u64::from(entity.weight);
+        self.settle();
+    }
+
+    pub fn remove(&mut self, entity: &Entity) {
+        let Some(weight) = self.weight.checked_sub(u64::from(entity.weight)) else {
+            panic!("an entity left a load it was not in");
+        };
+        self.above -= self.offset(entity);
+        self.weight = weight;
+        if weight == 0 {
+            assert!(self.above == 0, "an entity left a load with other values");
+        } else {
+            self.settle();
         }
     }
-    best.map(|(key, _)| key)
+
+    fn settle(&mut self) {
+        let shift = self.above.div_euclid(i128::from(self.weight));
+        self.origin = self.origin.wrapping_add(shift as u64);
+        self.above -= shift * i128::from(self.weight);
+    }
+
+    // The mean with `with` counted as one more member, as the running entity is.
+    pub fn average(&self, with: Option<&Entity>) -> Option<u64> {
+        let mut load = *self;
+        if let Some(entity) = with {
+            load.add(entity);
+        }
+        (load.weight > 0).then_some(load.origin)
+    }
+}
+
+// The earliest deadline among eligible entities offered one at a time; the first of equals wins.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Pick {
+    average: u64,
+    deadline: Option<u64>,
+}
+
+impl Pick {
+    pub const fn new(average: u64) -> Self {
+        Self {
+            average,
+            deadline: None,
+        }
+    }
+
+    // True when `entity` is now the best offered.
+    pub fn offer(&mut self, entity: &Entity) -> bool {
+        if !entity.is_eligible(self.average) {
+            return false;
+        }
+        match self.deadline {
+            Some(deadline) if !before(entity.deadline, deadline) => false,
+            _ => {
+                self.deadline = Some(entity.deadline);
+                true
+            }
+        }
+    }
 }

@@ -436,9 +436,14 @@ stack another still stands on. Every switch passes through `task::prepare`, whic
 `kernel/src/thread.rs` is the policy. A thread is an object in its world's thread pool (kernel
 threads in the root world), named by world, index and generation, with its name, entry, owner,
 world clock, a `libs/wake-state` wake word and its scheduling links. Each processor has its own
-run queue and idle thread behind a run-queue lock; the queue links ready threads through their
-records, with the arithmetic in `libs/eevdf` and a 3 ms slice timed from the end of the decision
-that hands a thread the processor, so the decision's own cost is never its bill. If the policy ever returns nobody
+run queue and idle thread behind a run-queue lock; the queue links ready threads both ways
+through their records, with the arithmetic in `libs/eevdf` and a 3 ms slice timed from the end of
+the decision that hands a thread the processor, so the decision's own cost is never its bill. The
+queue keeps its weighted average vruntime as running sums updated on push and removal, and its
+sleepers in deadline order. Every queue link, sleeper link and the running and idle threads are
+holds of the thread's record and world, so a decision reaches each thread without the registry
+and its locks; a thread holds its world only while it is queued, asleep or running, which is never
+past the point teardown already waits for, an empty thread pool. If the policy ever returns nobody
 while every thread is a candidate, the kernel takes the first candidate. The idle thread sits
 outside the policy, runs only when nothing else can and halts. It takes no thread lock, since one
 it held could wait forever, so it wakes the service worker to log what calls and switches left

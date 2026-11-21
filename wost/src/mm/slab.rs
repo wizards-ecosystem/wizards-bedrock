@@ -260,6 +260,26 @@ pub struct Hold<T> {
     borrow: NonNull<AtomicU32>,
 }
 
+// SAFETY: a hold only reaches `&T` and its own borrow count, which is atomic, and it never drops
+// the object, so moving it to another processor needs only `T: Sync`.
+unsafe impl<T: Sync> Send for Hold<T> {}
+
+// A second borrow of an object the first keeps live, taken without the page's lock.
+impl<T> Clone for Hold<T> {
+    fn clone(&self) -> Self {
+        // SAFETY: the count lives in the page header, which outlives every hold it counts.
+        let borrow = unsafe { self.borrow.as_ref() };
+        let counted = borrow.fetch_update(Ordering::Acquire, Ordering::Relaxed, |count| {
+            count.checked_add(1)
+        });
+        assert!(counted.is_ok(), "an object's borrow count is full");
+        Self {
+            object: self.object,
+            borrow: self.borrow,
+        }
+    }
+}
+
 impl<T> Deref for Hold<T> {
     type Target = T;
 
