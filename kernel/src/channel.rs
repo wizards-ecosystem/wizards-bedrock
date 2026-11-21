@@ -21,10 +21,8 @@ const _: () = assert!(
     "an inbox holds at least one message of every size the ABI admits"
 );
 
-pub(crate) const RIGHTS: Rights = Rights::DUPLICATE
-    .union(Rights::TRANSFER)
-    .union(Rights::READ)
-    .union(Rights::WRITE);
+// No `DUPLICATE`: an endpoint has one handle, so a move always carries its only reference.
+pub(crate) const RIGHTS: Rights = Rights::TRANSFER.union(Rights::READ).union(Rights::WRITE);
 
 // Reads waiting on one endpoint; a write wakes the oldest.
 const ARMED: usize = 8;
