@@ -66,6 +66,8 @@ pub(crate) struct World {
     life: SpinLock<rank::Object, Life>,
     ordinals: AtomicU64,
     spaces: AtomicU64,
+    // Endpoints that lost their last reference under a pin, for the reaper to destroy.
+    pub(crate) condemned: AtomicU64,
     pub(crate) code: CodeQuota,
     pub(crate) tables: TablePool,
     pub(crate) queues: QueuePool,
@@ -96,6 +98,7 @@ impl World {
             }),
             ordinals: AtomicU64::new(0),
             spaces: AtomicU64::new(0),
+            condemned: AtomicU64::new(crate::channel::NO_ENDPOINT),
             code: CodeQuota::new(CODE_PAGES),
             tables: Pool::new(),
             queues: Pool::new(),
@@ -108,6 +111,18 @@ impl World {
 
     pub(crate) const fn arena(&self) -> ArenaId {
         self.arena
+    }
+
+    pub(crate) const fn node(&self) -> NodeRef {
+        NodeRef {
+            node: self.arena.index(),
+            generation: self.arena.generation(),
+        }
+    }
+
+    // This world or one of its descendants, which a handle into this world may name.
+    pub(crate) fn governs(&self, node: NodeRef) -> bool {
+        node == self.node() || self.life.lock_leaf().descendants.contains(node)
     }
 
     pub(crate) const fn handles(&self) -> u32 {

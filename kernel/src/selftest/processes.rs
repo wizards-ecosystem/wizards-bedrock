@@ -11,10 +11,23 @@ use x86_tables::exception;
 
 use super::runs_until;
 use super::threads::{STOP_SPINNING, light_spinner, yields_until};
+use super::worlds;
 use crate::arch::current::trap;
+use crate::arena::Local;
+use crate::channel::{self, Endpoint, Peer};
 use crate::process::Rites;
 use crate::thread::ThreadContext;
+use crate::world::{self, registry};
 use crate::{thread, time, user};
+use native_abi::witness::channels::{READER, WRITER};
+use world_tree::{Admission, NodeRef};
+use wost::mm::pool;
+
+// Enough of each colour for a witness, its channels and a re-home.
+const WORLD_FRAMES: u32 = 128;
+
+// The writer moves two live endpoints, each a data frame beside records on pages already open.
+const MOVED: usize = 2;
 
 pub(super) fn an_unserved_call_is_refused_without_stopping_the_machine(
     context: &mut ThreadContext,
@@ -250,12 +263,80 @@ pub(super) fn memory_refusals_name_their_rule(context: &mut ThreadContext) -> bo
     })
 }
 
-// Every handle a refused write named stays, and every committed message is read once, in order.
+// Handles a refused write named stay, committed messages are read once in order, and a writer and
+// a reader in sibling worlds, connected at birth, move endpoints between them: the reader's world
+// pays for each one it reads, a reader that cannot pay leaves the message queued, and an endpoint
+// whose world dies in transit arrives dead.
 pub(super) fn channel_moves_conserve_handles(context: &mut ThreadContext) -> bool {
-    let Ok(spawned) = user::spawn_moving_handles(context) else {
+    let Some(root) = world::root() else {
         return false;
     };
-    last_rites_for(&spawned, 10_000).is_some_and(|rites| agreed(&rites))
+    let (Some(writer_world), Some(reader_world)) = (
+        worlds::child(context, root, WORLD_FRAMES),
+        worlds::child(context, root, WORLD_FRAMES),
+    ) else {
+        return false;
+    };
+    let (Some((before_kill, _)), Some((writer_reserved, _))) =
+        (world::inspect(root), world::inspect(writer_world))
+    else {
+        return false;
+    };
+    let Some((writer_birth, reader_birth)) = root_channel(context, root) else {
+        return false;
+    };
+    let Ok(reader) = user::spawn_moving_handles(context, reader_world, reader_birth, READER) else {
+        return false;
+    };
+    let (Some((reserved, rested)), Some(reader_arena)) =
+        (world::inspect(reader_world), worlds::arena(reader_world))
+    else {
+        return false;
+    };
+    let Ok(unpaid) = pool::earmark(context, reader_arena, (reserved - rested) as u32) else {
+        return false;
+    };
+    let Ok(writer) = user::spawn_moving_handles(context, writer_world, writer_birth, WRITER) else {
+        return false;
+    };
+    let refused = yields_until(context, || {
+        queued(reader_world, reader.birth) == Some(3)
+            && queued(writer_world, writer.birth) == Some(1)
+    });
+    let Some((_, sent)) = world::inspect(writer_world).filter(|_| refused) else {
+        return false;
+    };
+    drop(unpaid);
+    let paid = yields_until(context, || {
+        queued(reader_world, reader.birth) == Some(1)
+            && world::inspect(writer_world).is_some_and(|(_, used)| used + MOVED <= sent)
+            && world::inspect(reader_world).is_some_and(|(_, used)| used == rested + MOVED)
+    });
+    drop(writer);
+    paid && worlds::killed(context, writer_world, root, before_kill + writer_reserved)
+        && last_rites_for(&reader, 10_000).is_some_and(|rites| agreed(&rites))
+        && worlds::killed(
+            context,
+            reader_world,
+            root,
+            before_kill + writer_reserved + reserved,
+        )
+}
+
+// Two endpoints of the root world, one for each program's birth.
+fn root_channel(context: &mut ThreadContext, root: NodeRef) -> Option<(Peer, Peer)> {
+    let world = registry::hold(root)?;
+    let mut earmark = pool::earmark(context, world.arena(), Endpoint::frames_for(2)?).ok()?;
+    let (first, second) = channel::create(&mut earmark, &world)?;
+    let birth = |endpoint| Peer {
+        world: root,
+        endpoint,
+    };
+    Some((birth(first), birth(second)))
+}
+
+fn queued(world: NodeRef, endpoint: Local<Endpoint>) -> Option<u8> {
+    registry::pin(world, Admission::Live).map(|world| channel::queued(&world, endpoint))
 }
 
 // A user base is read back through `fs`, and a kernel-half or noncanonical one is refused.

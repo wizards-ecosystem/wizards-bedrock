@@ -15,6 +15,8 @@ mod selftest;
 #[cfg(feature = "selftest")]
 pub(crate) use call::refusals;
 pub(crate) use call::{call, report_execution, report_refusals};
+#[cfg(feature = "selftest")]
+pub(crate) use construction::spawn_in;
 pub(crate) use construction::{SpawnError, spawn};
 pub(crate) use load::keep;
 #[cfg(feature = "selftest")]
@@ -58,6 +60,14 @@ pub(crate) struct Spawned {
         )
     )]
     pub(crate) observation: ObservationRef,
+    #[cfg_attr(
+        not(feature = "selftest"),
+        expect(
+            dead_code,
+            reason = "only the self-tests read the inbox of a program's birth endpoint"
+        )
+    )]
+    pub(crate) birth: crate::arena::Local<crate::channel::Endpoint>,
 }
 
 // Kept by the program's process for its teardown to turn into the status, once.

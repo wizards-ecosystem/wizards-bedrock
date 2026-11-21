@@ -663,7 +663,28 @@ number and is added here, as one entry or as an amending id on the entry it chan
   bounds a message only by its rings and the kernel checks the ABI limits when it reads a
   descriptor (amends the L4 admission check).
 - **D-554** A dying world's endpoints that hold only each other are found by walking its endpoint
-  pool for any live slot (`object_pool::Slots::first_live`) and destroyed at `DestroyObjects`.
+  pool for any live slot (`object_pool::Slots::first_live`) and destroyed when the teardown
+  detaches the world.
+- **D-555** Only an endpoint's own world destroys it. A last reference released under a pin of the
+  endpoint's world puts it on that world's condemned chain, and the reaper destroys the chain as the
+  owner, because a destruction reaches other worlds and a pinned step may not take a second pin.
+- **D-556** A re-home copies the old endpoint's inbox and frame into a spare frame under its lock,
+  installs them in the new endpoint under the new one's lock, and forwards the old one only if its
+  inbox and link are unchanged, else copies again, because no two endpoint locks are held together
+  and a peer may commit meanwhile. Each retry follows a commit into a bounded inbox or a link change,
+  and the spare frame, paid by the reader, returns once the copy is in place.
+- **D-557** A world's endpoints are destroyed at `Detach`, after `ClosePins`, not at
+  `DestroyObjects`, because steps of other worlds pinned while it was live can reach them until the
+  pins drain. A step that cannot pin a world because it is no longer live treats its endpoint as
+  closed and leaves its references to that world's teardown.
+- **D-558** A cross-world write refuses a moved memory object with `DENIED` until memory objects
+  cross worlds, and a memory object that reaches another world inside a re-homed inbox installs as
+  a dead entry. A moved endpoint whose world still holds other handles to it leaves them naming the
+  forwarded record, which reads and writes as peer closed, instead of refusing the move.
+- **D-559** The kernel's spawn takes a target world and consumes the birth endpoint it is given,
+  re-homed from the spawn's earmark when it lives elsewhere, so the self-test kernel can start two
+  programs connected at birth in two worlds. The spawner's observation still lives in the target
+  world, so a spawner lets it go before it kills that world.
 - **D-481** The ring 3 witness is a cargo-built static `ET_EXEC` linked at `0x400000`, and the
   loader maps each segment at its `p_vaddr` with no per-program shift, because a position-dependent
   image holds absolute addresses that a shift breaks and the in-kernel loader takes no `ET_DYN`;

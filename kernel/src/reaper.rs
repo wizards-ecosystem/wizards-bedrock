@@ -6,14 +6,16 @@ use crate::process::{self, ProcessRef};
 use crate::thread::{self, ThreadContext};
 use crate::world;
 
-// Every process here holds a thread slot until its last step and every world an arena node until
-// its last, so the ring cannot overflow.
-const DEPTH: usize = thread::CAPACITY + pool::capacity() as usize;
+// Every process here holds a thread slot until its last step; an arena node holds its world's
+// teardown, one collection of its world's endpoints and one left by the node's last world, which
+// the next round pops, so the ring cannot overflow.
+const DEPTH: usize = thread::CAPACITY + 3 * pool::capacity() as usize;
 
 #[derive(Clone, Copy, Debug)]
 enum Work {
     Process(ProcessRef),
     World(NodeRef, WorldStep),
+    Endpoints(NodeRef),
 }
 
 #[derive(Debug)]
@@ -61,6 +63,12 @@ pub(crate) fn submit(process: ProcessRef) {
     crate::queue::request_reap();
 }
 
+// Once per world, when its condemned chain turns non-empty.
+pub(crate) fn submit_endpoints(node: NodeRef) {
+    PENDING.lock_leaf().push(Work::Endpoints(node));
+    crate::queue::request_reap();
+}
+
 pub(crate) fn submit_world(node: NodeRef) {
     PENDING.lock_leaf().push(Work::World(node, WorldStep::Kill));
     crate::queue::request_reap();
@@ -79,6 +87,10 @@ pub(crate) fn run(context: &mut ThreadContext) -> bool {
                     Progress::Done => process.hold().is_none().then_some(true),
                     Progress::Pending => Some(false),
                 },
+                Work::Endpoints(node) => {
+                    crate::channel::collect(*node);
+                    Some(true)
+                }
                 Work::World(node, step) => match world::step(*node, *step) {
                     Progress::Done if *step == WorldStep::Finished => Some(true),
                     Progress::Done => {

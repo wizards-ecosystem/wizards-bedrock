@@ -174,7 +174,10 @@ impl Table {
         if !entry.generation.is_live(named.generation()) {
             return Err(HandleError::Stale);
         }
-        entry.held.ok_or(HandleError::Stale)
+        match entry.held.ok_or(HandleError::Stale)? {
+            (ObjectRef::Dead(_), _) => Err(HandleError::Gone),
+            held => Ok(held),
+        }
     }
 
     // `false` when the slot is at its last generation, so a seal refuses before it changes anything.
@@ -282,6 +285,9 @@ impl Table {
             .take(named.generation())
             .ok_or(HandleError::Stale)?;
         let (object, held) = entry.held.ok_or(HandleError::Stale)?;
+        if let ObjectRef::Dead(_) = object {
+            return Err(HandleError::Gone);
+        }
         if !held.contains(Rights::TRANSFER) {
             return Err(HandleError::Denied);
         }

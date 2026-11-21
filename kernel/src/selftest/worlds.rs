@@ -15,21 +15,44 @@ const LIMITS: Limits = Limits {
 
 const SAMPLES: u32 = 4;
 
-fn child(context: &mut ThreadContext, parent: NodeRef, mask: u64) -> Option<NodeRef> {
+fn child_of(context: &mut ThreadContext, parent: NodeRef, mask: u64) -> Option<NodeRef> {
+    child_with(context, parent, mask, PER_COLOUR)
+}
+
+// A child of the whole parent's mask that can hold a few programs' handles.
+pub(super) fn child(
+    context: &mut ThreadContext,
+    parent: NodeRef,
+    per_colour: u32,
+) -> Option<NodeRef> {
+    child_with(context, parent, 0, per_colour)
+}
+
+fn child_with(
+    context: &mut ThreadContext,
+    parent: NodeRef,
+    mask: u64,
+    per_colour: u32,
+) -> Option<NodeRef> {
     let request = Request {
-        per_colour: PER_COLOUR,
+        per_colour,
         mask,
         limits: LIMITS,
     };
     world::create(context, parent, request).ok()
 }
 
-fn arena(node: NodeRef) -> Option<ArenaId> {
+pub(super) fn arena(node: NodeRef) -> Option<ArenaId> {
     registry::pin(node, Admission::Live).map(|world| world.arena())
 }
 
 // The kill is done once the reaper is idle and the parent holds the given reservation again.
-fn killed(context: &mut ThreadContext, node: NodeRef, parent: NodeRef, reserved: usize) -> bool {
+pub(super) fn killed(
+    context: &mut ThreadContext,
+    node: NodeRef,
+    parent: NodeRef,
+    reserved: usize,
+) -> bool {
     world::kill(node)
         && yields_until(context, || {
             crate::reaper::is_idle()
@@ -44,7 +67,8 @@ pub(super) fn a_world_past_its_reservation_is_refused_alone(context: &mut Thread
     let Some((initial, _)) = world::inspect(root) else {
         return false;
     };
-    let (Some(greedy), Some(sibling)) = (child(context, root, 0), child(context, root, 0)) else {
+    let (Some(greedy), Some(sibling)) = (child_of(context, root, 0), child_of(context, root, 0))
+    else {
         return false;
     };
     let (Some((parent, parent_used)), Some((reserved, used)), Some(other), Some(arena)) = (
@@ -79,7 +103,7 @@ fn disjoint_colours_stay_apart(context: &mut ThreadContext, root: NodeRef, initi
         .fold(0u64, |mask, colour| mask | 1u64 << colour);
     let all = u64::MAX >> (u64::BITS - colours);
     let odd = all & !even;
-    let (Some(first), Some(second)) = (child(context, root, even), child(context, root, odd))
+    let (Some(first), Some(second)) = (child_of(context, root, even), child_of(context, root, odd))
     else {
         return false;
     };

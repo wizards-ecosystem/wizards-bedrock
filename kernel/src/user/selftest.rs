@@ -4,7 +4,10 @@ use native_abi::witness::behaviour::{
 };
 use wost::arch::current::usercopy;
 
-use super::{SpawnError, Spawned, spawn};
+use world_tree::NodeRef;
+
+use super::{SpawnError, Spawned, spawn, spawn_in};
+use crate::channel::Peer;
 use crate::thread::ThreadContext;
 
 pub(crate) fn spawn_faulting(context: &mut ThreadContext) -> Result<Spawned, SpawnError> {
@@ -77,8 +80,21 @@ pub(crate) fn spawn_refusing_memory(context: &mut ThreadContext) -> Result<Spawn
     spawn(context, "user-memory", 17, MEMORY, 0)
 }
 
-pub(crate) fn spawn_moving_handles(context: &mut ThreadContext) -> Result<Spawned, SpawnError> {
-    spawn(context, "user-channels", 19, CHANNELS, 0)
+pub(crate) fn spawn_moving_handles(
+    context: &mut ThreadContext,
+    world: NodeRef,
+    birth: Peer,
+    role: u64,
+) -> Result<Spawned, SpawnError> {
+    spawn_in(
+        context,
+        world,
+        Some(birth),
+        "user-channels",
+        19,
+        CHANNELS,
+        role,
+    )
 }
 
 pub(crate) fn spawn_probing_the_backdoor(

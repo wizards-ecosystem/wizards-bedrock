@@ -62,16 +62,10 @@ pub(crate) fn step(node: NodeRef, step: WorldStep) -> Progress {
             Progress::Done
         }
         WorldStep::Quiesce => quiesce(node),
-        // Endpoints left only in each other's inboxes outlive every process.
-        WorldStep::DestroyObjects => {
-            let Some(world) = registry::hold(node) else {
-                panic!("dying world {} lost its record", node.node);
-            };
-            crate::channel::dissolve(&world);
-            Progress::Done
-        }
-        // What these release is held only by the world's processes, whose teardowns ran in Quiesce.
-        WorldStep::AbandonQueuesAndTables
+        // What these release is held only by the world's processes, whose teardowns ran in Quiesce;
+        // endpoints are destroyed at Detach, once no other world can pin them.
+        WorldStep::DestroyObjects
+        | WorldStep::AbandonQueuesAndTables
         | WorldStep::ClearSpaces
         | WorldStep::RevokeMappers
         | WorldStep::Reclaim
@@ -133,6 +127,7 @@ fn detach(node: NodeRef) -> Progress {
     let Some(world) = registry::take(node) else {
         return Progress::Pending;
     };
+    crate::channel::dissolve(&world);
     for distance in 0..world.path.depth() {
         let Some(ancestor) = world
             .path

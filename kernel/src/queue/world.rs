@@ -3,7 +3,7 @@ use native_abi::ring::{Completion, Submission, status};
 use native_abi::world::{BYTES, VERSION, offset};
 use world_tree::{Limits, NodeRef};
 
-use super::{PendingKind, Process, Queue, answer, refuse};
+use super::{PendingKind, Process, Queue, answer, refuse, unresolved};
 use crate::object::ObjectRef;
 use crate::world::{KillRefusal, Killer, Refusal, Request};
 
@@ -109,9 +109,10 @@ pub(super) fn inspect(mut process: Process<'_, '_>, submission: Submission) -> C
 }
 
 fn resolve(process: &mut Process<'_, '_>, handle: u64, wanted: Rights) -> Result<NodeRef, u32> {
-    let Ok((object, rights)) = process.table.resolve(process.context, handle) else {
-        return Err(status::BAD_HANDLE);
-    };
+    let (object, rights) = process
+        .table
+        .resolve(process.context, handle)
+        .map_err(unresolved)?;
     let ObjectRef::World(node) = object else {
         return Err(status::DENIED);
     };

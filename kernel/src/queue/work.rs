@@ -6,7 +6,9 @@ use native_abi::ring::{Completion, Submission, status};
 use wost::sync::{Leaf, SpinLock};
 
 use super::ring::buffer_bounds;
-use super::{Pending, PendingKind, Process, Queue, QueueRef, ReadRequest, WorkPhase, refuse};
+use super::{
+    Pending, PendingKind, Process, Queue, QueueRef, ReadRequest, WorkPhase, refuse, unresolved,
+};
 use crate::handle::SlotReservation;
 use crate::thread::ThreadContext;
 use crate::vfs;
@@ -344,8 +346,9 @@ impl Queue {
             return Some(refuse(token, status::BAD_BUFFER));
         };
 
-        let Ok((object, held)) = process.table.resolve(process.context, submission.handle) else {
-            return Some(refuse(token, status::BAD_HANDLE));
+        let (object, held) = match process.table.resolve(process.context, submission.handle) {
+            Ok(resolved) => resolved,
+            Err(error) => return Some(refuse(token, unresolved(error))),
         };
         let Some(directory) = object.as_directory().copied() else {
             return Some(refuse(token, status::BAD_HANDLE));
@@ -383,8 +386,9 @@ impl Queue {
     ) -> Option<Completion> {
         let token = submission.token;
 
-        let Ok((object, held)) = process.table.resolve(process.context, submission.handle) else {
-            return Some(refuse(token, status::BAD_HANDLE));
+        let (object, held) = match process.table.resolve(process.context, submission.handle) {
+            Ok(resolved) => resolved,
+            Err(error) => return Some(refuse(token, unresolved(error))),
         };
         let Some(file) = object.as_file().copied() else {
             return Some(refuse(token, status::BAD_HANDLE));

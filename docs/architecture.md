@@ -540,8 +540,8 @@ releases it, so the object goes with its last reference. An entry is free, live,
 while a channel write holds it (`libs/handle-space`): a moving entry resolves for nothing, and the
 write either restores it with its value and rights or erases it.
 
-A new program's table holds exactly one entry at birth: an endpoint whose peer is closed, with
-`DUPLICATE TRANSFER READ WRITE`. Every later handle arrives through a ring operation that a held
+A new program's table holds exactly one entry at birth, an endpoint with `DUPLICATE TRANSFER READ
+WRITE`: either one whose peer is closed, or one end of a channel the kernel's spawn was given. Every later handle arrives through a ring operation that a held
 handle authorizes or a channel read, and `Close` ends one.
 
 ### Channels
@@ -550,15 +550,18 @@ handle authorizes or a channel read, and `Close` ends one.
 handle to each (`kernel/src/channel.rs`, `kernel/src/queue/channel.rs`). An endpoint is an object
 in its world's endpoint pool with its inbox: 16 message descriptors and 8 armed readers in the
 record, and one arena data frame of its own holding the 2304-byte byte ring and 32 moved-handle
-slots, each an object reference with its rights as 24 plain bytes (`libs/channel-state`). Its holder's world
-pays for all of it when the endpoint is made, so a write allocates nothing.
+slots, each an object reference with its rights and the world whose count it holds as 32 plain
+bytes (`libs/channel-state`). Its holder's world pays for all of it when the endpoint is made, so a
+write allocates nothing. An endpoint names its peer by world and place, and the peer may live in
+another world: a write reaches it under a pin of that world for one step.
 
 `ChannelWrite` reads a message descriptor from buffer 0 (`native_abi::message`: at most 2048 bytes
 and 16 handles, `native_abi::limits`). It takes every named handle out of the writer's table in one
 step under the table lock, each needing `TRANSFER` and keeping the rights the descriptor names
 within those it holds, then commits the message into the peer's inbox under the peer's lock. A full
 inbox answers `FULL`, a closed peer `PEER_CLOSED`, and moving the receiving endpoint into its own
-inbox `DENIED`; each restores every taken handle with its value and rights. A committed message's
+inbox `DENIED`, as does moving a memory object into another world or a world handle into a world
+that is neither it nor an ancestor; each restores every taken handle with its value and rights. A committed message's
 handles are erased from the writer's table, and each object's strong reference moves with it, held
 by the inbox until a reader installs it. The writer reaches the peer only under a strong reference
 of its own, so the peer cannot go mid-write.
@@ -570,12 +573,26 @@ entry in the reader's queue and a place in the endpoint's 8 armed readers. A wri
 armed reader and marks its entry ready, and the reader's next `RingWait` performs the read in its
 own context. Once the inbox is empty and the peer is gone, a read answers `PEER_CLOSED`.
 
+A moved object stays in its sender's world while in transit. A read that takes an endpoint of
+another world re-homes it: the reader's world earmarks a record and two data frames first, and a
+refusal answers `NO_MEMORY` with the message still queued. The kernel copies the old record's inbox
+and frame into a new endpoint in the reader's world, checks under the old endpoint's lock that
+nothing changed since the copy (or copies again), marks the old one forwarded to the new, points the
+peer at the new one and releases the old, whose frame returns to the sender's world. A write that
+meets the forwarded record follows it once. An object whose world is no longer live installs as a
+dead entry: every use answers `DEAD` and `Close` frees it. A memory object that arrives in another
+world inside a re-homed inbox installs dead as well, until memory objects cross worlds.
+
 An endpoint goes with its last strong reference. Its inbox's messages are destroyed with every
-handle they carry, its peer turns `PeerClosed`, and both endpoints' armed readers are woken. An
+handle they carry, each other world's count released under a pin of that world, its peer turns
+`PeerClosed` (following the peer's re-homes), and both endpoints' armed readers are woken. An
 endpoint that loses its last reference inside another's destruction joins a chain instead of
-recursing, so nesting depth costs no stack. Endpoints left only in each other's inboxes are
-destroyed at the world teardown's `DestroyObjects` step. Every endpoint and every message lies in
-one world: no endpoint reaches another world yet, so re-homing a moved endpoint does not arise.
+recursing, so nesting depth costs no stack. Only the endpoint's own world destroys it: a last
+reference released under a pin puts it on its world's condemned chain, which the reaper destroys,
+so no pinned step takes a second pin. A world's endpoints, those left only in each other's inboxes
+included, are destroyed when its teardown detaches it, after no other world can pin it; each closes
+toward its peer, and what it still had in transit in another world's inbox arrives dead there,
+since that inbox holds only bytes.
 
 ### The ring
 
@@ -718,9 +735,14 @@ this order: interrupts admitted, the boot thread on a guarded stack, NX on, `CR4
 state isolated, the clock calibrated, the random generator seeded, the service worker running, and a
 shared or paired isolation mode. It then builds the address space, loads the image, maps a one-page
 user stack at `0x0000300000000000`, maps the time page, the ring and buffer 0, creates the handle
-table with its birth handle, binds the space and publishes a thread. Before it builds anything it
-earmarks, in the root world's arena, every frame its queue, table and birth endpoint can need, so a
-full arena refuses the spawn with nothing changed. `ProcessConstruction` owns the space and
+table with its birth handle, binds the space and publishes a thread. The shipped boot spawns into
+the root world; `user::spawn_in` names a target world and optionally a birth endpoint the caller
+holds, which it consumes, re-homing it into the target when it lives elsewhere. Every object of the
+process is built in and charged to the target world's arena, and its handle mixer and placements
+derive from that world's key. Before it builds anything it earmarks, in that arena, every frame its
+queue, table and birth endpoint can need, so a full arena refuses the spawn with nothing changed in
+any world but the given endpoint released. Killing the world tears the process down through the
+world teardown. `ProcessConstruction` owns the space and
 every mapped range until the thread is published, so any refusal rolls back through one owner.
 
 A process is an object in its world's process pool (`kernel/src/process.rs`). It holds its

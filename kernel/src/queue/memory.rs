@@ -8,7 +8,7 @@ use wost::mm::pool;
 use wost::mm::slab::Hold;
 use x86_paging::PAGE_SIZE;
 
-use super::{Process, answer, refuse};
+use super::{Process, answer, refuse, unresolved};
 use crate::arena::Local;
 use crate::memory::{Kind, MemoryObject, SEALED_RIGHTS, SealRefusal};
 use crate::object::ObjectRef;
@@ -255,9 +255,10 @@ fn resolve(
     handle: u64,
     wanted: Rights,
 ) -> Result<Local<MemoryObject>, u32> {
-    let Ok((object, rights)) = process.table.resolve(process.context, handle) else {
-        return Err(status::BAD_HANDLE);
-    };
+    let (object, rights) = process
+        .table
+        .resolve(process.context, handle)
+        .map_err(unresolved)?;
     let ObjectRef::Memory(local) = object else {
         return Err(status::DENIED);
     };

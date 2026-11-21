@@ -16,7 +16,7 @@ use wost::sync::{Leaf, SpinLock};
 
 use crate::arena::Local;
 use crate::channel::Endpoint;
-use crate::handle::{Table, TableRef};
+use crate::handle::{HandleError, Table, TableRef};
 use crate::thread::ThreadContext;
 use crate::timepage::WorldClock;
 use crate::wait::WaitQueue;
@@ -374,8 +374,9 @@ impl Queue {
             return refuse(token, status::DENIED);
         };
 
-        let Ok((object, held)) = process.table.resolve(process.context, submission.handle) else {
-            return refuse(token, status::BAD_HANDLE);
+        let (object, held) = match process.table.resolve(process.context, submission.handle) {
+            Ok(resolved) => resolved,
+            Err(error) => return refuse(token, unresolved(error)),
         };
         if !held.contains(Rights::DUPLICATE) || held.attenuate(declared).is_none() {
             return refuse(token, status::DENIED);
@@ -740,6 +741,15 @@ fn answer(token: u32, value: u64) -> Completion {
         status: status::OK,
         value,
         extra: 0,
+    }
+}
+
+// A handle whose object died in transit answers `DEAD`; any other that does not resolve `BAD_HANDLE`.
+fn unresolved(error: HandleError) -> u32 {
+    if error == HandleError::Gone {
+        status::DEAD
+    } else {
+        status::BAD_HANDLE
     }
 }
 

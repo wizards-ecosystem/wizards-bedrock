@@ -29,6 +29,17 @@ impl ObjectType {
             Self::World => Rights::SPAWN.union(Rights::KILL),
         }
     }
+
+    const fn from_code(code: u64) -> Option<Self> {
+        Some(match code {
+            0 => Self::Endpoint,
+            1 => Self::File,
+            2 => Self::Directory,
+            3 => Self::Memory,
+            4 => Self::World,
+            _ => return None,
+        })
+    }
 }
 
 pub(crate) const fn file(file: crate::vfs::File) -> ObjectRef {
@@ -51,6 +62,8 @@ pub(crate) enum ObjectRef {
     Memory(Local<MemoryObject>),
     // Weak: a world handle never keeps its world alive, and resolves under a pin or answers `DEAD`.
     World(NodeRef),
+    // An object whose world died while it was in transit: every use answers `DEAD`.
+    Dead(ObjectType),
 }
 
 impl ObjectRef {
@@ -61,20 +74,29 @@ impl ObjectRef {
             Self::Directory(_) => ObjectType::Directory,
             Self::Memory(_) => ObjectType::Memory,
             Self::World(_) => ObjectType::World,
+            Self::Dead(kind) => *kind,
         }
     }
 
     pub(crate) const fn as_file(&self) -> Option<&crate::vfs::File> {
         match self {
             Self::File(file) => Some(file),
-            Self::Endpoint(_) | Self::Directory(_) | Self::Memory(_) | Self::World(_) => None,
+            Self::Endpoint(_)
+            | Self::Directory(_)
+            | Self::Memory(_)
+            | Self::World(_)
+            | Self::Dead(_) => None,
         }
     }
 
     pub(crate) const fn as_directory(&self) -> Option<&crate::vfs::Directory> {
         match self {
             Self::Directory(directory) => Some(directory),
-            Self::Endpoint(_) | Self::File(_) | Self::Memory(_) | Self::World(_) => None,
+            Self::Endpoint(_)
+            | Self::File(_)
+            | Self::Memory(_)
+            | Self::World(_)
+            | Self::Dead(_) => None,
         }
     }
 
@@ -90,6 +112,7 @@ impl ObjectRef {
             Self::Directory(crate::vfs::Directory::Fat { cluster }) => (6, u64::from(cluster), 0),
             Self::Directory(crate::vfs::Directory::Tmp { index }) => (7, index as u64, 0),
             Self::Directory(crate::vfs::Directory::Dev) => (8, 0, 0),
+            Self::Dead(kind) => (9, kind as u64, 0),
         };
         let mut bytes = [0; ENCODED];
         bytes[0] = tag;
@@ -131,6 +154,7 @@ impl ObjectRef {
                 index: first as usize,
             }),
             8 => Self::Directory(crate::vfs::Directory::Dev),
+            9 => Self::Dead(ObjectType::from_code(first)?),
             _ => return None,
         };
         Some((object, rights))
@@ -141,7 +165,7 @@ impl ObjectRef {
         match self {
             Self::Endpoint(endpoint) => world.endpoints.acquire(endpoint).is_ok(),
             Self::Memory(memory) => world.memories.acquire(memory).is_ok(),
-            Self::File(_) | Self::Directory(_) | Self::World(_) => true,
+            Self::File(_) | Self::Directory(_) | Self::World(_) | Self::Dead(_) => true,
         }
     }
 
@@ -154,7 +178,7 @@ impl ObjectRef {
                     panic!("a memory object's last reference went while a hold borrowed it");
                 }
             }
-            Self::File(_) | Self::Directory(_) | Self::World(_) => {}
+            Self::File(_) | Self::Directory(_) | Self::World(_) | Self::Dead(_) => {}
         }
     }
 }

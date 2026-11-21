@@ -120,6 +120,12 @@ pub mod witness {
         pub const BACKDOOR: u64 = 14;
         pub const CHANNELS: u64 = 15;
     }
+
+    // The operand of `CHANNELS`: the half a witness runs.
+    pub mod channels {
+        pub const WRITER: u64 = 0;
+        pub const READER: u64 = 1;
+    }
 }
 
 pub mod error {

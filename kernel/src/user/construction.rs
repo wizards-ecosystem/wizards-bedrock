@@ -9,7 +9,7 @@ use x86_paging::PAGE_SIZE;
 use super::call::cross;
 use super::load::{self, LoadError, Plan};
 use super::{Launch, STACK_BYTES, Spawned};
-use crate::channel::{self, Endpoint};
+use crate::channel::{self, Endpoint, Peer};
 use crate::handle::{HandleError, Table, TableRef};
 use crate::memory::{Kind, MemoryObject};
 use crate::object::ObjectRef;
@@ -130,13 +130,41 @@ pub(crate) fn spawn(
     argument: u64,
     operand: u64,
 ) -> Result<Spawned, SpawnError> {
+    let root = world::root().ok_or(SpawnError::NoWorld)?;
+    spawn_in(context, root, None, name, which, argument, operand)
+}
+
+// A program in the given world, its objects charged to that world's arena; `birth` is an endpoint
+// the caller holds a strong reference to, consumed whether or not the spawn succeeds.
+pub(crate) fn spawn_in(
+    context: &mut thread::ThreadContext,
+    world_ref: NodeRef,
+    mut birth: Option<Peer>,
+    name: &'static str,
+    which: u64,
+    argument: u64,
+    operand: u64,
+) -> Result<Spawned, SpawnError> {
+    let spawned = spawn_with(
+        context, world_ref, &mut birth, name, which, argument, operand,
+    );
+    if let Some(unplaced) = birth {
+        channel::forfeit(unplaced);
+    }
+    spawned
+}
+
+fn spawn_with(
+    context: &mut thread::ThreadContext,
+    world_ref: NodeRef,
+    birth: &mut Option<Peer>,
+    name: &'static str,
+    which: u64,
+    argument: u64,
+    operand: u64,
+) -> Result<Spawned, SpawnError> {
     let isolated = admitted_isolation()?;
-    // The one world every process belongs to until worlds are objects.
-    let Some((world_ref, world)) =
-        world::root().and_then(|root| registry::hold(root).map(|world| (root, world)))
-    else {
-        return Err(SpawnError::NoWorld);
-    };
+    let world = registry::hold(world_ref).ok_or(SpawnError::NoWorld)?;
     let mut construction = ProcessConstruction {
         space: None,
         authority: thread::SpaceAuthority::None,
@@ -150,6 +178,7 @@ pub(crate) fn spawn(
                 &world,
                 &mut construction,
                 (earmark, layout),
+                birth,
                 Named {
                     name,
                     which,
@@ -177,6 +206,7 @@ fn build(
     world: &World,
     construction: &mut ProcessConstruction,
     (mut earmark, layout): (Earmark, Layout),
+    birth: &mut Option<Peer>,
     named: Named,
 ) -> Result<Spawned, SpawnError> {
     let Named {
@@ -211,9 +241,15 @@ fn build(
         table: TableRef::create(&mut earmark, world_ref, world),
     };
     // Created before the thread can observe the table it names.
-    let Some(bootstrap) = channel::alone(&mut earmark, world).map(ObjectRef::Endpoint) else {
-        panic!("a spawn's earmark missed its birth endpoint");
+    let placed = match birth.take() {
+        None => channel::alone(&mut earmark, world),
+        Some(given) if given.world == world_ref => Some(given.endpoint),
+        Some(given) => channel::rehome(&mut earmark, world, given),
     };
+    let Some(endpoint) = placed else {
+        return Err(SpawnError::NoBootstrap(HandleError::Gone));
+    };
+    let bootstrap = ObjectRef::Endpoint(endpoint);
     let (_, table) = objects.table.hold().ok_or(SpawnError::NoWorld)?;
     let handle = match table.insert(context, bootstrap, channel::RIGHTS) {
         Ok(handle) => handle,
@@ -276,7 +312,11 @@ fn build(
         }
     };
 
-    Ok(Spawned { slot, observation })
+    Ok(Spawned {
+        slot,
+        observation,
+        birth: endpoint,
+    })
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -354,7 +394,7 @@ fn earmark(
         .and_then(|((record, contents), tables)| record.checked_add(contents)?.checked_add(tables));
     let frames = world::TablePool::frames_for(1)
         .zip(QueueRef::frames_for())
-        .zip(Endpoint::frames_for(1))
+        .zip(Endpoint::rehome_frames_for(1))
         .zip(records)
         .zip(stack.zip(plan.frames()))
         .and_then(|((((table, queue), channel), records), (stack, image))| {

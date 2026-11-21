@@ -8,6 +8,7 @@ use native_abi::witness::behaviour::{
     BACKDOOR, CHANNELS, DUPLICATE, ECHO, FAULT, INVALID_RETURN_FLAGS, INVALID_RETURN_STACK, MEMORY,
     PROBE, READ_COUNTER, READ_KERNEL, RING_WAIT, SYSCALL, THREAD_BASE,
 };
+use native_abi::witness::channels::READER;
 use native_abi::witness::{self, AGREED};
 use native_abi::{Call, Rights, error, limits, message};
 use witness_rt::{Data, Entry, Ring, fault_with};
@@ -56,6 +57,11 @@ enum Failure {
     MovedHandleLost = 23,
     ReadNotReady = 24,
     DataTaken = 25,
+    PaidUnasked = 26,
+    UnpaidLost = 27,
+    CopyLost = 28,
+    DeadAnswer = 29,
+    NotKilled = 30,
 }
 
 fn behave(entry: &Entry) -> u64 {
@@ -239,6 +245,14 @@ const ENDPOINT: Rights = Rights::DUPLICATE
 fn channels(entry: &Entry) -> Result<(), Failure> {
     let mut ring = Session::open(entry)?;
     let mut data = Data::take(entry).ok_or(Failure::DataTaken)?;
+    if entry.operand() == READER {
+        return read_across(&mut ring, &mut data, entry.bootstrap_handle());
+    }
+    conserve(&mut ring, &mut data, entry)?;
+    write_across(&mut ring, &mut data, entry.bootstrap_handle())
+}
+
+fn conserve(ring: &mut Session, data: &mut Data, entry: &Entry) -> Result<(), Failure> {
     let created = ring.expect(
         Submission::simple(Opcode::ChannelCreate, TOKEN, 0),
         status::OK,
@@ -249,7 +263,7 @@ fn channels(entry: &Entry) -> Result<(), Failure> {
         let moved = ring
             .expect(duplicate_as(entry.bootstrap_handle(), ENDPOINT), status::OK)?
             .value;
-        compose(&mut data, written, moved);
+        compose(data, written, moved);
         let completion = ring.submit(channel(Opcode::ChannelWrite, writer, WRITE_AT))?;
         match completion.status {
             status::OK => written += 1,
@@ -265,13 +279,13 @@ fn channels(entry: &Entry) -> Result<(), Failure> {
         return Err(Failure::RefusedHandleLost);
     }
     ring.expect(close(again.value), status::OK)?;
-    ask_room(&mut data);
+    ask_room(data);
     for sequence in 0..written {
         let completion = ring.expect(channel(Opcode::ChannelRead, reader, READ_AT), status::OK)?;
-        if completion.value != 8 || completion.extra != 1 || payload(&data) != sequence {
+        if completion.value != 8 || completion.extra != 1 || payload(data) != sequence {
             return Err(Failure::MessageOutOfOrder);
         }
-        let (handle, rights) = received(&data);
+        let (handle, rights) = received(data);
         if rights != MOVED.bits() {
             return Err(Failure::MovedHandleLost);
         }
@@ -282,7 +296,7 @@ fn channels(entry: &Entry) -> Result<(), Failure> {
     if witness_rt::call(Call::RingEnter, 0) != 0 {
         return Err(Failure::ReadNotReady);
     }
-    compose(&mut data, written, refused);
+    compose(data, written, refused);
     let committed = ring.submit(channel(Opcode::ChannelWrite, writer, WRITE_AT))?;
     if committed.status != status::OK {
         return Err(Failure::ChannelAnswer);
@@ -291,16 +305,126 @@ fn channels(entry: &Entry) -> Result<(), Failure> {
         return Err(Failure::ReadNotReady);
     }
     let late = ring.collect()?;
-    if late.status != status::OK || payload(&data) != written {
+    if late.status != status::OK || payload(data) != written {
         return Err(Failure::MessageOutOfOrder);
     }
-    ring.expect(close(received(&data).0), status::OK)?;
+    ring.expect(close(received(data).0), status::OK)?;
     ring.expect(close(writer), status::OK)?;
     ring.expect(
         channel(Opcode::ChannelRead, reader, READ_AT),
         status::PEER_CLOSED,
     )?;
     Ok(())
+}
+
+// The payload written into an endpoint before it moves, read back from its copy in the reader.
+const QUEUED: u64 = 0x5EED_0FC0_FFEE;
+
+// The reader tells the writer's world it was refused, so the kernel can let its world pay.
+const UNPAID: u64 = 0xDEAD_BEEF;
+
+// Moves a live endpoint, an endpoint to wait on and one the self-test kills in transit.
+fn write_across(ring: &mut Session, data: &mut Data, birth: u64) -> Result<(), Failure> {
+    let (sender, moved) = pair(ring)?;
+    note(data, QUEUED);
+    ring.expect(channel(Opcode::ChannelWrite, sender, WRITE_AT), status::OK)?;
+    let (held, watched) = pair(ring)?;
+    let (_, doomed) = pair(ring)?;
+    for (sequence, handle) in [moved, watched, doomed].into_iter().enumerate() {
+        compose(data, sequence as u64, handle);
+        ring.expect(channel(Opcode::ChannelWrite, birth, WRITE_AT), status::OK)?;
+    }
+    // Nothing writes to `held`, so this read sleeps until the world is killed.
+    awaited(ring, channel(Opcode::ChannelRead, held, READ_AT))?;
+    Err(Failure::NotKilled)
+}
+
+fn read_across(ring: &mut Session, data: &mut Data, birth: u64) -> Result<(), Failure> {
+    ask_room(data);
+    if awaited(ring, channel(Opcode::ChannelRead, birth, READ_AT))?.status != status::NO_MEMORY {
+        return Err(Failure::PaidUnasked);
+    }
+    ask_nothing(data);
+    let kept = ring.submit(channel(Opcode::ChannelRead, birth, READ_AT))?;
+    if kept.status != status::TOO_SMALL || kept.value != 8 || kept.extra != 1 {
+        return Err(Failure::UnpaidLost);
+    }
+    note(data, UNPAID);
+    ring.expect(channel(Opcode::ChannelWrite, birth, WRITE_AT), status::OK)?;
+    ask_room(data);
+    let moved = loop {
+        let completion = ring.submit(channel(Opcode::ChannelRead, birth, READ_AT))?;
+        match completion.status {
+            status::NO_MEMORY => {}
+            status::OK if payload(data) == 0 => break received(data),
+            _ => return Err(Failure::MessageOutOfOrder),
+        }
+    };
+    if moved.1 != MOVED.bits() {
+        return Err(Failure::MovedHandleLost);
+    }
+    let copied = ring.expect(channel(Opcode::ChannelRead, moved.0, READ_AT), status::OK)?;
+    if copied.extra != 0 || payload(data) != QUEUED {
+        return Err(Failure::CopyLost);
+    }
+    let watched = next_moved(ring, data, birth, 1)?;
+    if awaited(ring, channel(Opcode::ChannelRead, watched, READ_AT))?.status != status::PEER_CLOSED
+    {
+        return Err(Failure::ChannelAnswer);
+    }
+    let doomed = next_moved(ring, data, birth, 2)?;
+    ring.expect(
+        channel(Opcode::ChannelWrite, doomed, WRITE_AT),
+        status::DEAD,
+    )
+    .map_err(|_| Failure::DeadAnswer)?;
+    for handle in [doomed, watched, moved.0] {
+        ring.expect(close(handle), status::OK)?;
+    }
+    if awaited(ring, channel(Opcode::ChannelRead, birth, READ_AT))?.status != status::PEER_CLOSED {
+        return Err(Failure::ChannelAnswer);
+    }
+    Ok(())
+}
+
+fn next_moved(ring: &mut Session, data: &Data, birth: u64, sequence: u64) -> Result<u64, Failure> {
+    ring.expect(channel(Opcode::ChannelRead, birth, READ_AT), status::OK)?;
+    let (handle, rights) = received(data);
+    if payload(data) != sequence || rights != MOVED.bits() {
+        return Err(Failure::MessageOutOfOrder);
+    }
+    Ok(handle)
+}
+
+fn pair(ring: &mut Session) -> Result<(u64, u64), Failure> {
+    let created = ring.expect(
+        Submission::simple(Opcode::ChannelCreate, TOKEN, 0),
+        status::OK,
+    )?;
+    Ok((created.value, created.extra))
+}
+
+// Served at once, or armed and served by the next ring wait.
+fn awaited(ring: &mut Session, submission: Submission) -> Result<Completion, Failure> {
+    ring.publish(submission);
+    if witness_rt::call(Call::RingEnter, 0) == 0 && witness_rt::call(Call::RingWait, 0) != 1 {
+        return Err(Failure::ReadNotReady);
+    }
+    ring.collect()
+}
+
+fn note(data: &mut Data, word: u64) {
+    let mut header = [0u8; message::ENTRIES_AT];
+    header[message::VERSION_AT..][..4].copy_from_slice(&message::VERSION.to_le_bytes());
+    header[message::BYTES..][..4].copy_from_slice(&8u32.to_le_bytes());
+    data.write(WRITE_AT, &header);
+    data.write(WRITE_AT + message::BYTES_AT, &word.to_le_bytes());
+}
+
+fn ask_nothing(data: &mut Data) {
+    let mut header = [0u8; message::ENTRIES_AT];
+    header[message::VERSION_AT..][..4].copy_from_slice(&message::VERSION.to_le_bytes());
+    data.write(READ_AT, &header);
 }
 
 fn compose(data: &mut Data, sequence: u64, moved: u64) {

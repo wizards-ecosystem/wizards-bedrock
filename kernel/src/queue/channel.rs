@@ -7,10 +7,11 @@ use native_abi::message::{
 use native_abi::ring::{Completion, DATA_BYTES, Submission, status};
 use wost::mm::pool;
 
-use super::{Pending, PendingKind, Process, Queue, QueueRef, answer, refuse};
+use super::{Pending, PendingKind, Process, Queue, QueueRef, answer, refuse, unresolved};
 use crate::arena::Local;
 use crate::channel::{
-    self, ArmRefusal, Endpoint, Head, Moved, NONE_MOVED, RIGHTS, Reader, WriteRefusal,
+    self, ArmRefusal, Endpoint, Head, NONE_MOVED, NONE_RECEIVED, RIGHTS, Reader, Received,
+    WriteRefusal,
 };
 use crate::handle::SlotReservation;
 use crate::object::ObjectRef;
@@ -81,7 +82,7 @@ fn endpoint(
     match process.table.resolve(process.context, handle) {
         Ok((ObjectRef::Endpoint(endpoint), rights)) if rights.contains(right) => Ok(endpoint),
         Ok(_) => Err(status::DENIED),
-        Err(_) => Err(status::BAD_HANDLE),
+        Err(error) => Err(unresolved(error)),
     }
 }
 
@@ -283,10 +284,14 @@ fn attempt(
         Err(code) => return Some(refuse(token, code)),
     };
     loop {
-        let (bytes, handles) = match channel::head(process.world, endpoint) {
+        let (bytes, handles, foreign) = match channel::head(process.world, endpoint) {
             Head::Empty => return None,
             Head::PeerClosed => return Some(refuse(token, status::PEER_CLOSED)),
-            Head::Message { bytes, handles } => (bytes, handles),
+            Head::Message {
+                bytes,
+                handles,
+                foreign,
+            } => (bytes, handles, foreign),
         };
         if bytes > room.bytes || handles > room.handles {
             return Some(Completion {
@@ -295,6 +300,16 @@ fn attempt(
                 value: u64::from(bytes),
                 extra: u64::from(handles),
             });
+        }
+        // The reader's world pays for every moved endpoint that comes from another world.
+        let mut earmark = None;
+        if foreign > 0 {
+            let frames = Endpoint::rehome_frames_for(u32::from(foreign));
+            match frames.map(|frames| pool::earmark(process.context, process.world.arena(), frames))
+            {
+                Some(Ok(taken)) => earmark = Some(taken),
+                Some(Err(_)) | None => return Some(refuse(token, status::NO_MEMORY)),
+            }
         }
         let mut slots: [Option<SlotReservation>; MESSAGE_HANDLES as usize] =
             [const { None }; MESSAGE_HANDLES as usize];
@@ -305,17 +320,17 @@ fn attempt(
             *slot = Some(reserved);
         }
         let mut payload = [0; MESSAGE_BYTES as usize];
-        let mut moved = NONE_MOVED;
+        let mut received = NONE_RECEIVED;
         let Some((bytes, handles)) = channel::take(
             process.world,
             endpoint,
-            (room.bytes, handles),
+            (room.bytes, handles, foreign),
             &mut payload,
-            &mut moved,
+            &mut received,
         ) else {
             continue;
         };
-        let installed = install(process, slots, &mut moved);
+        let installed = install(process, slots, &mut received, earmark.as_mut());
         if !deliver(
             queue,
             at,
@@ -336,13 +351,20 @@ fn attempt(
 fn install(
     process: &mut Process<'_, '_>,
     slots: [Option<SlotReservation>; MESSAGE_HANDLES as usize],
-    moved: &mut Moved,
+    received: &mut Received,
+    mut earmark: Option<&mut pool::Earmark>,
 ) -> [(u64, Rights); MESSAGE_HANDLES as usize] {
     let mut installed = [(0, Rights::NONE); MESSAGE_HANDLES as usize];
-    for ((slot, object), out) in slots.into_iter().zip(moved.iter_mut()).zip(&mut installed) {
-        let (Some(slot), Some((object, rights))) = (slot, object.take()) else {
+    for ((slot, carried), out) in slots
+        .into_iter()
+        .zip(received.iter_mut())
+        .zip(&mut installed)
+    {
+        let (Some(slot), Some(carried)) = (slot, carried.take()) else {
             continue;
         };
+        let object = channel::arrive(earmark.as_deref_mut(), process.world, carried);
+        let rights = carried.rights;
         match slot.install(process.context, object, rights, rights) {
             Ok(handle) => *out = (handle, rights),
             Err(_) => object.release(process.world),
