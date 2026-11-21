@@ -627,7 +627,7 @@ pub enum Dissolved {
 }
 
 // Refuses until every token is released or surrendered, so no safe handle reaches what it frees;
-// examines at most `budget` frame records per call, so teardown stays a bounded step.
+// examines at most `budget` frame records per call and none once no frame is left charged.
 pub fn dissolve(arena: ArenaId, heir: ArenaId, budget: u32) -> Result<Dissolved, Refused> {
     let colours = super::colours();
     let mut guard = FRAMES.lock_leaf();
@@ -642,7 +642,8 @@ pub fn dissolve(arena: ArenaId, heir: ArenaId, budget: u32) -> Result<Dissolved,
     }
     node.dying = true;
     let end = node.cursor.saturating_add(budget as usize).min(limit);
-    while node.cursor < end {
+    let mut charged = holds_frames(&node.reservation);
+    while charged && node.cursor < end {
         let frame = node.cursor;
         node.cursor += 1;
         let record = table::read(frame);
@@ -665,8 +666,9 @@ pub fn dissolve(arena: ArenaId, heir: ArenaId, budget: u32) -> Result<Dissolved,
             freed.is_ok(),
             "arena frame {frame} was not charged: {freed:?}"
         );
+        charged = holds_frames(&node.reservation);
     }
-    if node.cursor < limit {
+    if charged && node.cursor < limit {
         return Ok(Dissolved::Progress);
     }
     let mut reservation = core::mem::replace(&mut node.reservation, Reservation::EMPTY);
@@ -685,6 +687,11 @@ pub fn dissolve(arena: ArenaId, heir: ArenaId, budget: u32) -> Result<Dissolved,
     node.dying = false;
     node.generation = node.generation.saturating_add(1);
     Ok(Dissolved::Done)
+}
+
+// Every frame record naming an arena is counted in its reservation's `used`, so none left is zero.
+fn holds_frames(reservation: &Reservation) -> bool {
+    (0..MAX_COLOURS).any(|colour| reservation.used(colour) != 0)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
