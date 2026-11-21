@@ -32,8 +32,7 @@ use selftest::{LIVE, RETIREMENTS};
 #[cfg(feature = "selftest")]
 pub(crate) use selftest::{live, retirements};
 
-// The boot thread builds processes, and the debug construction path exceeded 32 KiB.
-const BOOT_STACK_BYTES: u64 = 64 * 1024;
+const BOOT_STACK_BYTES: u64 = 32 * 1024;
 
 const GUARD_BYTES: u64 = 4096;
 
