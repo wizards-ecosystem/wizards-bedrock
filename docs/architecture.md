@@ -542,14 +542,15 @@ releases it, so the object goes with its last reference. An entry is free, live,
 while a channel write holds it (`libs/handle-space`): a moving entry resolves for nothing, and the
 write either restores it with its value and rights or erases it.
 
-A new program's table holds exactly one entry at birth, an endpoint with `DUPLICATE TRANSFER READ
-WRITE`: either one whose peer is closed, or one end of a channel the kernel's spawn was given. Every later handle arrives through a ring operation that a held
+A new program's table holds exactly one entry at birth, an endpoint with `TRANSFER READ WRITE`: either one whose peer is closed, or one end of a channel the kernel's spawn was given. Every later handle arrives through a ring operation that a held
 handle authorizes or a channel read, and `Close` ends one.
 
 ### Channels
 
 `ChannelCreate` makes two endpoints in the caller's world, each naming the other, and returns a
-handle to each (`kernel/src/channel.rs`, `kernel/src/queue/channel.rs`). An endpoint is an object
+handle to each with `TRANSFER READ WRITE` (`kernel/src/channel.rs`, `kernel/src/queue/channel.rs`).
+An endpoint handle never carries `DUPLICATE`, so `Duplicate` of one answers `DENIED`: an endpoint is
+named by one handle or one inbox entry at a time, and every move carries its only reference. An endpoint is an object
 in its world's endpoint pool with its inbox: 16 message descriptors and 8 armed readers in the
 record, and one arena data frame of its own holding the 2304-byte byte ring, 32 moved-handle
 slots, each an object reference with its rights and the world whose count it holds as 40 plain
@@ -564,7 +565,8 @@ step under the table lock, each needing `TRANSFER` and keeping the rights the de
 within those it holds, then commits the message into the peer's inbox under the peer's lock. A full
 inbox answers `FULL`, a closed peer `PEER_CLOSED`, and moving the receiving endpoint into its own
 inbox `DENIED`, as does moving a memory object into another world or a world handle into a world
-that is neither it nor an ancestor; each restores every taken handle with its value and rights. A committed message's
+that is neither it nor an ancestor; each restores every taken handle with its value and rights. A
+committed message's
 handles are erased from the writer's table, and each object's strong reference moves with it, held
 by the inbox until a reader installs it. The writer reaches the peer only under a strong reference
 of its own, so the peer cannot go mid-write.
@@ -581,8 +583,9 @@ another world re-homes it: the reader's world earmarks a record and two data fra
 refusal answers `NO_MEMORY` with the message still queued. The kernel copies the old record's inbox
 and frame into a new endpoint in the reader's world, checks under the old endpoint's lock that
 nothing changed since the copy (or copies again), marks the old one forwarded to the new, points the
-peer at the new one and releases the old, whose frame returns to the sender's world. A write that
-meets the forwarded record follows it once. An object whose world is no longer live installs as a
+peer at the new one and releases the old, whose frame returns to the sender's world. Since the moved
+reference was the endpoint's only one, no handle names the old record afterwards: only a peer's
+write that raced the repoint meets the forwarded record, and it follows it once. An object whose world is no longer live installs as a
 dead entry: every use answers `DEAD` and `Close` frees it. A memory object that arrives in another
 world inside a re-homed inbox installs dead as well, until memory objects cross worlds.
 

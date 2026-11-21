@@ -292,7 +292,8 @@ pub(super) fn channel_moves_conserve_handles(context: &mut ThreadContext) -> boo
         )
 }
 
-// A server and a client in sibling worlds, born connected: a call echoes its bytes and the handle
+// A server and a client in sibling worlds, born connected: the client's endpoint cannot be
+// duplicated, a call nobody receives times out, a call echoes its bytes and the handle
 // it moved, a reply right answers once, a dropped right abandons its call, and the server world's
 // death abandons the call it received and closes the one still queued.
 pub(super) fn calls_end_once(context: &mut ThreadContext) -> bool {
@@ -526,6 +527,6 @@ pub(super) fn a_program_drives_its_own_ring(context: &mut ThreadContext) -> bool
         && observed_once(&echoing, Status::Exited(0))
         && echoed.served == 1
         && duplicated.served == 1
-        && duplicated.handles == 2
+        && duplicated.handles == 1
         && trap::last_user_fault().count == faults_before
 }

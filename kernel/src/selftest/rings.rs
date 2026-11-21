@@ -128,7 +128,7 @@ pub(super) fn a_word_that_does_not_fit_is_refused_rather_than_truncated(
         return false;
     };
     let full = Rights::UNIVERSAL;
-    let Ok(source) = table.insert_channel(context, full) else {
+    let Ok(source) = table.insert_world(context, full) else {
         return false;
     };
     let Some((widened, cancelled)) =

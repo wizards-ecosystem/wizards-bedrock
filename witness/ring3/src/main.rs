@@ -67,6 +67,8 @@ enum Failure {
     SpentReplyAccepted = 32,
     NotAbandoned = 33,
     QueuedCallNotClosed = 34,
+    EndpointDuplicated = 35,
+    NotTimedOut = 36,
 }
 
 fn behave(entry: &Entry) -> u64 {
@@ -120,17 +122,15 @@ fn echo(entry: &Entry) -> Result<(), Failure> {
     Ok(())
 }
 
-// The entry block, not the image, supplies the authority the duplicate names.
+// The entry block, not the image, names the bootstrap endpoint: the duplicate resolves it and is
+// refused, since an endpoint has one handle.
 fn duplicate(entry: &Entry) -> Result<(), Failure> {
-    let bootstrap = entry.bootstrap_handle();
-    let rights = u64::from(Rights::READ.bits());
-    let completion = exchange(
-        entry,
-        Submission::about(Opcode::Duplicate, TOKEN, bootstrap, rights),
-    )?;
-    if completion.value == 0 || completion.value == bootstrap {
-        return Err(Failure::WrongValue);
-    }
+    let mut ring = Session::open(entry)?;
+    ring.expect(
+        duplicate_as(entry.bootstrap_handle(), Rights::READ),
+        status::DENIED,
+    )
+    .map_err(|_| Failure::WrongValue)?;
     Ok(())
 }
 
@@ -241,10 +241,6 @@ const WRITE_AT: usize = 0;
 const READ_AT: usize = 2400;
 const READ_ROOM: u32 = 64;
 const MOVED: Rights = Rights::TRANSFER.union(Rights::READ);
-const ENDPOINT: Rights = Rights::DUPLICATE
-    .union(Rights::TRANSFER)
-    .union(Rights::READ)
-    .union(Rights::WRITE);
 
 // Writes that each move a handle fill the inbox; the refused one keeps its handle, and the reads
 // return every committed message once, in order, each with the handle it moved.
@@ -254,11 +250,11 @@ fn channels(entry: &Entry) -> Result<(), Failure> {
     if entry.operand() == READER {
         return read_across(&mut ring, &mut data, entry.bootstrap_handle());
     }
-    conserve(&mut ring, &mut data, entry)?;
+    conserve(&mut ring, &mut data)?;
     write_across(&mut ring, &mut data, entry.bootstrap_handle())
 }
 
-fn conserve(ring: &mut Session, data: &mut Data, entry: &Entry) -> Result<(), Failure> {
+fn conserve(ring: &mut Session, data: &mut Data) -> Result<(), Failure> {
     let created = ring.expect(
         Submission::simple(Opcode::ChannelCreate, TOKEN, 0),
         status::OK,
@@ -266,9 +262,7 @@ fn conserve(ring: &mut Session, data: &mut Data, entry: &Entry) -> Result<(), Fa
     let (writer, reader) = (created.value, created.extra);
     let mut written = 0;
     let refused = loop {
-        let moved = ring
-            .expect(duplicate_as(entry.bootstrap_handle(), ENDPOINT), status::OK)?
-            .value;
+        let moved = ring.expect(create(0), status::OK)?.value;
         compose(data, written, moved);
         let completion = ring.submit(channel(Opcode::ChannelWrite, writer, WRITE_AT))?;
         match completion.status {
@@ -280,11 +274,6 @@ fn conserve(ring: &mut Session, data: &mut Data, entry: &Entry) -> Result<(), Fa
     if written != 16 {
         return Err(Failure::WrittenTooFew);
     }
-    let again = ring.submit(duplicate_as(refused, ENDPOINT))?;
-    if again.status != status::OK {
-        return Err(Failure::RefusedHandleLost);
-    }
-    ring.expect(close(again.value), status::OK)?;
     ask_room(data);
     for sequence in 0..written {
         let completion = ring.expect(channel(Opcode::ChannelRead, reader, READ_AT), status::OK)?;
@@ -305,7 +294,7 @@ fn conserve(ring: &mut Session, data: &mut Data, entry: &Entry) -> Result<(), Fa
     compose(data, written, refused);
     let committed = ring.submit(channel(Opcode::ChannelWrite, writer, WRITE_AT))?;
     if committed.status != status::OK {
-        return Err(Failure::ChannelAnswer);
+        return Err(Failure::RefusedHandleLost);
     }
     if witness_rt::call(Call::RingWait, 0) != 1 {
         return Err(Failure::ReadNotReady);
@@ -400,8 +389,9 @@ const THIRD: u32 = 3;
 
 const FOURTH: u32 = 4;
 
-// A server and a client in sibling worlds, born connected: a call echoes, a right answers once, a
-// dropped right abandons, and the server's death settles one received and one queued call.
+// A server and a client in sibling worlds, born connected: an endpoint's handle cannot be
+// duplicated, a call nobody receives times out, a call echoes, a right answers once, a dropped right
+// abandons, and the server's death settles one received and one queued call.
 fn calls(entry: &Entry) -> Result<(), Failure> {
     let mut ring = Session::open(entry)?;
     let mut data = Data::take(entry).ok_or(Failure::DataTaken)?;
@@ -436,6 +426,9 @@ fn serve(ring: &mut Session, data: &mut Data, birth: u64) -> Result<(), Failure>
 }
 
 fn call_across(ring: &mut Session, data: &mut Data, birth: u64) -> Result<(), Failure> {
+    ring.expect(duplicate_as(birth, Rights::READ), status::DENIED)
+        .map_err(|_| Failure::EndpointDuplicated)?;
+    time_out(ring, data)?;
     let (kept, moved) = pair(ring)?;
     request(data, Some(moved));
     let echoed = awaited(ring, calling(birth))?;
@@ -491,6 +484,31 @@ fn call_across(ring: &mut Session, data: &mut Data, birth: u64) -> Result<(), Fa
     }
     if awaited(ring, channel(Opcode::ChannelRead, birth, READ_AT))?.status != status::PEER_CLOSED {
         return Err(Failure::ChannelAnswer);
+    }
+    Ok(())
+}
+
+// A call into an inbox nobody reads ends at its deadline; a timer tells the world's time.
+fn time_out(ring: &mut Session, data: &mut Data) -> Result<(), Failure> {
+    let (unread, unserved) = pair(ring)?;
+    let now = awaited(ring, Submission::simple(Opcode::Timer, TOKEN, TIMER_NS))?;
+    if now.status != status::OK {
+        return Err(Failure::Refused);
+    }
+    request(data, None);
+    let deadline = now.value.saturating_add(TIMER_NS);
+    let ended = awaited(
+        ring,
+        Submission {
+            argument: deadline,
+            ..calling(unserved)
+        },
+    )?;
+    if ended.status != status::TIMED_OUT {
+        return Err(Failure::NotTimedOut);
+    }
+    for handle in [unserved, unread] {
+        ring.expect(close(handle), status::OK)?;
     }
     Ok(())
 }

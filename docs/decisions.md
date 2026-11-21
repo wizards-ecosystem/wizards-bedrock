@@ -712,6 +712,13 @@ number and is added here, as one entry or as an amending id on the entry it chan
 - **D-716** The channel opcodes refuse a buffer index other than 0 with `BAD_BUFFER` instead of
   reading buffer 0. `BufferRegister` waits for the synchronous calls, since the ring reply writes
   the caller's buffer 0 directly.
+- **D-717** An endpoint has one handle: endpoint handles never carry `DUPLICATE`, so `Duplicate`
+  answers `DENIED` and every move, within a world or across, is a move of its only handle. A
+  handle left naming a forwarded record would answer peer closed while the peer lives, a wrong
+  answer about the peer once calls exist, and a strong-count check at the move leaks through an
+  inbox that later crosses and refuses a sole handle while a peer's write holds the endpoint for a
+  step. Forwarding stays only for a peer's write that races a re-home. Amends D-558 (the clause on
+  other handles to a moved endpoint) and the endpoint rights of D-551 and the core design.
 - **D-481** The ring 3 witness is a cargo-built static `ET_EXEC` linked at `0x400000`, and the
   loader maps each segment at its `p_vaddr` with no per-program shift, because a position-dependent
   image holds absolute addresses that a shift breaks and the in-kernel loader takes no `ET_DYN`;

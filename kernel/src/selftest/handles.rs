@@ -17,10 +17,10 @@ pub(super) fn a_completion_cannot_widen_what_was_offered(context: &mut ThreadCon
     let full = Rights::UNIVERSAL;
     let limited = Rights::DUPLICATE.union(Rights::INSPECT);
     let (Ok(source), Ok(narrow), Ok(sealed), Ok(only)) = (
-        table.insert_channel(context, full),
-        table.insert_channel(context, limited),
-        table.insert_channel(context, Rights::INSPECT),
-        full_table.insert_channel(context, full),
+        table.insert_world(context, full),
+        table.insert_world(context, limited),
+        table.insert_world(context, Rights::INSPECT),
+        full_table.insert_world(context, full),
     ) else {
         return false;
     };
@@ -88,7 +88,7 @@ pub(super) fn a_handle_reveals_no_foreign_occupancy(context: &mut ThreadContext)
     else {
         return false;
     };
-    let Ok(handle) = mine.insert_channel(context, Rights::UNIVERSAL) else {
+    let Ok(handle) = mine.insert_world(context, Rights::UNIVERSAL) else {
         return false;
     };
     let Some(slot) = mine.slot_of(handle) else {

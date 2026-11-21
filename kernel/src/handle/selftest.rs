@@ -6,7 +6,6 @@ use wost::mm::pool::earmark;
 use wost::mm::slab::Hold;
 
 use super::{HandleError, Table, TableRef};
-use crate::channel::{self, Endpoint};
 use crate::object::ObjectRef;
 use crate::thread::ThreadContext;
 use crate::world::{self, TablePool, World, registry};
@@ -52,22 +51,14 @@ impl TestTable {
         }
     }
 
-    // A fresh channel in the root world, so each handle names an object of its own.
-    pub(crate) fn insert_channel(
+    // A handle to the root world, an object any number of handles may name and none counts.
+    pub(crate) fn insert_world(
         &self,
         context: &mut ThreadContext,
         rights: Rights,
     ) -> Result<u64, HandleError> {
-        let world = self.world();
-        let frames = Endpoint::frames_for(1).ok_or(HandleError::QuotaExhausted)?;
-        let mut earmark =
-            earmark(context, world.arena(), frames).map_err(|_| HandleError::QuotaExhausted)?;
-        let channel = channel::alone(&mut earmark, world)
-            .map(ObjectRef::Endpoint)
-            .ok_or(HandleError::QuotaExhausted)?;
-        self.insert(context, channel, rights).inspect_err(|_| {
-            channel.release(world);
-        })
+        let root = ObjectRef::World(self.world().node());
+        self.insert(context, root, rights)
     }
 }
 
