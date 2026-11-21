@@ -1299,9 +1299,7 @@ fn place_woken(held: &Resolved) {
 
 // It stands on the stack and tables its teardown frees, so the reaper does that work.
 pub(crate) fn retire(context: &mut ThreadContext) -> ! {
-    #[cfg(feature = "selftest")]
-    RETIREMENTS.fetch_add(1, Ordering::AcqRel);
-    exit(context)
+    depart(context, true)
 }
 
 // Before every return to ring 3, so a program's page never lags its own last kernel entry.
@@ -1371,6 +1369,11 @@ fn reschedule_timer(event: Option<u64>) {
 }
 
 pub(crate) fn exit(context: &mut ThreadContext) -> ! {
+    depart(context, false)
+}
+
+// A retirement counts only once its reap is pending, so no check sees one with the reaper idle.
+fn depart(context: &mut ThreadContext, retiring: bool) -> ! {
     // Never restored: an expiry before the switch would find a thread neither running nor free.
     let _off = interrupt::disable();
     let Some(me) = current() else {
@@ -1379,6 +1382,12 @@ pub(crate) fn exit(context: &mut ThreadContext) -> ! {
     let held = resolved(me);
     assert!(held.entry.is_some(), "the boot thread cannot exit");
     crate::reaper::submit(context, me);
+    #[cfg(feature = "selftest")]
+    if retiring {
+        RETIREMENTS.fetch_add(1, Ordering::AcqRel);
+    }
+    #[cfg(not(feature = "selftest"))]
+    let _ = retiring;
     let now = time::scheduler_now_ns();
     let cpu = this_processor();
     let mut queue = QUEUES[cpu].lock(context);
