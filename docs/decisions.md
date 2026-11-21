@@ -695,7 +695,8 @@ number and is added here, as one entry or as an amending id on the entry it chan
   the caller cannot refuse once the reply has happened (amends choice 10 of the core design).
 - **D-712** An object reference is encoded in 32 bytes, since a reply right names three words, so a
   transit slot is 40 bytes, and an endpoint's frame keeps the caller of each descriptor holding a
-  call after the moved references; the frame is then exactly one page (amends D-551).
+  call after the moved references; the frame is then exactly one page (amends D-551). A handle
+  table page holds 32 entries instead of 64, since a wider entry no longer fits 64 to a frame.
 - **D-713** A call's cell turns `Queued` inside the inbox commit, under the endpoint's lock, so the
   entry and the queued call appear together. A reader delivers the call after it drops that lock,
   because a pin is never taken under an object lock; a cancel or deadline in between discards the

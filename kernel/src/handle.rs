@@ -44,7 +44,8 @@ impl core::fmt::Display for HandleError {
 
 impl core::error::Error for HandleError {}
 
-const PER_PAGE: u32 = 64;
+// An entry holds a reply right of three words, so 64 entries no longer fit one frame.
+const PER_PAGE: u32 = 32;
 
 #[derive(Debug)]
 struct Entry {

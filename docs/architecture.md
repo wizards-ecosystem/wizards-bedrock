@@ -530,7 +530,7 @@ an `Endpoint`, a `File`, a `Directory`, a memory object, a world and a reply rig
 (`kernel/src/object.rs`).
 
 Each process's table is an object in its world's table pool (`kernel/src/handle.rs`). Its capacity
-is the world's handles limit (64 for the root world), and its entry pages, 64 entries each, are
+is the world's handles limit (64 for the root world), and its entry pages, 32 entries each, are
 arena frames taken when it is made, so a ring operation never allocates for a handle. The entries
 sit behind one object lock (`rank::Object`, taken with a thread context). Held and promised counts
 share one atomic word; a retired slot stays counted, so the quota never promises a slot that no
