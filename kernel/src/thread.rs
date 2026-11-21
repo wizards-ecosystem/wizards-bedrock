@@ -365,6 +365,14 @@ impl RunQueue {
         earliest(earliest(slice_end, earliest_sleeper), clock_refresh)
     }
 
+    // The slice runs from here, so a decision slower than what is left of it never bills the
+    // arriving thread for time it spent waiting to be switched in.
+    fn hand_over(&self, running: ThreadRef) -> Option<u64> {
+        let now = time::scheduler_now_ns();
+        sched_of(running, |sched| sched.started = now);
+        self.next_event(running, now)
+    }
+
     // The arriving thread's processor is this one, and it may not yet be off its last one.
     fn place(&mut self, thread: ThreadRef, held: &Thread) {
         let average = self.average(true);
@@ -1064,7 +1072,7 @@ fn give_way(context: &mut ThreadContext, mode: Mode) {
                 queue.switch_in(cpu, next, now)
             });
         let running = queue.current.unwrap_or(current);
-        (next, queue.next_event(running, now))
+        (next, queue.hand_over(running))
     };
 
     reschedule_timer(event);
@@ -1207,7 +1215,7 @@ fn block(
     }
     drop(held);
     let claimed = queue.switch_in(cpu, next, now);
-    let event = queue.next_event(next, now);
+    let event = queue.hand_over(next);
     drop(queue);
     reschedule_timer(event);
     if let Err(reason) = task::switch_to(claimed) {
@@ -1327,7 +1335,7 @@ pub(crate) fn reschedule(frame: &TrapFrame) {
                 queue.switch_in(cpu, next, now)
             });
         let running = queue.current.unwrap_or(current);
-        (next, queue.next_event(running, now))
+        (next, queue.hand_over(running))
     };
 
     reschedule_timer(event);
@@ -1367,7 +1375,7 @@ pub(crate) fn exit(context: &mut ThreadContext) -> ! {
         panic!("nothing is runnable after a thread exited");
     };
     let claimed = queue.switch_in(cpu, next, now);
-    let event = queue.next_event(next, now);
+    let event = queue.hand_over(next);
     drop(queue);
     reschedule_timer(event);
     let reason = task::exit_to(claimed);

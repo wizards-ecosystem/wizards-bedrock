@@ -244,6 +244,10 @@ number and is added here, as one entry or as an amending id on the entry it chan
 - **D-588** The idle thread takes no thread lock and never logs: it runs only when nothing else
   can, so a lock it held while preempted would wait for good while its waiters spin. It wakes the
   service worker, which logs the reports calls and switches leave behind.
+- **D-589** A thread's slice is timed from the end of the scheduling decision that hands it the
+  processor, not from the moment the decision began, and its alarm is armed from then. A decision
+  slower than what is left of the arriving thread's slice, as in a debug kernel on a loaded host,
+  would otherwise bill that thread for the decision and preempt it before it ran, every time.
 - **D-594** Teardown stops a world's threads through a list that links them in their records, its
   head in the world record at the reaper's rank (amends D-547): it claims each waiting thread's
   wait and places it, and waits until the world's thread pool is empty, because the records and

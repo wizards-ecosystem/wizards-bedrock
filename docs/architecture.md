@@ -437,7 +437,8 @@ stack another still stands on. Every switch passes through `task::prepare`, whic
 threads in the root world), named by world, index and generation, with its name, entry, owner,
 world clock, a `libs/wake-state` wake word and its scheduling links. Each processor has its own
 run queue and idle thread behind a run-queue lock; the queue links ready threads through their
-records, with the arithmetic in `libs/eevdf` and a 3 ms slice. If the policy ever returns nobody
+records, with the arithmetic in `libs/eevdf` and a 3 ms slice timed from the end of the decision
+that hands a thread the processor, so the decision's own cost is never its bill. If the policy ever returns nobody
 while every thread is a candidate, the kernel takes the first candidate. The idle thread sits
 outside the policy, runs only when nothing else can and halts. It takes no thread lock, since one
 it held could wait forever, so it wakes the service worker to log what calls and switches left
