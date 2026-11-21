@@ -639,6 +639,11 @@ number and is added here, as one entry or as an amending id on the entry it chan
   processor and the world's process pool is empty. Steps T3 to T6 release nothing of their own,
   because the processes' own teardowns release their queues, tables and spaces and no mapper slot
   or endpoint reaches another world yet.
+- **D-730** A detaching world credits the nearest ancestor still holding a set with its own slot
+  and its unspent budgets, not with its whole limits, and each descendant still dying returns its
+  own share when it detaches. A set's members and its budget then fall together, so a create after
+  a kill is refused instead of overflowing an ancestor's set. Waiting at `Quiesce` until the
+  world's own set is empty would also hold the bound, but it makes one teardown wait on others.
 - **D-548** A pin is a `wost::sync::PinGuard` at rank `Pin`, below the object locks, plus a counted
   slab hold of the world's record; object locks under it are taken as leaves at rank `Object`, so
   no guard lends its token and no equal-rank pair lock is needed.

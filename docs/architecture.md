@@ -309,9 +309,12 @@ arena from earmarking or donating, and hands it to the reaper. The teardown
 down by itself; wakes its threads, each of which retires at its next return to ring 3, and waits
 until they are off the processor and every process's own teardown has released it; closes the pin
 word and waits for the counted pins to drain; takes the record, leaves every ancestor's set,
-credits the parent's budgets, releases every object page and bumps the node's generation; and then
+credits the nearest ancestor still holding a set with its own slot and its unspent budgets,
+releases every object page and bumps the node's generation; and then
 dissolves the arena 512 frame records at a time, each frame zeroed and credited once to the
 nearest Live ancestor, chosen again for every chunk. No step waits on another world's teardown.
+A descendant still dying returns its own share when it detaches, so each set holds at most the
+members its world's budget paid for at every instant.
 
 The heap (`wost/src/mm/heap.rs`) addresses frames through the direct map. Requests up to 2048
 bytes go to eight slab classes from 16 bytes (`libs/slab-layout`); larger ones take whole frames.

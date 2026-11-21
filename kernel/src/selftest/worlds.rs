@@ -90,6 +90,53 @@ pub(super) fn a_world_past_its_reservation_is_refused_alone(context: &mut Thread
         && world::inspect(root).is_some_and(|(_, root_used)| root_used == parent_used)
         && killed(context, sibling, root, initial)
         && disjoint_colours_stay_apart(context, root, initial)
+        && creates_after_a_kill_fit_every_set(context, root, initial)
+}
+
+// Children enough to fill the root's set beside their parent and grandparent.
+const FANOUT: u32 = 61;
+
+fn tree_child(
+    context: &mut ThreadContext,
+    parent: NodeRef,
+    per_colour: u32,
+    descendants: u32,
+) -> Option<NodeRef> {
+    let request = Request {
+        per_colour,
+        mask: 1,
+        limits: Limits {
+            descendants,
+            ..LIMITS
+        },
+    };
+    world::create(context, parent, request).ok()
+}
+
+// A killed world gives back only its own share while its descendants still die, so creating in
+// its parent at once fits every ancestor's set or is refused, and never overflows the root's.
+fn creates_after_a_kill_fit_every_set(
+    context: &mut ThreadContext,
+    root: NodeRef,
+    initial: usize,
+) -> bool {
+    let Some(top) = tree_child(context, root, PER_COLOUR * (FANOUT + 4), FANOUT + 1) else {
+        return false;
+    };
+    let middle = tree_child(context, top, PER_COLOUR * (FANOUT + 1), FANOUT);
+    let filled = middle.is_some_and(|middle| {
+        (0..FANOUT).all(|_| tree_child(context, middle, PER_COLOUR, 0).is_some())
+    });
+    let detached = filled
+        && middle.is_some_and(|middle| {
+            world::kill(middle) && yields_until(context, || registry::state(middle).is_none())
+        });
+    if detached {
+        for _ in 0..2 {
+            let _ = tree_child(context, top, PER_COLOUR, 0);
+        }
+    }
+    killed(context, top, root, initial) && detached
 }
 
 // Each sibling's frames carry only the colours of its own mask.
