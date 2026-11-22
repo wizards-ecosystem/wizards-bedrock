@@ -115,10 +115,13 @@ impl Blake2s {
         for (at, initial) in IV.into_iter().enumerate() {
             set_word(&mut v.bytes, at + 8, initial);
         }
-        set_word(&mut v.bytes, 12, word(&v.bytes, 12) ^ self.counter as u32);
-        set_word(&mut v.bytes, 13, word(&v.bytes, 13) ^ (self.counter >> 32) as u32);
+        let low = word(&v.bytes, 12) ^ self.counter as u32;
+        set_word(&mut v.bytes, 12, low);
+        let high = word(&v.bytes, 13) ^ (self.counter >> 32) as u32;
+        set_word(&mut v.bytes, 13, high);
         if last {
-            set_word(&mut v.bytes, 14, !word(&v.bytes, 14));
+            let flag = !word(&v.bytes, 14);
+            set_word(&mut v.bytes, 14, flag);
         }
         let m = |at: usize| word(&self.buffer, at);
         for s in &SCHEDULE {
