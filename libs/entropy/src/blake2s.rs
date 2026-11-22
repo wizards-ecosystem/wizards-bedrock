@@ -1,4 +1,4 @@
-use crate::Wipe;
+use crate::{Secret, Wipe, set_word, word};
 
 const BLOCK: usize = 64;
 
@@ -42,16 +42,19 @@ impl Drop for Blake2s {
     }
 }
 
-fn mix(v: &mut [u32; 16], lanes: [usize; 4], x: u32, y: u32) {
-    let [a, b, c, d] = lanes;
-    v[a] = v[a].wrapping_add(v[b]).wrapping_add(x);
-    v[d] = (v[d] ^ v[a]).rotate_right(16);
-    v[c] = v[c].wrapping_add(v[d]);
-    v[b] = (v[b] ^ v[c]).rotate_right(12);
-    v[a] = v[a].wrapping_add(v[b]).wrapping_add(y);
-    v[d] = (v[d] ^ v[a]).rotate_right(8);
-    v[c] = v[c].wrapping_add(v[d]);
-    v[b] = (v[b] ^ v[c]).rotate_right(7);
+fn mix(v: &mut [u8; 64], lanes: [usize; 4], x: u32, y: u32) {
+    let [mut a, mut b, mut c, mut d] = lanes.map(|at| word(v, at));
+    a = a.wrapping_add(b).wrapping_add(x);
+    d = (d ^ a).rotate_right(16);
+    c = c.wrapping_add(d);
+    b = (b ^ c).rotate_right(12);
+    a = a.wrapping_add(b).wrapping_add(y);
+    d = (d ^ a).rotate_right(8);
+    c = c.wrapping_add(d);
+    b = (b ^ c).rotate_right(7);
+    for (at, value) in lanes.into_iter().zip([a, b, c, d]) {
+        set_word(v, at, value);
+    }
 }
 
 impl Blake2s {
@@ -105,41 +108,32 @@ impl Blake2s {
         out.copy_from_slice(&self.state);
     }
 
+    // Message words are read in place and the work vector is a `Secret`, so the hook wipes both.
     fn compress(&mut self, last: bool) {
-        let mut m = [0u32; 16];
-        for (word, bytes) in m.iter_mut().zip(self.buffer.chunks_exact(4)) {
-            *word = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+        let mut v = Secret::<64>::zero(self.wipe);
+        v.bytes[..32].copy_from_slice(&self.state);
+        for (at, initial) in IV.into_iter().enumerate() {
+            set_word(&mut v.bytes, at + 8, initial);
         }
-        let mut v = [0u32; 16];
-        for (word, bytes) in v[..8].iter_mut().zip(self.state.chunks_exact(4)) {
-            *word = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-        }
-        v[8..].copy_from_slice(&IV);
-        v[12] ^= self.counter as u32;
-        v[13] ^= (self.counter >> 32) as u32;
+        set_word(&mut v.bytes, 12, word(&v.bytes, 12) ^ self.counter as u32);
+        set_word(&mut v.bytes, 13, word(&v.bytes, 13) ^ (self.counter >> 32) as u32);
         if last {
-            v[14] = !v[14];
+            set_word(&mut v.bytes, 14, !word(&v.bytes, 14));
         }
+        let m = |at: usize| word(&self.buffer, at);
         for s in &SCHEDULE {
-            mix(&mut v, [0, 4, 8, 12], m[s[0]], m[s[1]]);
-            mix(&mut v, [1, 5, 9, 13], m[s[2]], m[s[3]]);
-            mix(&mut v, [2, 6, 10, 14], m[s[4]], m[s[5]]);
-            mix(&mut v, [3, 7, 11, 15], m[s[6]], m[s[7]]);
-            mix(&mut v, [0, 5, 10, 15], m[s[8]], m[s[9]]);
-            mix(&mut v, [1, 6, 11, 12], m[s[10]], m[s[11]]);
-            mix(&mut v, [2, 7, 8, 13], m[s[12]], m[s[13]]);
-            mix(&mut v, [3, 4, 9, 14], m[s[14]], m[s[15]]);
+            mix(&mut v.bytes, [0, 4, 8, 12], m(s[0]), m(s[1]));
+            mix(&mut v.bytes, [1, 5, 9, 13], m(s[2]), m(s[3]));
+            mix(&mut v.bytes, [2, 6, 10, 14], m(s[4]), m(s[5]));
+            mix(&mut v.bytes, [3, 7, 11, 15], m(s[6]), m(s[7]));
+            mix(&mut v.bytes, [0, 5, 10, 15], m(s[8]), m(s[9]));
+            mix(&mut v.bytes, [1, 6, 11, 12], m(s[10]), m(s[11]));
+            mix(&mut v.bytes, [2, 7, 8, 13], m(s[12]), m(s[13]));
+            mix(&mut v.bytes, [3, 4, 9, 14], m(s[14]), m(s[15]));
         }
-        let mut state = [0u32; 8];
-        for (i, word) in state.iter_mut().enumerate() {
-            *word = v[i] ^ v[i + 8];
+        for at in 0..8 {
+            let chained = word(&self.state, at) ^ word(&v.bytes, at) ^ word(&v.bytes, at + 8);
+            set_word(&mut self.state, at, chained);
         }
-        for (word, bytes) in state.iter_mut().zip(self.state.chunks_exact(4)) {
-            *word ^= u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-        }
-        self.store_state(&state);
-        m.fill(0);
-        v.fill(0);
-        state.fill(0);
     }
 }

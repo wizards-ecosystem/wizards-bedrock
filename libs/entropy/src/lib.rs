@@ -41,6 +41,16 @@ impl<const N: usize> Drop for Secret<N> {
     }
 }
 
+// Working state lives in bytes a `Secret` owns, read and written a little-endian word at a time.
+fn word(bytes: &[u8], at: usize) -> u32 {
+    let at = at * 4;
+    u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
+}
+
+fn set_word(bytes: &mut [u8], at: usize, value: u32) {
+    bytes[at * 4..at * 4 + 4].copy_from_slice(&value.to_le_bytes());
+}
+
 struct Pool {
     hash: Blake2s,
     credited: u32,
@@ -104,15 +114,20 @@ impl Base {
 
     #[must_use]
     pub fn add_seed_word(&mut self, word: u64) -> bool {
-        let bytes = word.to_le_bytes();
-        let repeated = self.recent.bytes.chunks_exact(8).any(|seen| seen == bytes);
+        let mut bytes = Secret::<8>::zero(self.recent.wipe);
+        bytes.bytes = word.to_le_bytes();
+        let repeated = self
+            .recent
+            .bytes
+            .chunks_exact(8)
+            .any(|seen| seen == bytes.bytes);
         if repeated || word == 0 || word == u64::MAX {
             return false;
         }
         let at = self.next_recent * 8;
-        self.recent.bytes[at..at + 8].copy_from_slice(&bytes);
+        self.recent.bytes[at..at + 8].copy_from_slice(&bytes.bytes);
         self.next_recent = (self.next_recent + 1) % RECENT_WORDS;
-        self.pool.absorb(&bytes, SEED_WORD_BITS);
+        self.pool.absorb(&bytes.bytes, SEED_WORD_BITS);
         true
     }
 
