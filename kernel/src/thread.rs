@@ -45,6 +45,10 @@ const TASK_WINDOW: u64 = WINDOW + (1 << 30);
 // In the range mainline uses, and the one tunable EEVDF has.
 const SLICE_NS: u64 = 3 * NANOSECONDS_PER_MS;
 
+// The most threads one interrupts-off pass wakes, so no world's thread count sets how long a
+// processor ignores its timer.
+const BATCH: usize = 16;
+
 pub(crate) fn boot_stack_layout() -> Option<StackLayout> {
     StackLayout::new(WINDOW, BOOT_STACK_BYTES, GUARD_BYTES, 1)
 }
@@ -381,7 +385,14 @@ impl RunQueue {
         let clock_refresh = running
             .clock
             .map(|clock| now.saturating_add(clock.refresh_interval_ns()));
-        let earliest_sleeper = self.sleepers.as_ref().and_then(sleeper_deadline);
+        // Every sleeper is due once the clock is revoked.
+        let earliest_sleeper = self.sleepers.as_ref().and_then(|first| {
+            if time::is_calibrated() {
+                sleeper_deadline(first)
+            } else {
+                Some(now)
+            }
+        });
         earliest(earliest(slice_end, earliest_sleeper), clock_refresh)
     }
 
@@ -426,10 +437,14 @@ impl RunQueue {
         });
     }
 
-    // A revoked clock wakes every sleeper: none may stay parked on an unreachable deadline.
+    // A revoked clock wakes every sleeper: none may stay parked on an unreachable deadline. Those
+    // past the batch are still due, so the alarm `next_event` arms brings the next pass at once.
     fn wake_due(&mut self, now: u64) {
         let clock_live = time::is_calibrated();
-        while let Some(first) = self.sleepers.take() {
+        for _ in 0..BATCH {
+            let Some(first) = self.sleepers.take() else {
+                return;
+            };
             if clock_live && sleeper_deadline(&first).is_some_and(|deadline| deadline > now) {
                 self.sleepers = Some(first);
                 return;
@@ -712,35 +727,55 @@ fn leave(world: &World, thread: Local<Thread>) -> bool {
 }
 
 // Wakes each waiting thread of the world, which retires at its next return to ring 3, and
-// answers whether every one of them is released.
+// answers whether every one of them is released. Interrupts are on between batches.
 pub(crate) fn stop_world(node: NodeRef) -> bool {
     let Some(world) = registry::hold(node) else {
         return true;
     };
-    let mut woken = false;
-    {
-        let members = world.members.lock_ranked();
-        let mut cursor = members.first;
-        while let Some(at) = cursor {
-            let held = Resolved {
-                at: ThreadRef {
-                    world: node,
-                    thread: at,
-                },
-                thread: member(&world, at),
-                _world: world.clone(),
-            };
-            let (wait, next) = sched(&held, |sched| (sched.wait, sched.member_next));
-            if let Some(wait) = wait {
-                woken |= wake(&held, wait.sequence) == Some(Wake::Waking);
-            }
-            cursor = next;
+    let mut cursor = world.members.lock_ranked().first;
+    while let Some(start) = cursor {
+        let (next, woken) = stop_batch(&world, node, start);
+        if woken {
+            reschedule_timer(Some(time::scheduler_now_ns()));
         }
-    }
-    if woken {
-        reschedule_timer(Some(time::scheduler_now_ns()));
+        cursor = next;
     }
     world.threads.is_empty()
+}
+
+// A pass ends early if `start` left the list meanwhile; the teardown's next round walks it again.
+fn stop_batch(
+    world: &Hold<World>,
+    node: NodeRef,
+    start: Local<Thread>,
+) -> (Option<Local<Thread>>, bool) {
+    let members = world.members.lock_ranked();
+    let linked = members.first == Some(start)
+        || world
+            .threads
+            .hold(start)
+            .is_some_and(|held| sched(&held, |sched| sched.member_previous.is_some()));
+    let mut cursor = linked.then_some(start);
+    let mut woken = false;
+    for _ in 0..BATCH {
+        let Some(at) = cursor else {
+            break;
+        };
+        let held = Resolved {
+            at: ThreadRef {
+                world: node,
+                thread: at,
+            },
+            thread: member(world, at),
+            _world: world.clone(),
+        };
+        let (wait, next) = sched(&held, |sched| (sched.wait, sched.member_next));
+        if let Some(wait) = wait {
+            woken |= wake(&held, wait.sequence) == Some(Wake::Waking);
+        }
+        cursor = next;
+    }
+    (cursor, woken)
 }
 
 pub(crate) fn current() -> Option<ThreadRef> {

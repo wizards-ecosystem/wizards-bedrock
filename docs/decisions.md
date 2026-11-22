@@ -271,6 +271,12 @@ number and is added here, as one entry or as an amending id on the entry it chan
   thread always has one to switch to. A blocker halting in place when nothing else could run kept a
   second wake path that only a failed idle thread reached, and a claim from another processor never
   ended its halt.
+- **D-598** A pass with interrupts off handles at most 16 threads where one world's thread count
+  would set its length: a decision places at most 16 due sleepers and arms its alarm at once for
+  the rest, and a world's teardown claims its waiting threads in batches with interrupts on between
+  them, a batch whose first member left the list ending that round's walk for the next round to
+  redo (amends D-594). Holding interrupts off for a whole list let a hostile world's sleepers or
+  kill delay every other world's timer on that processor.
 
 ## Memory
 

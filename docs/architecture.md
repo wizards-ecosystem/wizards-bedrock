@@ -467,7 +467,10 @@ queue's lock only if no waker claimed the wait in between. A waker unlinks the t
 the wait sequence it registered with, so a stale link never ends a later wait; a thread it claims
 after the block waits until `on_cpu` is clear and is placed on its last processor's queue, and one
 it claims before the block still runs, so its processor gets the reschedule vector. A wait
-may also end at a deadline, through its processor's list of sleepers. An exiting thread marks its
+may also end at a deadline, through its processor's list of sleepers. A decision places at most 16
+due sleepers and arms its alarm at once for the rest, and a world's teardown claims its waiting
+threads 16 at a time with interrupts on between batches, so neither pass with interrupts off grows
+with one world's thread count. An exiting thread marks its
 word dead and joins the reaper's list, linked through its record; the reaper frees the record and
 unmaps the stack only once the word is dead and `on_cpu` clear, after its process's teardown, and
 returns the frames when the stack's shootdown completes.
