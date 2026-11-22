@@ -211,9 +211,7 @@ impl Creation {
 
 pub open spec fn names_an_ancestor(step: CreationStep, ancestors: u8) -> bool {
     match step {
-        CreationStep::Insert(distance)
-        | CreationStep::Confirm(distance)
-        | CreationStep::Remove(distance, _) => distance < ancestors,
+        CreationStep::Insert(distance) | CreationStep::Remove(distance, _) => distance < ancestors,
         _ => true,
     }
 }
@@ -223,16 +221,13 @@ pub open spec fn entered(step: CreationStep, ancestors: u8) -> int {
     match step {
         CreationStep::Insert(distance) => distance as int,
         CreationStep::Remove(distance, _) => distance + 1,
-        CreationStep::Publish
-        | CreationStep::Confirm(_)
-        | CreationStep::Published
-        | CreationStep::Kill => ancestors as int,
+        CreationStep::Publish | CreationStep::Published => ancestors as int,
         _ => 0,
     }
 }
 
 pub open spec fn ends(step: CreationStep) -> bool {
-    step is Refused || step is Unwound || step is Published || step is Kill
+    step is Refused || step is Unwound || step is Published
 }
 
 // Tree: creating a world enters it into every ancestor's set or into none.
@@ -271,24 +266,15 @@ pub open spec fn credits_what_it_debited(
     }
 }
 
-// Tree: every descendant is dying before the world is dead. A child published after an ancestor
-// began dying was skipped by that ancestor's kill, so the creator confirms every ancestor first.
-pub open spec fn published_after_every_confirm(
+// Tree: every descendant is dying before the world is dead. A child is published only by a
+// publish that found every ancestor Live, atomically with each ancestor's kill reaching it.
+pub open spec fn published_only_from_its_publish(
     before: Creation,
     event: CreationEvent,
     after: Creation,
 ) -> bool {
-    let from = before.spec_step();
-    match after.spec_step() {
-        CreationStep::Confirm(0) => event == CreationEvent::Done && from == CreationStep::Publish,
-        CreationStep::Confirm(distance) => event == CreationEvent::Done && from
-            == CreationStep::Confirm((distance - 1) as u8),
-        CreationStep::Published => event == CreationEvent::Done && from == CreationStep::Confirm(
-            (before.spec_ancestors() - 1) as u8,
-        ),
-        CreationStep::Kill => from is Confirm && event is Halted,
-        _ => true,
-    }
+    after.spec_step() is Published ==> before.spec_step() == CreationStep::Publish && event
+        == CreationEvent::Done
 }
 
 // Tree: a world is live, dying or dead.

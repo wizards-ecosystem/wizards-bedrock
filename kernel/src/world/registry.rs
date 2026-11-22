@@ -154,11 +154,49 @@ pub(super) fn prepare(
     })
 }
 
-// Sequentially consistent, so a creator's later reads of its ancestors follow it.
-pub(crate) fn publish(node: NodeRef) {
-    let published = entry(node)
-        .is_some_and(|entry| entry.is(node) && entry.turn(WorldState::Free, WorldState::Live));
+// Under the world's own life lock, which a dying ancestor's kill takes to reach it, so either
+// that kill finds it Live or this finds it doomed; `false` while any ancestor is not Live.
+#[must_use = "a refused publish leaves the child for its creation to unwind"]
+pub(crate) fn publish(node: NodeRef) -> bool {
+    let Some(entry) = entry(node).filter(|entry| entry.is(node)) else {
+        panic!("world {} was published after its node was reused", node.node);
+    };
+    let Some(world) = entry.records.hold(entry.record()) else {
+        panic!("unpublished world {} lost its record", node.node);
+    };
+    let life = world.life.lock_leaf();
+    let ancestors_live = (0..world.path.depth()).all(|distance| {
+        world
+            .path
+            .nearest(distance)
+            .and_then(state)
+            .is_some_and(|ancestor| ancestor == WorldState::Live)
+    });
+    if life.doomed || !ancestors_live {
+        return false;
+    }
+    let published = entry.turn(WorldState::Free, WorldState::Live);
     assert!(published, "world {} was published twice", node.node);
+    true
+}
+
+// An unpublished world a dying ancestor reached is doomed, so its publish refuses; `false` when
+// the world is published or gone, for the caller to kill.
+pub(super) fn doom(node: NodeRef) -> bool {
+    let Some(entry) = entry(node) else {
+        return false;
+    };
+    let Some(world) = entry
+        .records
+        .hold(entry.record())
+        .filter(|world| world.node() == node)
+    else {
+        return false;
+    };
+    let mut life = world.life.lock_leaf();
+    let unpublished = entry.state() == WorldState::Free;
+    life.doomed |= unpublished;
+    unpublished
 }
 
 // The record of a world that was prepared and never published, with its record pool closed.

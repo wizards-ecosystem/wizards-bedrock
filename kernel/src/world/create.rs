@@ -47,7 +47,7 @@ struct Child {
     node: Option<NodeRef>,
 }
 
-// The child enters every ancestor's descendants or none; one that died meanwhile kills it.
+// The child enters every ancestor's descendants or none, and is published only while all live.
 pub(crate) fn create(
     context: &mut ThreadContext,
     parent: NodeRef,
@@ -95,10 +95,12 @@ pub(crate) fn create(
             CreationStep::Build => child.build(context),
             CreationStep::Insert(distance) => child.insert(distance),
             CreationStep::Publish => {
-                registry::publish(child.node());
-                CreationEvent::Done
+                if registry::publish(child.node()) {
+                    CreationEvent::Done
+                } else {
+                    CreationEvent::Halted(CreationRefusal::Dead)
+                }
             }
-            CreationStep::Confirm(distance) => child.confirm(distance),
             CreationStep::Remove(distance, _) => child.remove(distance),
             CreationStep::Credit(_) => child.credit(),
             CreationStep::Dissolve(_) => child.dissolve(),
@@ -106,10 +108,6 @@ pub(crate) fn create(
                 return Err(cause.into());
             }
             CreationStep::Published => return Ok(child.node()),
-            CreationStep::Kill => {
-                teardown::kill(child.node());
-                return Err(Refusal::Dead);
-            }
         };
         let Ok(next) = creation.next(event) else {
             panic!("world creation took an event its step does not admit");
@@ -194,17 +192,6 @@ impl Child {
                 CreationEvent::Halted(CreationRefusal::Dead)
             }
             Err(refusal) => panic!("a budgeted child could not join its ancestor: {refusal}"),
-        }
-    }
-
-    // Read after the publish: an ancestor dying since its insert skipped this unpublished child.
-    fn confirm(&self, distance: u8) -> CreationEvent {
-        let live = registry::pin(self.ancestor(distance), Admission::Teardown)
-            .is_some_and(|ancestor| ancestor.state() == world_tree::WorldState::Live);
-        if live {
-            CreationEvent::Done
-        } else {
-            CreationEvent::Halted(CreationRefusal::Dead)
         }
     }
 

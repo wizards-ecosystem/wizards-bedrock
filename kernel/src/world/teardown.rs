@@ -93,7 +93,8 @@ pub(crate) fn step(node: NodeRef, step: WorldStep) -> Progress {
     }
 }
 
-// The descendant set is frozen once the world is Dying; each descendant tears down by itself.
+// The descendant set is frozen once the world is Dying; each descendant tears down by itself, and
+// one not yet published is doomed instead, so its creation unwinds.
 fn kill_descendants(node: NodeRef) -> Progress {
     let Some(world) = registry::hold(node) else {
         panic!("dying world {} lost its record", node.node);
@@ -107,7 +108,9 @@ fn kill_descendants(node: NodeRef) -> Progress {
     }
     drop(world);
     for descendant in descendants.into_iter().flatten() {
-        kill(descendant);
+        if !registry::doom(descendant) {
+            kill(descendant);
+        }
     }
     Progress::Done
 }
