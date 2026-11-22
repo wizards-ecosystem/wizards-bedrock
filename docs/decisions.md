@@ -726,6 +726,10 @@ number and is added here, as one entry or as an amending id on the entry it chan
   re-homed from the spawn's earmark when it lives elsewhere, so the self-test kernel can start two
   programs connected at birth in two worlds. The spawner's observation still lives in the target
   world, so a spawner lets it go before it kills that world.
+- **D-733** A spawned program's observation lives in and is paid from the spawner's world, the
+  root for a kernel spawn, not the target world (amends D-559). The target world can then die
+  while its spawner still reads the observation, and the dying world's pools hold nothing of the
+  spawner's. Keeping it in the target world would need the spawner to let go before every kill.
 - **D-710** A ring call's cell and staging live in the caller's queue, one per pending slot, and a
   reply right names the queue, the slot and the cell's generation. The queue outlives every pending
   operation and its teardown already waits out a hold, so no party that reaches the cell from
