@@ -289,6 +289,10 @@ fn build(
         }
     };
     drop(table);
+    // The world's Quiesce waits for this spawn, so a kill after this check meets its thread.
+    if registry::state(world_ref) != Some(WorldState::Live) {
+        return Err(SpawnError::NoWorld);
+    }
     let binding = construction
         .address()?
         .bind()
@@ -334,11 +338,6 @@ fn build(
         );
         Ok(())
     };
-    // The point of no return; the world's Quiesce waits for this spawn, so an unwind reaches it.
-    if registry::state(world_ref) != Some(WorldState::Live) {
-        assert!(process.destroy(), "a process that never ran was borrowed");
-        return Err(SpawnError::NoWorld);
-    }
     let slot = match thread::spawn_in_space(name, cross, binding, clock, process, arrange) {
         Ok(slot) => slot,
         Err(failure) => {

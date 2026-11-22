@@ -822,8 +822,9 @@ mixer and placements derive from that world's key. Before it builds anything it 
 queue, table and birth endpoint can need, so a full arena refuses the spawn with nothing changed in
 any world but the given endpoint released. A spawn counts itself into the target world under its
 life lock, only while the world is Live, so a dying world refuses it with `NoWorld` and the
-teardown's `Quiesce` waits until a spawn in flight has finished or unwound. Before it publishes
-the thread the spawn reads the world again and unwinds if it is no longer Live. Killing the world
+teardown's `Quiesce` waits until a spawn in flight has finished or unwound. Before it binds the
+space the spawn reads the world again and unwinds if it is no longer Live, and the one refusal
+after the binding, a thread that cannot start, releases it. Killing the world
 tears the process down through the world teardown. `ProcessConstruction` owns the space and
 every mapped range until the thread is published, so any refusal rolls back through one owner.
 
