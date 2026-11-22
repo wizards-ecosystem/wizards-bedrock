@@ -4,6 +4,7 @@ use world_tree::NodeRef;
 use wost::arch::current::paging::{ActivateError, AddressSpace, MapError, UserAccess};
 use wost::arch::current::{cpu, xstate};
 use wost::mm::pool::{self as frames, Earmark, Refused};
+use wost::mm::slab::Hold;
 use x86_paging::PAGE_SIZE;
 
 use super::call::cross;
@@ -167,6 +168,7 @@ fn spawn_with(
 ) -> Result<Spawned, SpawnError> {
     let isolated = admitted_isolation()?;
     let world = registry::hold(world_ref).ok_or(SpawnError::NoWorld)?;
+    let spawner = Spawner::root(context)?;
     let mut construction = ProcessConstruction {
         space: None,
         authority: thread::SpaceAuthority::None,
@@ -179,7 +181,7 @@ fn spawn_with(
                 world_ref,
                 &world,
                 &mut construction,
-                (earmark, layout),
+                (earmark, layout, spawner),
                 birth,
                 Named {
                     name,
@@ -192,6 +194,32 @@ fn spawn_with(
     );
     construction.dismantle(context, &world);
     spawned
+}
+
+// The world that observes the program and pays for its observation: the root, for a kernel spawn.
+#[derive(Debug)]
+struct Spawner {
+    node: NodeRef,
+    world: Hold<World>,
+    earmark: Earmark,
+}
+
+impl Spawner {
+    fn root(context: &mut thread::ThreadContext) -> Result<Self, SpawnError> {
+        let node = world::root().ok_or(SpawnError::NoWorld)?;
+        let world = registry::hold(node).ok_or(SpawnError::NoWorld)?;
+        let earmark = world::ObservationPool::earmark(context, world.arena(), 1)
+            .map_err(SpawnError::NoMemory)?;
+        Ok(Self {
+            node,
+            world,
+            earmark,
+        })
+    }
+
+    fn observe(mut self) -> ObservationRef {
+        ObservationRef::create(&mut self.earmark, self.node, &self.world)
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -207,7 +235,7 @@ fn build(
     world_ref: NodeRef,
     world: &World,
     construction: &mut ProcessConstruction,
-    (mut earmark, layout): (Earmark, Layout),
+    (mut earmark, layout, spawner): (Earmark, Layout, Spawner),
     birth: &mut Option<Peer>,
     named: Named,
 ) -> Result<Spawned, SpawnError> {
@@ -278,13 +306,13 @@ fn build(
         data,
         time,
     };
-    let observation = ObservationRef::create(&mut earmark, world_ref, world);
+    let observation = spawner.observe();
     let process = ProcessRef::create(
         &mut earmark,
         world_ref,
         world,
         launch,
-        observation.local(),
+        observation.observer(),
         objects,
     );
     // The process takes the space only once its thread is bound to it.
@@ -385,9 +413,6 @@ fn earmark(
     plan: &Plan<'_>,
     isolated: bool,
 ) -> Result<Earmark, SpawnError> {
-    let records = world::ProcessPool::frames_for(1)
-        .zip(world::ObservationPool::frames_for(1))
-        .and_then(|(process, observation)| process.checked_add(observation));
     let stack_tables = u32::try_from(x86_paging::tables_for(u64::from(STACK_PAGES))).ok();
     let shared_tables = u32::try_from(3 * x86_paging::tables_for(1)).ok();
     let stack = world::MemoryPool::frames_for(1)
@@ -397,14 +422,14 @@ fn earmark(
     let frames = world::TablePool::frames_for(1)
         .zip(QueueRef::frames_for())
         .zip(Endpoint::rehome_frames_for(1))
-        .zip(records)
+        .zip(world::ProcessPool::frames_for(1))
         .zip(stack.zip(plan.frames()))
-        .and_then(|((((table, queue), channel), records), (stack, image))| {
+        .and_then(|((((table, queue), channel), process), (stack, image))| {
             table
                 .checked_add(Table::frames_for(world.handles()))?
                 .checked_add(queue)?
                 .checked_add(channel)?
-                .checked_add(records)?
+                .checked_add(process)?
                 .checked_add(stack)?
                 .checked_add(image)?
                 .checked_add(space::Space::frames_for())?
