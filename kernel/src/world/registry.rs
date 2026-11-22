@@ -199,19 +199,28 @@ pub(super) fn doom(node: NodeRef) -> bool {
     unpublished
 }
 
-// The record of a world that was prepared and never published, with its record pool closed.
-pub(crate) fn withdraw(node: NodeRef) -> World {
+// The record of a world that was prepared and never published, with its record pool closed;
+// `None` while a dying ancestor's teardown still holds it.
+pub(crate) fn withdraw(node: NodeRef) -> Option<World> {
     let Some(entry) =
         entry(node).filter(|entry| entry.is(node) && entry.state() == WorldState::Free)
     else {
         panic!("world {} was withdrawn though it was published", node.node);
     };
-    let Ok(Some(world)) = entry.records.destroy(entry.record()) else {
-        panic!("the record of unpublished world {} was held", node.node);
-    };
-    entry.records.close();
-    entry.clock.stop();
-    world
+    match entry.records.destroy(entry.record()) {
+        Ok(Some(world)) => {
+            entry.records.close();
+            entry.clock.stop();
+            Some(world)
+        }
+        Err(Removal::Borrowed) => None,
+        Ok(None) | Err(Removal::Refused(_)) => {
+            panic!(
+                "the record of unpublished world {} has another holder",
+                node.node
+            )
+        }
+    }
 }
 
 // The clock of a world for as long as its node keeps this generation.

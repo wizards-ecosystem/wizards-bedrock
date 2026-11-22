@@ -214,8 +214,12 @@ impl Child {
     }
 
     fn dissolve(&mut self) -> CreationEvent {
-        if let Some(node) = self.node.take() {
-            registry::withdraw(node).release();
+        if let Some(node) = self.node {
+            let Some(world) = registry::withdraw(node) else {
+                return CreationEvent::Pending;
+            };
+            self.node = None;
+            world.release();
         }
         let Some(arena) = self.arena else {
             panic!("a world creation dissolved an arena it never had");
