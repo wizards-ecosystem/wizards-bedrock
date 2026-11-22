@@ -675,6 +675,11 @@ number and is added here, as one entry or as an amending id on the entry it chan
   confirm steps after the publish are gone. Holding each ancestor's record until a confirm ran
   would only delay its detach, since closing its pins already makes it dead, and nested ancestor
   locks break the rule of one object lock at a time.
+- **D-732** A spawn counts itself into its target world under the world's life lock, only while
+  the world is Live, and the teardown's `Quiesce` waits for the count to reach zero. A pin does not
+  fit: its drain comes after `Quiesce`, closing the pins makes the world Closed at once, so a late
+  process could no longer resolve its world to tear down, and the pin count also holds foreign
+  teardown pins that `Quiesce` must not wait on.
 - **D-548** A pin is a `wost::sync::PinGuard` at rank `Pin`, below the object locks, plus a counted
   slab hold of the world's record; object locks under it are taken as leaves at rank `Object`, so
   no guard lends its token and no equal-rank pair lock is needed.

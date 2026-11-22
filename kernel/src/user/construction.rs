@@ -1,6 +1,6 @@
 use core::fmt;
 
-use world_tree::NodeRef;
+use world_tree::{NodeRef, WorldState};
 use wost::arch::current::paging::{ActivateError, AddressSpace, MapError, UserAccess};
 use wost::arch::current::{cpu, xstate};
 use wost::mm::pool::{self as frames, Earmark, Refused};
@@ -167,7 +167,7 @@ fn spawn_with(
     operand: u64,
 ) -> Result<Spawned, SpawnError> {
     let isolated = admitted_isolation()?;
-    let world = registry::hold(world_ref).ok_or(SpawnError::NoWorld)?;
+    let world = world::spawning(world_ref).ok_or(SpawnError::NoWorld)?;
     let spawner = Spawner::root(context)?;
     let mut construction = ProcessConstruction {
         space: None,
@@ -334,6 +334,11 @@ fn build(
         );
         Ok(())
     };
+    // The point of no return; the world's Quiesce waits for this spawn, so an unwind reaches it.
+    if registry::state(world_ref) != Some(WorldState::Live) {
+        assert!(process.destroy(), "a process that never ran was borrowed");
+        return Err(SpawnError::NoWorld);
+    }
     let slot = match thread::spawn_in_space(name, cross, binding, clock, process, arrange) {
         Ok(slot) => slot,
         Err(failure) => {

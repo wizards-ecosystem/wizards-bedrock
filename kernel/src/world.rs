@@ -3,6 +3,7 @@ pub(crate) mod registry;
 mod teardown;
 
 use core::fmt;
+use core::ops::Deref;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use entropy::{Local, NotReady};
@@ -11,6 +12,7 @@ use world_tree::{Budgets, Descendants, Limits, NodeRef, Path, WorldState};
 use wost::arch::current::cpu::CounterAccess;
 use wost::mm;
 use wost::mm::pool::{self, ArenaId, ColourMask, Refused};
+use wost::mm::slab::Hold;
 use wost::sync::{Leaf, SpinLock};
 
 use crate::arena::Pool;
@@ -59,12 +61,13 @@ pub(crate) struct Time {
 }
 
 // Children join and leave `descendants` and debit `budgets` only under this lock, and the world
-// is published and doomed only under it.
+// is published, doomed and counted into by a spawn only under it.
 #[derive(Debug)]
 struct Life {
     budgets: Budgets,
     descendants: Descendants<DESCENDANTS>,
     doomed: bool,
+    spawns: u32,
 }
 
 pub(crate) struct World {
@@ -118,6 +121,7 @@ impl World {
                 budgets: Budgets::new(limits),
                 descendants: Descendants::EMPTY,
                 doomed: false,
+                spawns: 0,
             }),
             ordinals: AtomicU64::new(0),
             spaces: AtomicU64::new(0),
@@ -187,6 +191,38 @@ impl World {
     pub(crate) fn placement_seed(&self) -> [u8; 32] {
         let ordinal = self.spaces.fetch_add(1, Ordering::Relaxed);
         entropy::derive(&self.key.0, b"space", ordinal, mm::wipe)
+    }
+}
+
+// A spawn into a world, counted only while it is Live, so its teardown's Quiesce waits for it.
+#[derive(Debug)]
+pub(crate) struct Spawning {
+    world: Hold<World>,
+}
+
+pub(crate) fn spawning(node: NodeRef) -> Option<Spawning> {
+    let world = registry::hold(node)?;
+    {
+        let mut life = world.life.lock_leaf();
+        if registry::state(node) != Some(WorldState::Live) {
+            return None;
+        }
+        life.spawns += 1;
+    }
+    Some(Spawning { world })
+}
+
+impl Deref for Spawning {
+    type Target = World;
+
+    fn deref(&self) -> &World {
+        &self.world
+    }
+}
+
+impl Drop for Spawning {
+    fn drop(&mut self) {
+        self.world.life.lock_leaf().spawns -= 1;
     }
 }
 

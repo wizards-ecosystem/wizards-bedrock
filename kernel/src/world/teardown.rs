@@ -117,7 +117,8 @@ fn kill_descendants(node: NodeRef) -> Progress {
 
 fn quiesce(node: NodeRef) -> Progress {
     let stopped = thread::stop_world(node);
-    let released = registry::hold(node).is_none_or(|world| world.processes.is_empty());
+    let released = registry::hold(node)
+        .is_none_or(|world| world.processes.is_empty() && world.life.lock_leaf().spawns == 0);
     if stopped && released {
         Progress::Done
     } else {
