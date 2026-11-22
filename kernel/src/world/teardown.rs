@@ -126,37 +126,35 @@ fn quiesce(node: NodeRef) -> Progress {
     }
 }
 
-// Leaves every ancestor's set; the nearest one still holding a set gets back this world's own slot
-// and unspent budgets, and each descendant returns its own share when it detaches.
+// Leaves every ancestor's set before the nearest one still holding a set gets back this world's
+// own slot and unspent budgets, so no set is fuller than its budget allows; each descendant returns
+// its own share when it detaches.
 fn detach(node: NodeRef) -> Progress {
     let Some(world) = registry::take(node) else {
         return Progress::Pending;
     };
     crate::channel::dissolve(&world);
-    let unspent = world.life.lock_leaf().budgets;
-    let mut share = Some(Limits {
-        descendants: unspent.descendants(),
-        threads: unspent.threads(),
-        handles: world.limits.handles,
-    });
     for distance in 0..world.path.depth() {
-        let Some(ancestor) = world
+        if let Some(ancestor) = world
             .path
             .nearest(distance)
             .and_then(|ancestor| registry::pin(ancestor, Admission::Teardown))
-        else {
-            continue;
-        };
-        let removed = ancestor.life.lock_leaf().descendants.remove(node);
-        assert!(
-            removed.is_ok(),
-            "world {} was missing from an ancestor",
-            node.node
-        );
-        if let Some(share) = share.take() {
-            super::create::credit(&ancestor, share);
+        {
+            let removed = ancestor.life.lock_leaf().descendants.remove(node);
+            assert!(
+                removed.is_ok(),
+                "world {} was missing from an ancestor",
+                node.node
+            );
         }
     }
+    let unspent = world.life.lock_leaf().budgets;
+    let share = Limits {
+        descendants: unspent.descendants(),
+        threads: unspent.threads(),
+        handles: world.limits.handles,
+    };
+    super::create::credit_nearest(&world.path, share);
     world.release();
     registry::reclaim(node);
     Progress::Done

@@ -312,8 +312,9 @@ enter the child into each ancestor's set, nearest first; then publish it Live un
 lock, refused unless every ancestor is Live. A dying world's teardown takes the life lock of each
 member it cannot kill because it is unpublished and dooms it, and a doomed child's publish
 refuses, so either the kill finds the child Live or the child never lives. A refusal, the
-publish's included, removes the child from every set it joined, credits the parent and dissolves
-the arena back, so nothing changes.
+publish's included, removes the child from every set it joined, credits the parent (or, once the
+parent can no longer be pinned, its nearest ancestor still holding a set) and dissolves the arena
+back, so nothing changes.
 
 `world::kill` turns a Live world Dying under its life lock, so no child joins it after, stops its
 arena from earmarking or donating, and hands it to the reaper. The teardown
@@ -321,8 +322,8 @@ arena from earmarking or donating, and hands it to the reaper. The teardown
 down by itself; wakes its threads, each of which retires at its next return to ring 3, and waits
 until they are off the processor, every process's own teardown has released it and no spawn into
 it is in flight; closes the pin
-word and waits for the counted pins to drain; takes the record, leaves every ancestor's set,
-credits the nearest ancestor still holding a set with its own slot and its unspent budgets,
+word and waits for the counted pins to drain; takes the record, leaves every ancestor's set and
+only then credits the nearest ancestor still holding a set with its own slot and unspent budgets,
 releases every object page and bumps the node's generation; and then dissolves the arena,
 scanning for surrendered frames 512 records at a time, each frame zeroed and credited once to the
 nearest Live ancestor, chosen again for every chunk. No step waits on another world's teardown.

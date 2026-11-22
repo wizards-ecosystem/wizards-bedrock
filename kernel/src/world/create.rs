@@ -207,9 +207,7 @@ impl Child {
     }
 
     fn credit(&self) -> CreationEvent {
-        if let Some(parent) = registry::pin(self.parent, Admission::Teardown) {
-            credit(&parent, self.request.limits);
-        }
+        credit_nearest(&self.path, self.request.limits);
         CreationEvent::Done
     }
 
@@ -231,7 +229,20 @@ impl Child {
     }
 }
 
-pub(super) fn credit(parent: &World, limits: Limits) {
+// The nearest ancestor still holding a set takes the share; the root always can.
+pub(super) fn credit_nearest(path: &Path, limits: Limits) {
+    for distance in 0..path.depth() {
+        if let Some(ancestor) = path
+            .nearest(distance)
+            .and_then(|ancestor| registry::pin(ancestor, Admission::Teardown))
+        {
+            credit(&ancestor, limits);
+            return;
+        }
+    }
+}
+
+fn credit(parent: &World, limits: Limits) {
     let mut life = parent.life.lock_leaf();
     match life.budgets.credit_child(limits) {
         Ok(budgets) => life.budgets = budgets,
