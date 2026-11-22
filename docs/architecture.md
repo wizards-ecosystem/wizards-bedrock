@@ -309,9 +309,10 @@ without a pin while it is Live or Dying.
 the parent's budgets and donate the child an arena of the requested frames per colour in a mask
 within the parent's; build the record with a key drawn from the generator, never from the parent;
 enter the child into each ancestor's set, nearest first; then publish it Live under its own life
-lock, refused unless every ancestor is Live. A dying world's teardown takes the life lock of each
-member it cannot kill because it is unpublished and dooms it, and a doomed child's publish
-refuses, so either the kill finds the child Live or the child never lives. A refusal, the
+lock, refused unless every ancestor is Live. A dying world's teardown reads each member under
+that member's life lock after the world turned Dying and leaves one it finds unpublished, whose
+publish then sees the dying ancestor and refuses, so either the kill finds the child Live or the
+child never lives. A refusal, the
 publish's included, removes the child from every set it joined, credits the parent (or, once the
 parent can no longer be pinned, its nearest ancestor still holding a set) and dissolves the arena
 back, so nothing changes.

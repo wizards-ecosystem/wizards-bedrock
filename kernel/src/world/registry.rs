@@ -154,8 +154,8 @@ pub(super) fn prepare(
     })
 }
 
-// Under the world's own life lock, which a dying ancestor's kill takes to reach it, so either
-// that kill finds it Live or this finds it doomed; `false` while any ancestor is not Live.
+// Under the world's own life lock, which a dying ancestor's kill takes after it turned Dying, so
+// either that kill finds it Live or this finds that ancestor not Live and refuses.
 #[must_use = "a refused publish leaves the child for its creation to unwind"]
 pub(crate) fn publish(node: NodeRef) -> bool {
     let Some(entry) = entry(node).filter(|entry| entry.is(node)) else {
@@ -164,7 +164,7 @@ pub(crate) fn publish(node: NodeRef) -> bool {
     let Some(world) = entry.records.hold(entry.record()) else {
         panic!("unpublished world {} lost its record", node.node);
     };
-    let life = world.life.lock_leaf();
+    let _life = world.life.lock_leaf();
     let ancestors_live = (0..world.path.depth()).all(|distance| {
         world
             .path
@@ -172,7 +172,7 @@ pub(crate) fn publish(node: NodeRef) -> bool {
             .and_then(state)
             .is_some_and(|ancestor| ancestor == WorldState::Live)
     });
-    if life.doomed || !ancestors_live {
+    if !ancestors_live {
         return false;
     }
     let published = entry.turn(WorldState::Free, WorldState::Live);
@@ -180,9 +180,9 @@ pub(crate) fn publish(node: NodeRef) -> bool {
     true
 }
 
-// An unpublished world a dying ancestor reached is doomed, so its publish refuses; `false` when
-// the world is published or gone, for the caller to kill.
-pub(super) fn doom(node: NodeRef) -> bool {
+// Read under the world's life lock by a dying ancestor's kill, so a publish after it sees that
+// ancestor Dying; `false` when the world is published or gone, for the caller to kill.
+pub(super) fn unpublished(node: NodeRef) -> bool {
     let Some(entry) = entry(node) else {
         return false;
     };
@@ -193,10 +193,8 @@ pub(super) fn doom(node: NodeRef) -> bool {
     else {
         return false;
     };
-    let mut life = world.life.lock_leaf();
-    let unpublished = entry.state() == WorldState::Free;
-    life.doomed |= unpublished;
-    unpublished
+    let _life = world.life.lock_leaf();
+    entry.state() == WorldState::Free
 }
 
 // The record of a world that was prepared and never published, with its record pool closed;

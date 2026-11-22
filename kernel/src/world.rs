@@ -61,12 +61,11 @@ pub(crate) struct Time {
 }
 
 // Children join and leave `descendants` and debit `budgets` only under this lock, and the world
-// is published, doomed and counted into by a spawn only under it.
+// is published, read unpublished by a dying ancestor and counted into by a spawn only under it.
 #[derive(Debug)]
 struct Life {
     budgets: Budgets,
     descendants: Descendants<DESCENDANTS>,
-    doomed: bool,
     spawns: u32,
 }
 
@@ -120,7 +119,6 @@ impl World {
             life: SpinLock::new(Life {
                 budgets: Budgets::new(limits),
                 descendants: Descendants::EMPTY,
-                doomed: false,
                 spawns: 0,
             }),
             ordinals: AtomicU64::new(0),
