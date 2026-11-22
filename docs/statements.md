@@ -137,7 +137,8 @@ against them. A statement changes only together with the code it governs.
   inbox entry, the staging of the caller awaiting a reply, or the receiver's table. A refused send
   leaves every handle in the sender's table with its value and rights. Once a message is committed
   its handles never return to the sender: a handle in a discarded entry, a cancelled call or a dead
-  table is destroyed with it.
+  table is destroyed with it. A handle that may not enter the world that reads it is destroyed at
+  that crossing.
 - **Single holder.** An endpoint is named by exactly one handle or one committed inbox entry at a time. Its handle cannot be duplicated, so a move always carries the only reference a program holds.
 - **Order.** Each committed message is read once, in the order its endpoint committed it, or is
   destroyed with the endpoint. Calls and messages share that order.

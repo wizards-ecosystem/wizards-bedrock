@@ -744,6 +744,25 @@ number and is added here, as one entry or as an amending id on the entry it chan
   inbox that later crosses and refuses a sole handle while a peer's write holds the endpoint for a
   step. Forwarding stays only for a peer's write that races a re-home. Amends D-558 (the clause on
   other handles to a moved endpoint) and the endpoint rights of D-551 and the core design.
+- **D-718** A re-home freezes the old endpoint from its copy to its forward, inside one pin of its
+  world, and copies once. A commit into a frozen endpoint answers `FULL`, a close is recorded and
+  passed to the new home, and a repoint waits the freeze out, since the freeze is one pinned step
+  that waits on nothing. The peer's current record and the new home are then pointed at each
+  other before the old record is released, and a peer that can no longer be held closes the new
+  home. A copy checked and retried could be driven to retry without bound by a peer re-homed back
+  and forth, and a retry cap would refuse a read no party did wrong. Amends D-556.
+- **D-719** A handle in a re-homed inbox meets the admission rule of a direct write into the
+  reader's world, checked on the frozen copy, and one refused arrives dead while its reference
+  stays in the old record's transit slot for that record's destruction in its own world. A refused
+  re-home of the whole endpoint would also keep memory out of a pin, but it would take a channel
+  from a reader that did nothing wrong for one handle it carries. Amends D-558.
+- **D-720** A read or a reply install earmarks `Endpoint::frames_for(1)` per endpoint it re-homes:
+  one data frame and a record page with its full directory path. A bound shared across one read
+  assumes no other insert takes the slots of a page it opened, which several processes in one world
+  break. Amends D-711.
+- **D-721** A read that ends without taking the head message, or is cancelled after its wake,
+  wakes the next armed reader, instead of a write waking every armed reader, so a write still
+  readies one read.
 - **D-481** The ring 3 witness is a cargo-built static `ET_EXEC` linked at `0x400000`, and the
   loader maps each segment at its `p_vaddr` with no per-program shift, because a position-dependent
   image holds absolute addresses that a shift breaks and the in-kernel loader takes no `ET_DYN`;

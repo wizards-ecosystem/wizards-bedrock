@@ -359,6 +359,7 @@ fn attempt(
             } => (bytes, handles, foreign, call),
         };
         if bytes > room.bytes || handles > room.handles {
+            channel::pass(process.world, endpoint);
             return Some(Completion {
                 token,
                 status: status::TOO_SMALL,
@@ -373,10 +374,14 @@ fn attempt(
             match frames.map(|frames| pool::earmark(process.context, process.world.arena(), frames))
             {
                 Some(Ok(taken)) => earmark = Some(taken),
-                Some(Err(_)) | None => return Some(refuse(token, status::NO_MEMORY)),
+                Some(Err(_)) | None => {
+                    channel::pass(process.world, endpoint);
+                    return Some(refuse(token, status::NO_MEMORY));
+                }
             }
         }
         let Ok(mut slots) = process.table_ref.reserve_slots(handles + u16::from(call)) else {
+            channel::pass(process.world, endpoint);
             return Some(refuse(token, status::NO_HANDLE_SLOT));
         };
         let mut payload = [0; MESSAGE_BYTES as usize];
