@@ -644,6 +644,12 @@ number and is added here, as one entry or as an amending id on the entry it chan
   own share when it detaches. A set's members and its budget then fall together, so a create after
   a kill is refused instead of overflowing an ancestor's set. Waiting at `Quiesce` until the
   world's own set is empty would also hold the bound, but it makes one teardown wait on others.
+- **D-731** A child is published under its own life lock only while every ancestor is Live, and a
+  dying world's teardown dooms each unpublished member under that same lock, so the publish and
+  the kill that reaches the child are ordered and a refused publish unwinds like any refusal; the
+  confirm steps after the publish are gone. Holding each ancestor's record until a confirm ran
+  would only delay its detach, since closing its pins already makes it dead, and nested ancestor
+  locks break the rule of one object lock at a time.
 - **D-548** A pin is a `wost::sync::PinGuard` at rank `Pin`, below the object locks, plus a counted
   slab hold of the world's record; object locks under it are taken as leaves at rank `Object`, so
   no guard lends its token and no equal-rank pair lock is needed.

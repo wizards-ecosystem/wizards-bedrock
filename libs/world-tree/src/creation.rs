@@ -28,17 +28,15 @@ pub enum CreationStep {
     Build,
     Insert(u8),
     Publish,
-    Confirm(u8),
     Remove(u8, CreationRefusal),
     Credit(CreationRefusal),
     Dissolve(CreationRefusal),
     Refused(CreationRefusal),
     Unwound(CreationRefusal),
     Published,
-    Kill,
 }
 
-// An ancestor found Dying after the publish skipped the child in its kill, so the creator kills it.
+// The publish refuses while any ancestor is not Live, so the child leaves every set it joined.
 #[verus_verify]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Creation {
@@ -85,7 +83,7 @@ impl Creation {
             match r {
                 Ok(next) => crate::proof::enters_every_ancestor_or_none(self, event, next)
                     && crate::proof::credits_what_it_debited(self, event, next)
-                    && crate::proof::published_after_every_confirm(self, event, next),
+                    && crate::proof::published_only_from_its_publish(self, event, next),
                 Err(_) => true,
             },
     )]
@@ -118,15 +116,10 @@ impl Creation {
                 CreationStep::Dissolve(cause)
             }
             (CreationStep::Dissolve(cause), CreationEvent::Done) => CreationStep::Unwound(cause),
-            (CreationStep::Publish, CreationEvent::Done) => CreationStep::Confirm(0),
-            (CreationStep::Confirm(distance), CreationEvent::Done) => {
-                if distance + 1 < self.ancestors {
-                    CreationStep::Confirm(distance + 1)
-                } else {
-                    CreationStep::Published
-                }
+            (CreationStep::Publish, CreationEvent::Done) => CreationStep::Published,
+            (CreationStep::Publish, CreationEvent::Halted(cause)) => {
+                CreationStep::Remove(self.ancestors - 1, cause)
             }
-            (CreationStep::Confirm(_), CreationEvent::Halted(_)) => CreationStep::Kill,
             _ => return Err(Unexpected),
         };
         Ok(Self {

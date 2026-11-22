@@ -50,11 +50,13 @@ pub(crate) struct Killer {
     pub(crate) id: u64,
 }
 
-// Children join and leave `descendants` and debit `budgets` only under this lock.
+// Children join and leave `descendants` and debit `budgets` only under this lock, and the world
+// is published and doomed only under it.
 #[derive(Debug)]
 struct Life {
     budgets: Budgets,
     descendants: Descendants<DESCENDANTS>,
+    doomed: bool,
 }
 
 pub(crate) struct World {
@@ -95,6 +97,7 @@ impl World {
             life: SpinLock::new(Life {
                 budgets: Budgets::new(limits),
                 descendants: Descendants::EMPTY,
+                doomed: false,
             }),
             ordinals: AtomicU64::new(0),
             spaces: AtomicU64::new(0),
@@ -204,7 +207,8 @@ fn create_root(context: &mut ThreadContext) -> Result<NodeRef, RootRefusal> {
     };
     let root = registry::prepare(context, arena, &key, Path::ROOT, pool::full_mask(), limits)
         .map_err(RootRefusal::Arena)?;
-    registry::publish(root);
+    let published = registry::publish(root);
+    assert!(published, "the root world has no ancestor to refuse its publication");
     *ROOT.lock_leaf() = Some(root);
     Ok(root)
 }

@@ -301,9 +301,12 @@ without a pin while it is Live or Dying.
 `world::create` (`kernel/src/world/create.rs`) runs the `libs/world-tree` creation protocol: debit
 the parent's budgets and donate the child an arena of the requested frames per colour in a mask
 within the parent's; build the record with a key drawn from the generator, never from the parent;
-enter the child into each ancestor's set, nearest first; publish it Live; then re-read every
-ancestor, and kill the child if one died meanwhile. A refusal before the publish removes the child
-from every set it joined, credits the parent and dissolves the arena back, so nothing changes.
+enter the child into each ancestor's set, nearest first; then publish it Live under its own life
+lock, refused unless every ancestor is Live. A dying world's teardown takes the life lock of each
+member it cannot kill because it is unpublished and dooms it, and a doomed child's publish
+refuses, so either the kill finds the child Live or the child never lives. A refusal, the
+publish's included, removes the child from every set it joined, credits the parent and dissolves
+the arena back, so nothing changes.
 
 `world::kill` turns a Live world Dying under its life lock, so no child joins it after, stops its
 arena from earmarking or donating, and hands it to the reaper. The teardown
