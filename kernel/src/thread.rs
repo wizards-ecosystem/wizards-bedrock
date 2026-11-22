@@ -1098,7 +1098,7 @@ fn mark_runnable(thread: ThreadRef) {
             sched.cpu = cpu;
         });
         queue.push(&held);
-        queue.current.is_some().then(|| queue.next_event(now))
+        (cpu == me && queue.current.is_some()).then(|| queue.next_event(now))
     };
     drop(held);
     if cpu == me {
@@ -1303,13 +1303,11 @@ pub(crate) fn wake_waiters(list: &WaitList) -> usize {
     woken
 }
 
-// A waiter claimed before it blocked still runs, so its processor hears of the claim at once.
+// A waiter claimed before it blocked resumes at its block; only a blocked one is placed.
 fn wake(held: &Resolved, sequence: u64) -> Option<Wake> {
     let state = claim(held, sequence);
-    match state {
-        Some(Wake::Waking) => place_woken(held),
-        Some(Wake::Woken) => notify(sched(held, |sched| sched.cpu)),
-        _ => {}
+    if state == Some(Wake::Waking) {
+        place_woken(held);
     }
     state
 }

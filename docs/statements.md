@@ -85,8 +85,9 @@ against them. A statement changes only together with the code it governs.
 - **Containment.** Every kernel object made for a world's request lives in a frame that world's
   arena owns, and such a frame holds only that world's objects and data. Objects name each other by
   index and generation, never by address, so an arena's contents are a value. A reference into
-  another world is weak: it never keeps that world or its objects alive, except the hold a
-  processor's queue keeps on a runnable thread, which that world's kill removes in bounded steps.
+  another world is weak: it never keeps that world or its objects alive, except a scheduler list's
+  hold on a thread that is queued, asleep or running there, which ends when the thread leaves that
+  list.
 - **Refusal.** An arena never uses more frames of a colour than it has reserved. A request past the
   reservation returns a refusal to its caller and changes no state, in that world or any other.
 - **Separation.** Nothing a world does allocates from another world's arena or lowers its free
@@ -162,8 +163,9 @@ against them. A statement changes only together with the code it governs.
 - **Shootdown.** A frame or table returns to its pool only after every flush that covers a removed
   translation has completed on every processor that could hold it. No processor waits for an
   acknowledgement with interrupts off or a spin lock held.
-- **Queues.** A runnable thread is on exactly one queue or one processor, except inside one move
-  made with interrupts off. A thread is picked only by the processor whose queue holds it.
+- **Queues.** A runnable thread is on one queue, on one processor, or on both only while it is
+  being switched out; it is on neither only inside one move made with interrupts off. A thread is
+  picked only by the processor whose queue holds it, and never while it is still on a processor.
 - **Grace period.** A dead world's frames are zeroed and reused only when its threads are off every
   processor, no pin or kernel-held count on it remains, and every flush of its address spaces has
   completed.

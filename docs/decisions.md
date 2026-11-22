@@ -277,6 +277,11 @@ number and is added here, as one entry or as an amending id on the entry it chan
   them, a batch whose first member left the list ending that round's walk for the next round to
   redo (amends D-594). Holding interrupts off for a whole list let a hostile world's sleepers or
   kill delay every other world's timer on that processor.
+- **D-599** D-598 caps only those two passes. The pick still walks every queued thread on its
+  processor, a sleeper's insert walks past every sleeper due no later, its unlink walks the sleeper
+  list, each under the run-queue lock with interrupts off, and a wake of a wait list empties it
+  under that list's lock. The pick and the sleeper list stay linear in one processor's threads
+  until ordered structures replace them (amends D-598).
 
 ## Memory
 

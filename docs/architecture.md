@@ -465,12 +465,14 @@ queue's own lock, so a wake from a handler allocates nothing. A waiter checks it
 itself and moves its wake word from running to parking under that lock, then blocks under its run
 queue's lock only if no waker claimed the wait in between. A waker unlinks the thread and claims
 the wait sequence it registered with, so a stale link never ends a later wait; a thread it claims
-after the block waits until `on_cpu` is clear and is placed on its last processor's queue, and one
-it claims before the block still runs, so its processor gets the reschedule vector. A wait
+after the block waits until `on_cpu` is clear and is placed on its last processor's queue. A wait
 may also end at a deadline, through its processor's list of sleepers. A decision places at most 16
 due sleepers and arms its alarm at once for the rest, and a world's teardown claims its waiting
-threads 16 at a time with interrupts on between batches, so neither pass with interrupts off grows
-with one world's thread count. An exiting thread marks its
+threads 16 at a time with interrupts on between batches. Those two passes are capped; the rest are
+not. The pick still walks every queued thread on its processor, a sleeper's insert walks past every
+sleeper due no later and its unlink walks the list, all under the run-queue lock with interrupts
+off, and a wake of a wait list empties it under that list's lock. The pick and the sleeper list stay
+linear in one processor's threads until ordered structures replace them. An exiting thread marks its
 word dead and joins the reaper's list, linked through its record; the reaper frees the record and
 unmaps the stack only once the word is dead and `on_cpu` clear, after its process's teardown, and
 returns the frames when the stack's shootdown completes.
