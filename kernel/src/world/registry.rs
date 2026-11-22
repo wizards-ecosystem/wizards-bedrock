@@ -1,7 +1,7 @@
 use core::ops::Deref;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-use world_tree::{Admission, Limits, NodeRef, Path, Reclaimed, WorldEvent, WorldState};
+use world_tree::{Admission, Limits, MAX_DEPTH, NodeRef, Path, Reclaimed, WorldEvent, WorldState};
 use wost::mm::pool::{self, ArenaId, ColourMask, FrameKind, Refused};
 use wost::mm::slab::{Hold, Removal};
 use wost::sync::{Leaf, PinGuard, SpinLock};
@@ -165,14 +165,15 @@ pub(crate) fn publish(node: NodeRef) -> bool {
         panic!("unpublished world {} lost its record", node.node);
     };
     let _life = world.life.lock_leaf();
-    let ancestors_live = (0..world.path.depth()).all(|distance| {
-        world
+    let mut states = [WorldState::Free; MAX_DEPTH as usize];
+    for (distance, ancestor) in (0..world.path.depth()).zip(&mut states) {
+        *ancestor = world
             .path
             .nearest(distance)
             .and_then(state)
-            .is_some_and(|ancestor| ancestor == WorldState::Live)
-    });
-    if !ancestors_live {
+            .unwrap_or(WorldState::Free);
+    }
+    if !world.path.publishes(&states) {
         return false;
     }
     let published = entry.turn(WorldState::Free, WorldState::Live);

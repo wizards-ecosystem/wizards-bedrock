@@ -151,6 +151,34 @@ impl Path {
         }
         None
     }
+
+    // `states[d]` is the state of the ancestor at distance `d`, read under the child's life lock.
+    pub fn publishes(&self, states: &[WorldState; SLOTS]) -> (r: bool)
+        ensures
+            crate::proof::published_only_under_live_ancestors(*self, states@, r),
+    {
+        proof {
+            use_type_invariant(self);
+        }
+        let mut distance: u8 = 0;
+        while distance < self.depth
+            invariant
+                distance <= self.depth <= 16,
+                forall|nearer: int| 0 <= nearer < distance ==> states@[nearer] == WorldState::Live,
+            decreases self.depth - distance,
+        {
+            if matches!(states[usize::from(distance)], WorldState::Live) {
+                distance += 1;
+            } else {
+                proof {
+                    assert(0 <= distance < self.ancestors().len());
+                    assert(states@[distance as int] != WorldState::Live);
+                }
+                return false;
+            }
+        }
+        true
+    }
 }
 
 } // verus!

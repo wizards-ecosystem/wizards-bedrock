@@ -277,6 +277,17 @@ pub open spec fn published_only_from_its_publish(
         == CreationEvent::Done
 }
 
+// Tree: every descendant is dying before the world is dead. A publish admits the child only while
+// every ancestor is Live, so an unpublished child of a dying ancestor is never published.
+pub open spec fn published_only_under_live_ancestors(
+    path: Path,
+    states: Seq<WorldState>,
+    r: bool,
+) -> bool {
+    r <==> forall|distance: int|
+        0 <= distance < path.ancestors().len() ==> states[distance] == WorldState::Live
+}
+
 // Tree: a world is live, dying or dead.
 pub open spec fn live_then_dying_then_dead(
     state: WorldState,
