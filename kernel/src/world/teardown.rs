@@ -53,7 +53,7 @@ pub(crate) fn inspect(node: NodeRef) -> Option<(usize, usize)> {
     pool::usage(world.arena).map(|usage| (usage.reserved(), usage.used()))
 }
 
-// One step of the world teardown; each waits only on its own threads, pins or the frame scan.
+// One step of the world teardown; each waits only on its own threads or pins.
 pub(crate) fn step(node: NodeRef, step: WorldStep) -> Progress {
     match step {
         WorldStep::Kill => kill_descendants(node),
