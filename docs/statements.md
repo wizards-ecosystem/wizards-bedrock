@@ -37,7 +37,9 @@ against them. A statement changes only together with the code it governs.
 - **Trap.** On every return to ring 3, `CR4.TSD` is clear exactly when the running world holds the
   raw time right. A clock instruction from any other world faults and retires its thread.
 - **Served time.** The time a world is served never goes backwards. In normal mode it is a multiple
-  of the world's precision. In recorded mode it changes only inside a kernel entry and equals the
+  of the world's precision. All worlds' grids share one origin and every precision is the root's
+  times a power of two, so worlds that compare readings resolve nothing finer than the finest
+  precision among them. In recorded mode it changes only inside a kernel entry and equals the
   logged value.
 - **Limit.** A processor cannot trap `RDRAND`, `RDSEED` or `RDPID` outside a virtual machine, and a
   world with two threads or a device can count time. Only a world on a virtual processor is denied

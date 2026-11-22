@@ -462,6 +462,15 @@ number and is added here, as one entry or as an amending id on the entry it chan
   its first draw and after every reseed (amends D-503). The stream is not derived from the world
   key, because the world key stays stored for the handle mixers and placements, and a stream it
   derived would let a captured key replay every output.
+- **D-507** Every precision is the root's times a power of two and every origin is a multiple of
+  its world's precision, so all grids share host time 0 and of any two one refines the other
+  (amends D-504). Worlds that compare readings then resolve nothing finer than their finest
+  precision; unaligned origins or a precision such as 3 ms beside 2 ms would resolve finer. The
+  descriptor stays version 2, since its layout is unchanged and only the accepted values narrow.
+  World time from ring 3 becomes host time only through `WorldClock::to_host_ns`, which rounds up,
+  so a `ChannelCall` deadline lands on the grid like a `Timer` one. A queue names its world by
+  node and generation and resolves the clock at each use, so no queue holds a registry entry's
+  address.
 - **D-590** The generator's periodic reseed runs on the keyboard poller, the one kernel thread that
   already wakes every 10 ms, rather than on a thread of its own or in the timer interrupt, which
   may not read seed words for long. The call costs a clock read and a leaf lock until the

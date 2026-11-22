@@ -177,7 +177,8 @@ pub(crate) struct Queue {
     served: AtomicUsize,
     // Bumped by each write that readies a read here, so a sleeping waiter sees it.
     readied: AtomicUsize,
-    clock: &'static WorldClock,
+    // Its own world, whose clock is resolved by generation at each use.
+    world: NodeRef,
     // One call cell and its prepaid staging per pending slot.
     calls: [call::CallSlot; SUBMISSIONS as usize],
 }
@@ -203,10 +204,9 @@ impl QueueRef {
         earmark: &mut Earmark,
         world_ref: NodeRef,
         world: &World,
-        clock: &'static WorldClock,
         ring: SharedQueue,
     ) -> Self {
-        let queue = world.queues.insert(earmark, || Queue::new(clock, ring));
+        let queue = world.queues.insert(earmark, || Queue::new(world_ref, ring));
         Self {
             world: world_ref,
             queue,
@@ -286,16 +286,22 @@ impl SharedQueue {
 }
 
 impl Queue {
-    fn new(clock: &'static WorldClock, ring: SharedQueue) -> Self {
+    fn new(world: NodeRef, ring: SharedQueue) -> Self {
         Self {
             ring: SpinLock::new(ring),
             waiters: WaitQueue::new(),
             pending: SpinLock::new(PendingTable::new()),
             served: AtomicUsize::new(0),
             readied: AtomicUsize::new(0),
-            clock,
+            world,
             calls: core::array::from_fn(|_| call::CallSlot::new()),
         }
+    }
+
+    // A queue is destroyed before its world's record, so its node keeps the generation it names.
+    fn clock(&self) -> &'static WorldClock {
+        registry::clock(self.world)
+            .unwrap_or_else(|| panic!("a queue outlived the generation of its world's node"))
     }
 
     pub(crate) fn serve(
@@ -347,7 +353,7 @@ impl Queue {
         }
         Some(match submission.opcode {
             Opcode::Echo => answer(token, submission.argument),
-            Opcode::Uptime => answer(token, self.clock.now_ns()),
+            Opcode::Uptime => answer(token, self.clock().now_ns()),
             Opcode::Duplicate => Self::duplicate(process, submission),
             Opcode::Close => Self::close(process, submission),
             Opcode::Timer => {
@@ -458,9 +464,8 @@ impl Queue {
 
     fn defer(&self, submission: Submission) -> Option<u64> {
         // The clock is read before the leaf guard is taken, because a leaf guard encloses no call.
-        let deadline_ns = self
-            .clock
-            .to_host_ns(self.clock.deadline_after(submission.argument));
+        let clock = self.clock();
+        let deadline_ns = clock.to_host_ns(clock.now_ns().saturating_add(submission.argument));
         self.pending
             .lock_leaf()
             .insert(submission.token, PendingKind::Timer { deadline_ns })
@@ -555,7 +560,7 @@ impl Queue {
             }
             let deadline = entry.kind.deadline().unwrap_or(now_ns);
             let (status, value) = if clock_live {
-                (status::OK, self.clock.to_world_ns(deadline))
+                (status::OK, self.clock().to_world_ns(deadline))
             } else {
                 (status::UNAVAILABLE, 0)
             };

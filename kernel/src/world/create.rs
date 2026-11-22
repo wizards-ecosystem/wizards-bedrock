@@ -6,11 +6,11 @@ use wost::mm::pool::{self, ArenaId, ColourMask, Refused};
 use wost::arch::current::cpu::CounterAccess;
 
 use super::{Time, World, WorldKey, registry, teardown};
-use crate::random;
 use crate::thread::ThreadContext;
+use crate::{random, timepage};
 
 // What a parent gives a child: frames of each colour in the mask (0 for the parent's), limits,
-// and a precision (0 for the parent's) and counter access no wider than its own.
+// a precision (0 for the parent's) on the root's ladder and counter access no wider than its own.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Request {
     pub(crate) per_colour: u32,
@@ -63,7 +63,9 @@ pub(crate) fn create(
         let coarsest = registry::clock(parent).ok_or(Refusal::Dead)?.precision_ns();
         let precision_ns = match request.time.precision_ns {
             0 => coarsest,
-            finer if finer < coarsest => return Err(Refusal::Limit),
+            precision if precision < coarsest || !timepage::is_ladder_precision(precision) => {
+                return Err(Refusal::Limit);
+            }
             precision => precision,
         };
         if request.time.counter == CounterAccess::Raw && world.counter != CounterAccess::Raw {

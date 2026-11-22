@@ -239,7 +239,7 @@ fn build(
     let root = construction.address()?.root();
 
     let objects = Objects {
-        ring: QueueRef::create(&mut earmark, world_ref, world, clock, shared),
+        ring: QueueRef::create(&mut earmark, world_ref, world, shared),
         table: TableRef::create(&mut earmark, world_ref, world),
     };
     // Created before the thread can observe the table it names.

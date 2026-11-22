@@ -32,7 +32,8 @@ pub(super) fn spins_until(attempts: u32, done: impl Fn() -> bool) -> bool {
 }
 
 // Siblings with different precisions, one granted the raw time right: only the other's `rdtsc`
-// faults, each program reads its own world's precision, and the two draws differ.
+// faults, each program reads its own world's precision, and the two draws differ. A precision
+// that is not the root's times a power of two is refused.
 pub(super) fn sibling_worlds_keep_their_own_clock_and_randomness(
     context: &mut ThreadContext,
 ) -> bool {
@@ -41,13 +42,20 @@ pub(super) fn sibling_worlds_keep_their_own_clock_and_randomness(
         counter: CounterAccess::Trapped,
     };
     const RAW: Time = Time {
-        precision_ns: 5 * time::NANOSECONDS_PER_MS,
+        precision_ns: 4 * time::NANOSECONDS_PER_MS,
         counter: CounterAccess::Raw,
+    };
+    const OFF_LADDER: Time = Time {
+        precision_ns: 3 * time::NANOSECONDS_PER_MS,
+        counter: CounterAccess::Trapped,
     };
 
     let Some(root) = world::root() else {
         return false;
     };
+    if worlds::timed(context, root, WORLD_FRAMES, OFF_LADDER).is_some() {
+        return false;
+    }
     let (Some(trapped), Some(raw)) = (
         worlds::timed(context, root, WORLD_FRAMES, TRAPPED),
         worlds::timed(context, root, WORLD_FRAMES, RAW),

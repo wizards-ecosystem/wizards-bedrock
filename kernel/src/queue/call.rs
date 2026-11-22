@@ -169,7 +169,7 @@ pub(super) fn call(
     let deadline_ns = if submission.argument == NEVER {
         NEVER
     } else {
-        queue.clock.to_host_ns(submission.argument)
+        queue.clock().to_host_ns(submission.argument)
     };
     let kind = PendingKind::ChannelCall {
         deadline_ns,

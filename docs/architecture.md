@@ -616,7 +616,7 @@ the caller's world prepays everything a reply can need: a table slot per declare
 staging frame for the reply's handles, and the frames to re-home each of them. The call's entry
 joins the endpoint's inbox in the one order with messages, and its cell turns `Queued` under the
 inbox lock, so no reader finds an entry whose call is not yet queued. `argument` is a deadline in
-world nanoseconds, `u64::MAX` for none; the ring's expiry ends a call still `Queued` or
+world nanoseconds, rounded up to the precision, `u64::MAX` for none; the ring's expiry ends a call still `Queued` or
 `Delivered` with `TIMED_OUT` (21).
 
 A `ChannelRead` that takes a call moves its cell to `Delivered` and installs a reply right
@@ -686,7 +686,7 @@ kernel narrows it with `try_from` and refuses or saturates.
 | 13 | `MemorySeal` | with flag bit 0, seals the sealable object `handle` read-only; needs `WRITE` and no writer (`BUSY`), and a writable mapping is a writer. Completes with the new handle `DUPLICATE TRANSFER READ MAP`; the old value is gone |
 | 16 | `Map` | maps `length` pages of object `second` from byte `offset` (page aligned) at address `argument` in the caller's space (`handle` 0); flag bit 0 `WRITE` takes a writer, bit 1 `EXECUTE` needs a sealed executable object, its `EXECUTE` right and a reservation. Needs `MAP` and `READ`; rights are checked before state and address. Completes with the address, or `NO_ADDRESS` when the range is taken or not user memory, `LIMIT` past 64 records |
 | 17 | `Unmap` | removes the whole mapping record at `argument` of `length` pages (`NOT_FOUND` otherwise) and completes after the flush that cleared its translations; only then does a writable record's writer go |
-| 18 | `WorldCreate` | makes a child of the caller's world from the 40-byte world descriptor in buffer 0 at `at` (8-byte aligned): version 2, frames per colour, colour mask (0 for the parent's), descendants, threads and handles per table, flags (bit 0 grants the raw time right) and precision in nanoseconds (`u64` at 32, 0 for the parent's). Completes with a world handle `DUPLICATE TRANSFER INSPECT SPAWN KILL`; `NO_MEMORY` when the parent cannot donate the frames, `LIMIT` past a budget, the depth, the parent's mask or a precision finer than the parent's, `DENIED` for an unknown flag or a raw grant from a world without the right, `DEAD` when an ancestor is dying |
+| 18 | `WorldCreate` | makes a child of the caller's world from the 40-byte world descriptor in buffer 0 at `at` (8-byte aligned): version 2, frames per colour, colour mask (0 for the parent's), descendants, threads and handles per table, flags (bit 0 grants the raw time right) and precision in nanoseconds (`u64` at 32, 0 for the parent's). Completes with a world handle `DUPLICATE TRANSFER INSPECT SPAWN KILL`; `NO_MEMORY` when the parent cannot donate the frames, `LIMIT` past a budget, the depth, the parent's mask, or a precision finer than the parent's or not the root's times a power of two, `DENIED` for an unknown flag or a raw grant from a world without the right, `DEAD` when an ancestor is dying |
 | 19 | `WorldKill` | needs `KILL`; completes once the world is gone and its frames are its heir's, while its descendants end on their own; `DEAD` for a world already dying, `DENIED` for the root, `NO_ROOM` past 8 waiting kills of one world. A cancel ends the wait, not the kill |
 | 20 | `WorldInspect` | `handle` names a world (`INSPECT`) or is 0 for the caller's; completes with the frames the world reserves, and `extra` with the frames it uses |
 
@@ -767,12 +767,19 @@ can execute `rdtsc`, so the page carries a value, not a conversion, and needs no
 raw world's page is the same.
 
 World time belongs to a world's clock, a `timepage::WorldClock` in the world's registry entry: host
-time minus the host time at which the world started, so it starts at 0 and never reveals host
-uptime. A world's precision is fixed when it is made: 1 ms for the root, and for a child its
-parent's or a coarser one its creator asks for. A served value is world
-time rounded down to the precision and raised by an atomic maximum, so it never goes back;
-the page word is raised by a compare-and-swap loop in `wost`. `Uptime` serves the same value, and a
-`Timer` deadline is a multiple of the precision. The page is refreshed before every return to ring
+time minus the world's origin, the host time at which the world started rounded down to its
+precision, so it starts at 0 and never reveals host uptime. A world's precision is fixed when it is
+made: 1 ms for the root, and for a child its parent's or a coarser one its creator asks for. Every
+precision is the root's times a power of two (`timepage::is_ladder_precision`); `world::create`
+refuses any other value, or a finer one, with `LIMIT` before it changes anything. Since every origin
+is a multiple of its precision, all grids share host time 0 and of any two one refines the other,
+so worlds that compare readings resolve nothing finer than the finest precision among them. A
+served value is world time rounded down to the precision and raised by an atomic maximum, so it
+never goes back; the page word is raised by a compare-and-swap loop in `wost`. `Uptime` serves the
+same value. World time from ring 3 reaches the host clock only through `WorldClock::to_host_ns`,
+which rounds up to the precision and keeps `u64::MAX`, so every `Timer` and `ChannelCall` deadline
+lands on the world's grid. A queue names its world by node and generation and resolves the clock
+through `registry::clock` at each use. The page is refreshed before every return to ring
 3, and while a thread of the world runs the scheduler arms its alarm at least every max(precision,
 1 ms), so a program spinning in ring 3 sees time advance. The cost is one timer interrupt per
 millisecond on a processor running such a thread, and none while no world thread runs. Spawn takes

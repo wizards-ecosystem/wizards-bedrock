@@ -11,6 +11,11 @@ use crate::time;
 
 pub(crate) const PRECISION_NS: u64 = time::NANOSECONDS_PER_MS;
 
+// The root's precision times a power of two, so of any two worlds' grids one refines the other.
+pub(crate) fn is_ladder_precision(precision_ns: u64) -> bool {
+    precision_ns.is_multiple_of(PRECISION_NS) && (precision_ns / PRECISION_NS).is_power_of_two()
+}
+
 // The refresh never runs faster than once a millisecond, however fine the precision.
 const MIN_REFRESH_NS: u64 = time::NANOSECONDS_PER_MS;
 
@@ -22,7 +27,7 @@ type PageWords = SharedRing<2>;
 // One per registry entry: started when its world is prepared and stopped before its arena goes.
 #[derive(Debug)]
 pub(crate) struct WorldClock {
-    // Host time at which this world's time is zero, so a world never learns host uptime.
+    // Host time at which this world's time is zero, a multiple of the precision: one grid origin.
     origin_ns: AtomicU64,
     precision_ns: AtomicU64,
     served_ns: AtomicU64,
@@ -66,9 +71,10 @@ impl WorldClock {
         };
         write(&mut page, 0, &constants.encode());
 
+        let now = time::now_ns();
         self.precision_ns.store(precision_ns, Ordering::Release);
         self.served_ns.store(0, Ordering::Release);
-        self.origin_ns.store(time::now_ns(), Ordering::Release);
+        self.origin_ns.store(now - now % precision_ns, Ordering::Release);
         *self.page.lock_leaf() = Some(page);
         Ok(())
     }
@@ -100,15 +106,13 @@ impl WorldClock {
         served
     }
 
-    // A deadline `after_ns` past the served time, rounded up so it is itself a served value.
-    pub(crate) fn deadline_after(&self, after_ns: u64) -> u64 {
-        let precision = self.precision_ns();
-        let wanted = self.now_ns().saturating_add(after_ns);
-        wanted.div_ceil(precision).saturating_mul(precision)
-    }
-
+    // The only way a world time becomes host time: rounded up to a served value, `u64::MAX` kept.
     pub(crate) fn to_host_ns(&self, world_ns: u64) -> u64 {
-        world_ns.saturating_add(self.origin_ns.load(Ordering::Acquire))
+        let precision = self.precision_ns();
+        world_ns
+            .div_ceil(precision)
+            .saturating_mul(precision)
+            .saturating_add(self.origin_ns.load(Ordering::Acquire))
     }
 
     pub(crate) fn to_world_ns(&self, host_ns: u64) -> u64 {
