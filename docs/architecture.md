@@ -788,7 +788,8 @@ the target world's clock (`registry::clock`) and maps that world's page.
 ## 7. Processes and the loader
 
 `user::spawn` (`kernel/src/user/construction.rs`) refuses unless every ring 3 precondition holds, in
-this order: interrupts admitted, the boot thread on a guarded stack, NX on, `CR4.TSD` set, extended
+this order: interrupts admitted, the boot thread on a guarded stack, NX on, `CR4.TSD` set on the boot
+processor before any thread ran (recorded once, never the spawning thread's live `CR4`), extended
 state isolated, the clock calibrated, the random generator seeded, the service worker running, and a
 shared or paired isolation mode. It then builds the address space, loads the image, maps a one-page
 user stack at `0x0000300000000000`, maps the time page, the ring and buffer 0, creates the handle

@@ -108,6 +108,7 @@ fn kernel_main(boot: BootInfo, mut context: ThreadContext) -> ! {
     if let Err(reason) = cpu::establish_control_state() {
         warn!("cpu: {reason}");
     }
+    COUNTER_TRAPPED.store(cpu::counter_is_trapped(), Ordering::Release);
     let protections = cpu::enable_protections();
     info!("cpu: protections {protections}");
     info!(
@@ -197,6 +198,13 @@ static BOOT_STACK_GUARDED: AtomicBool = AtomicBool::new(false);
 
 pub(crate) fn user_launch_is_safe() -> bool {
     BOOT_STACK_GUARDED.load(Ordering::Acquire)
+}
+
+// Read on the boot processor before any thread runs, so no world's raw right has cleared it.
+static COUNTER_TRAPPED: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn counter_trap_is_established() -> bool {
+    COUNTER_TRAPPED.load(Ordering::Acquire)
 }
 
 fn boot_continue(context: &mut ThreadContext, stack: usize) -> ! {

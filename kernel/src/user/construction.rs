@@ -427,7 +427,7 @@ fn admitted_isolation() -> Result<bool, SpawnError> {
     if !cpu::Protections::enabled().nx {
         return Err(SpawnError::NoExecuteProtection);
     }
-    if !cpu::counter_is_trapped() {
+    if !crate::counter_trap_is_established() {
         return Err(SpawnError::UntrappedCounter);
     }
     if !xstate::user_state_is_isolated() {
