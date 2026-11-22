@@ -756,10 +756,11 @@ number and is added here, as one entry or as an amending id on the entry it chan
   stays in the old record's transit slot for that record's destruction in its own world. A refused
   re-home of the whole endpoint would also keep memory out of a pin, but it would take a channel
   from a reader that did nothing wrong for one handle it carries. Amends D-558.
-- **D-720** A read or a reply install earmarks `Endpoint::frames_for(1)` per endpoint it re-homes:
-  one data frame and a record page with its full directory path. A bound shared across one read
-  assumes no other insert takes the slots of a page it opened, which several processes in one world
-  break. Amends D-711.
+- **D-720** Every channel admission (`ChannelCreate`, a read, a reply install, a spawn's birth
+  endpoint) earmarks `Endpoint::frames_for(n)`: per endpoint it makes or re-homes, one data frame
+  and a record page with its full directory path. A bound shared across one operation assumes no
+  other insert takes the slots of a page it opened, which several processes in one world break.
+  Amends D-711.
 - **D-721** A read that ends without taking the head message, or is cancelled after its wake,
   wakes the next armed reader, instead of a write waking every armed reader, so a write still
   readies one read.

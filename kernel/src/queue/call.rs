@@ -215,7 +215,7 @@ fn prepay(
     if handles == 0 {
         return Some((None, None));
     }
-    let frames = Endpoint::rehome_frames_for(u32::from(handles))?.checked_add(1)?;
+    let frames = Endpoint::frames_for(u32::from(handles))?.checked_add(1)?;
     let mut earmark = pool::earmark(process.context, process.world.arena(), frames).ok()?;
     let staging = earmark.take(FrameKind::ArenaData)?;
     Some((Some(staging), Some(earmark)))
