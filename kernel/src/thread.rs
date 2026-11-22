@@ -1043,10 +1043,17 @@ fn discard(context: &mut ThreadContext, thread: ThreadRef) {
 fn mark_runnable(thread: ThreadRef) {
     let saved = interrupt::disable();
     let now = time::scheduler_now_ns();
-    let cpu = target_for(this_processor());
+    let me = this_processor();
+    let cpu = target_for(me);
     let held = resolved(thread);
     let event = {
         let mut queue = QUEUES[cpu].lock_ranked();
+        // Charged first, so the alarm below ends the running slice where it really ends.
+        if cpu == me
+            && let Some(current) = &queue.current
+        {
+            charge(current, now);
+        }
         let average = queue.average(true).unwrap_or(0);
         sched(&held, |sched| {
             sched.entity.place(average, 0, SLICE_NS);
@@ -1056,7 +1063,7 @@ fn mark_runnable(thread: ThreadRef) {
         queue.current.is_some().then(|| queue.next_event(now))
     };
     drop(held);
-    if cpu == this_processor() {
+    if cpu == me {
         if let Some(event) = event {
             reschedule_timer(event);
         }
