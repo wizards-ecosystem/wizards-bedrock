@@ -16,7 +16,7 @@ use crate::world::{World, registry};
 
 #[cfg(feature = "selftest")]
 pub(crate) use observation::Rites;
-pub(crate) use observation::{Observation, ObservationRef};
+pub(crate) use observation::{Observation, ObservationRef, Observer};
 pub(crate) use teardown::step;
 
 // A process's table and queue in its world; each goes when its last reference does.
@@ -74,17 +74,17 @@ struct Life {
 #[derive(Debug)]
 pub(crate) struct Process {
     launch: Launch,
-    observation: Local<Observation>,
+    observer: Observer,
     objects: Objects,
     life: SpinLock<Leaf, Life>,
     space: SpinLock<Leaf, Option<Space>>,
 }
 
 impl Process {
-    fn new(launch: Launch, observation: Local<Observation>, objects: Objects) -> Self {
+    fn new(launch: Launch, observer: Observer, objects: Objects) -> Self {
         Self {
             launch,
-            observation,
+            observer,
             objects,
             life: SpinLock::new(Life {
                 state: ProcessState::Running,
@@ -149,12 +149,12 @@ impl ProcessRef {
         world_ref: NodeRef,
         world: &World,
         launch: Launch,
-        observation: Local<Observation>,
+        observer: Observer,
         objects: Objects,
     ) -> Self {
         let process = world
             .processes
-            .insert(earmark, || Process::new(launch, observation, objects));
+            .insert(earmark, || Process::new(launch, observer, objects));
         Self {
             world: world_ref,
             process,

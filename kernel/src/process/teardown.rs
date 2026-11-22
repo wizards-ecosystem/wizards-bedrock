@@ -21,7 +21,7 @@ pub(crate) fn step(here: ProcessRef, context: &mut ThreadContext) -> Progress {
     };
     let step = process.life.lock_leaf().step;
     let progress = match step {
-        ProcessStep::Exit => exit(&world, &process),
+        ProcessStep::Exit => exit(&process),
         ProcessStep::Quiesce => quiesce(&process),
         ProcessStep::AbandonQueue => abandon(&process),
         ProcessStep::DrainTable => drain(&process),
@@ -38,14 +38,14 @@ pub(crate) fn step(here: ProcessRef, context: &mut ThreadContext) -> Progress {
         return Progress::Pending;
     }
     #[cfg(feature = "selftest")]
-    let rites = (process.observation, process.life.lock_leaf().rites);
+    let rites = (process.observer, process.life.lock_leaf().rites);
     drop(process);
     if !here.destroy() {
         return Progress::Pending;
     }
     #[cfg(feature = "selftest")]
-    if let (observation, Some(rites)) = rites {
-        observe(&world, observation, |observation| {
+    if let (observer, Some(rites)) = rites {
+        observe(observer, |observation| {
             observation.keep_rites(rites);
         });
     }
@@ -53,7 +53,7 @@ pub(crate) fn step(here: ProcessRef, context: &mut ThreadContext) -> Progress {
 }
 
 // P0: the status is fixed once, then written where the spawner observes it.
-fn exit(world: &World, process: &Process) -> Progress {
+fn exit(process: &Process) -> Progress {
     let status = {
         let mut life = process.life.lock_leaf();
         let status = status_of(life.ending);
@@ -63,7 +63,7 @@ fn exit(world: &World, process: &Process) -> Progress {
         }
         status
     };
-    observe(world, process.observation, |observation| {
+    observe(process.observer, |observation| {
         observation.record(status);
     });
     Progress::Done

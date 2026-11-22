@@ -825,14 +825,15 @@ every mapped range until the thread is published, so any refusal rolls back thro
 
 A process is an object in its world's process pool (`kernel/src/process.rs`). It holds its
 launch values, its table and ring (`TableRef`, `QueueRef`), its address space once its thread is
-bound, and the `Local` of its observation. Its one thread names it as its owner. There is no
+bound, and the weak name of its observation. Its one thread names it as its owner. There is no
 parent and no fork; the kernel spawns one program at boot. How a program ended is kept in the
 process when its thread retires: `Exit` stores its status, and a fault stores the vector, error
 code, `CR2` (for a page fault, read before interrupts reopen; zero otherwise) and `RIP`. The
 process state machine (`libs/world-tree`) takes Running to Exited once, then to Released.
 
-The observation (`kernel/src/process/observation.rs`) is an object in the spawner's world that the
-spawner holds strongly and the process names only weakly. The teardown takes a strong reference
+The observation (`kernel/src/process/observation.rs`) is an object in the spawner's world, the
+root for a kernel spawn, paid from the spawner's arena. The spawner holds it strongly and the
+process names it only weakly, so the spawned world can die while the spawner still reads it. The teardown takes a strong reference
 of its own for each write, so whichever of it and the spawner lets go last removes the
 observation. The status lands there once: an exit
 becomes `Exited(status)`, a fault `Faulted(vector)`, and an end with no recorded reason `Killed`.

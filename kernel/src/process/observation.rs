@@ -1,6 +1,6 @@
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use world_tree::{NodeRef, Status};
+use world_tree::{Admission, NodeRef, Status};
 use wost::mm::pool::Earmark;
 use wost::mm::slab::Removal;
 use wost::sync::{Leaf, SpinLock};
@@ -68,6 +68,13 @@ impl Observation {
     }
 }
 
+// The process's weak name for its observation, in the spawner's world.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Observer {
+    world: NodeRef,
+    observation: Local<Observation>,
+}
+
 // The spawner's strong reference; dropping it ends the observation once the process is done with it.
 #[derive(Debug)]
 pub(crate) struct ObservationRef {
@@ -83,8 +90,11 @@ impl ObservationRef {
         }
     }
 
-    pub(crate) const fn local(&self) -> Local<Observation> {
-        self.observation
+    pub(crate) const fn observer(&self) -> Observer {
+        Observer {
+            world: self.world,
+            observation: self.observation,
+        }
     }
 
     #[cfg(feature = "selftest")]
@@ -117,14 +127,18 @@ impl Drop for ObservationRef {
 
 // The teardown's hold is covered by a strong reference of its own, so whichever of it and the
 // spawner lets go last removes the observation.
-pub(crate) fn observe(world: &World, local: Local<Observation>, with: impl FnOnce(&Observation)) {
+pub(crate) fn observe(observer: Observer, with: impl FnOnce(&Observation)) {
+    let Some(world) = registry::pin(observer.world, Admission::Teardown) else {
+        return;
+    };
+    let local = observer.observation;
     if world.observations.acquire(local).is_err() {
         return;
     }
     if let Some(observation) = world.observations.hold(local) {
         with(&observation);
     }
-    end(world, local);
+    end(&world, local);
 }
 
 fn end(world: &World, local: Local<Observation>) {
