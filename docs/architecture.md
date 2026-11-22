@@ -312,7 +312,8 @@ the arena back, so nothing changes.
 arena from earmarking or donating, and hands it to the reaper. The teardown
 (`kernel/src/world/teardown.rs`) kills every descendant in its frozen set, each of which tears
 down by itself; wakes its threads, each of which retires at its next return to ring 3, and waits
-until they are off the processor and every process's own teardown has released it; closes the pin
+until they are off the processor, every process's own teardown has released it and no spawn into
+it is in flight; closes the pin
 word and waits for the counted pins to drain; takes the record, leaves every ancestor's set,
 credits the nearest ancestor still holding a set with its own slot and its unspent budgets,
 releases every object page and bumps the node's generation; and then dissolves the arena,
@@ -781,11 +782,14 @@ user stack at `0x0000300000000000`, maps the time page, the ring and buffer 0, c
 table with its birth handle, binds the space and publishes a thread. The shipped boot spawns into
 the root world; `user::spawn_in` names a target world and optionally a birth endpoint the caller
 holds, which it consumes, re-homing it into the target when it lives elsewhere. Every object of the
-process is built in and charged to the target world's arena, and its handle mixer and placements
-derive from that world's key. Before it builds anything it earmarks, in that arena, every frame its
+process but its observation is built in and charged to the target world's arena, and its handle
+mixer and placements derive from that world's key. Before it builds anything it earmarks, in that arena, every frame its
 queue, table and birth endpoint can need, so a full arena refuses the spawn with nothing changed in
-any world but the given endpoint released. Killing the world tears the process down through the
-world teardown. `ProcessConstruction` owns the space and
+any world but the given endpoint released. A spawn counts itself into the target world under its
+life lock, only while the world is Live, so a dying world refuses it with `NoWorld` and the
+teardown's `Quiesce` waits until a spawn in flight has finished or unwound. Before it publishes
+the thread the spawn reads the world again and unwinds if it is no longer Live. Killing the world
+tears the process down through the world teardown. `ProcessConstruction` owns the space and
 every mapped range until the thread is published, so any refusal rolls back through one owner.
 
 A process is an object in its world's process pool (`kernel/src/process.rs`). It holds its
