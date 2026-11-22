@@ -7,7 +7,7 @@ use eevdf::{BASE_WEIGHT, Entity, Load, Pick};
 use stack_layout::StackLayout;
 use wake_state::{Event, State as Wake, Word};
 use world_tree::NodeRef;
-use wost::arch::current::interrupt::{self, InterruptState, TrapFrame};
+use wost::arch::current::interrupt::{self, TrapFrame};
 use wost::arch::current::paging::{Binding, MapError};
 use wost::arch::current::task::{self, Bound, Claimed, Released, STACK_FRAMES, Task, TaskError};
 use wost::arch::current::{cpu, percpu};
@@ -731,11 +731,8 @@ pub(crate) fn stop_world(node: NodeRef) -> bool {
                 _world: world.clone(),
             };
             let (wait, next) = sched(&held, |sched| (sched.wait, sched.member_next));
-            if let Some(wait) = wait
-                && claim(&held, wait.sequence) == Some(Wake::Waking)
-            {
-                place_woken(&held);
-                woken = true;
+            if let Some(wait) = wait {
+                woken |= wake(&held, wait.sequence) == Some(Wake::Waking);
             }
             cursor = next;
         }
@@ -854,11 +851,27 @@ pub(crate) fn adopt_boot(context: &mut ThreadContext) {
     held.task.name(thread.tag());
     *NAMES[0].lock_leaf() = "boot";
     QUEUES[0].lock(context).current = Some(held);
+    // Every processor that schedules has an idle thread, so a decision there always finds one.
+    if let Err(reason) = make_idle(context, root, 0) {
+        panic!("threads: no idle thread for the boot processor: {reason}");
+    }
     SCHEDULING.fetch_or(1, Ordering::AcqRel);
     RAN.fetch_or(1, Ordering::Relaxed);
 }
 
-// One per online processor; each other processor then leaves its park for its idle thread.
+fn make_idle(context: &mut ThreadContext, root: NodeRef, cpu: usize) -> Result<(), SpawnError> {
+    let prepared = Prepared {
+        name: "idle",
+        entry: (idle_loop, 0),
+        owner: None,
+        clock: None,
+    };
+    let idle = resolved(create(context, root, prepared)?);
+    QUEUES[cpu].lock(context).idle = Some(idle);
+    Ok(())
+}
+
+// One per other online processor, which then leaves its park for its idle thread.
 pub(crate) fn start_idle(context: &mut ThreadContext) {
     if !is_available() {
         return;
@@ -866,23 +879,13 @@ pub(crate) fn start_idle(context: &mut ThreadContext) {
     let Some(root) = world::root() else {
         return;
     };
-    let online = percpu::online_set() | 1 << this_processor();
+    let online = percpu::online_set();
     for cpu in (0..MAX_PROCESSORS).filter(|cpu| online & (1 << cpu) != 0) {
         if QUEUES[cpu].lock(context).idle.is_some() {
             continue;
         }
-        let prepared = Prepared {
-            name: "idle",
-            entry: (idle_loop, 0),
-            owner: None,
-            clock: None,
-        };
-        match create(context, root, prepared) {
-            Ok(idle) => {
-                let idle = resolved(idle);
-                QUEUES[cpu].lock(context).idle = Some(idle);
-                notify(cpu);
-            }
+        match make_idle(context, root, cpu) {
+            Ok(()) => notify(cpu),
             Err(reason) => crate::warn!("threads: no idle thread for processor {cpu}: {reason}"),
         }
     }
@@ -1133,14 +1136,14 @@ pub(crate) fn sleep_ms(context: &mut ThreadContext, milliseconds: u64) {
             }
             continue;
         };
-        let sequence = register(me, Some(wake_at));
-        block(context, me, sequence, Some(wake_at), &mut saved);
+        register(me, Some(wake_at));
+        block(context, me, Some(wake_at));
         finish_wait(context, me, None);
     }
     saved.restore();
 }
 
-fn register(me: ThreadRef, deadline: Option<u64>) -> u64 {
+fn register(me: ThreadRef, deadline: Option<u64>) {
     let held = resolved(me);
     let Some(word) = advance(&held, Event::Park) else {
         panic!("thread {} began a wait while not running", held.name);
@@ -1149,7 +1152,6 @@ fn register(me: ThreadRef, deadline: Option<u64>) -> u64 {
     sched(&held, |sched| {
         sched.wait = Some(Wait { sequence, deadline });
     });
-    sequence
 }
 
 // `ready` runs under the wait list's lock, so it may take only leaf locks no waker holds.
@@ -1175,30 +1177,23 @@ pub(crate) fn wait_on(
         saved.restore();
         return;
     };
-    let sequence = {
+    {
         let mut links = list.lock(context);
         if ready() {
             drop(links);
             saved.restore();
             return;
         }
-        let sequence = register(me, until);
+        register(me, until);
         links.push(me);
-        sequence
-    };
-    block(context, me, sequence, until, &mut saved);
+    }
+    block(context, me, until);
     finish_wait(context, me, Some(list));
     saved.restore();
 }
 
 // Interrupts are off and the word is at Parking; it returns once the wait has ended.
-fn block(
-    context: &mut ThreadContext,
-    me: ThreadRef,
-    sequence: u64,
-    until: Option<u64>,
-    saved: &mut InterruptState,
-) {
+fn block(context: &mut ThreadContext, me: ThreadRef, until: Option<u64>) {
     let now = time::scheduler_now_ns();
     let cpu = this_processor();
     let mut queue = QUEUES[cpu].lock(context);
@@ -1209,20 +1204,7 @@ fn block(
     queue.wake_due(now);
     let average = queue.average(true);
     let Some(next) = queue.choose(Mode::Leave) else {
-        // A sole runnable thread remains charged while it waits, because it still owns the CPU.
-        let event = queue.next_event(now);
-        drop(queue);
-        reschedule_timer(earliest(event, until));
-        // Enabling and halting must be one step (`sti; hlt`), or the waking interrupt is lost.
-        if saved.were_enabled() {
-            saved.wait_for_interrupt();
-        }
-        let _ = claim(&held, sequence);
-        assert!(
-            advance(&held, Event::Resume).is_some(),
-            "a thread that could not block was left unwoken"
-        );
-        return;
+        panic!("processor {cpu} schedules without an idle thread");
     };
     if advance(&held, Event::Block).is_none() {
         // A waker claimed the wait after it registered: it is over before it blocked.
@@ -1273,13 +1255,8 @@ pub(crate) fn wake_waiters(list: &WaitList) -> usize {
             let Some(wait) = sched(&held, |sched| sched.wait) else {
                 continue;
             };
-            match claim(&held, wait.sequence) {
-                Some(Wake::Woken) => woken += 1,
-                Some(Wake::Waking) => {
-                    place_woken(&held);
-                    woken += 1;
-                }
-                _ => {}
+            if matches!(wake(&held, wait.sequence), Some(Wake::Woken | Wake::Waking)) {
+                woken += 1;
             }
         }
     }
@@ -1289,6 +1266,17 @@ pub(crate) fn wake_waiters(list: &WaitList) -> usize {
         reschedule_timer(Some(time::scheduler_now_ns()));
     }
     woken
+}
+
+// A waiter claimed before it blocked still runs, so its processor hears of the claim at once.
+fn wake(held: &Resolved, sequence: u64) -> Option<Wake> {
+    let state = claim(held, sequence);
+    match state {
+        Some(Wake::Waking) => place_woken(held),
+        Some(Wake::Woken) => notify(sched(held, |sched| sched.cpu)),
+        _ => {}
+    }
+    state
 }
 
 // Its stack and record stay its last processor's until the thread after it there lets them go.

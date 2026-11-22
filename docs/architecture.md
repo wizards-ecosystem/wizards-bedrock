@@ -79,9 +79,11 @@ is treated like a reserved one: never allocated and never direct-mapped.
    isolation, starts the local APIC, calibrates the clock, publishes the time page, checks that
    every interrupt source is masked or remapped, and only then sets the interrupt flag.
 7. `random::seed` seeds the kernel's random generator (section 5), and `processors::bring_up`
-   starts the other processors, which wait for their idle threads (section 3). The keyboard comes up polled,
+   starts the other processors, which wait for their idle threads (section 3). The boot thread
+   becomes a thread of the root world with the boot processor's idle thread, and boot stops if that
+   idle thread cannot be made. The keyboard comes up polled,
    the I/O APIC mappings are released with every line still masked, its poller and the service
-   worker start, the idle thread starts, and `user::run` spawns `witness.elf`. The boot thread
+   worker start, the other processors' idle threads start, and `user::run` spawns `witness.elf`. The boot thread
    then blocks reading keys and draws each one.
 
 Storage comes up before the clock is calibrated, so its bring-up waits use bounded spin counts.
@@ -445,7 +447,8 @@ holds of the thread's record and world, so a decision reaches each thread withou
 and its locks; a thread holds its world only while it is queued, asleep or running, which is never
 past the point teardown already waits for, an empty thread pool. If the policy ever returns nobody
 while every thread is a candidate, the kernel takes the first candidate. The idle thread sits
-outside the policy, runs only when nothing else can and halts. It takes no thread lock, since one
+outside the policy, runs only when nothing else can and halts. Every processor that schedules has
+one, so a thread that blocks or exits always has a thread to switch to. It takes no thread lock, since one
 it held could wait forever, so it wakes the service worker to log what calls and switches left
 behind. The other kernel threads are the keyboard poller and the service worker. A ring 0 frame is
 preempted at trap exit, after end-of-interrupt, and only when it had interrupts enabled. Every
@@ -462,7 +465,8 @@ queue's own lock, so a wake from a handler allocates nothing. A waiter checks it
 itself and moves its wake word from running to parking under that lock, then blocks under its run
 queue's lock only if no waker claimed the wait in between. A waker unlinks the thread and claims
 the wait sequence it registered with, so a stale link never ends a later wait; a thread it claims
-after the block waits until `on_cpu` is clear and is placed on its last processor's queue. A wait
+after the block waits until `on_cpu` is clear and is placed on its last processor's queue, and one
+it claims before the block still runs, so its processor gets the reschedule vector. A wait
 may also end at a deadline, through its processor's list of sleepers. An exiting thread marks its
 word dead and joins the reaper's list, linked through its record; the reaper frees the record and
 unmaps the stack only once the word is dead and `on_cpu` clear, after its process's teardown, and

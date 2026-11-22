@@ -266,6 +266,11 @@ number and is added here, as one entry or as an amending id on the entry it chan
   interrupt could switch the idle thread out holding a thread on no queue, for as long as other work
   kept that processor busy. Taking both queue locks in processor order would also close it, but the
   rank word allows one lock of a rank, and every path that assumes one queue lock would need review.
+- **D-597** The boot processor's idle thread is made with the boot thread's record, and boot stops
+  if it cannot be, so every processor that schedules has an idle thread and a blocking or exiting
+  thread always has one to switch to. A blocker halting in place when nothing else could run kept a
+  second wake path that only a failed idle thread reached, and a claim from another processor never
+  ended its halt.
 
 ## Memory
 
