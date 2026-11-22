@@ -4,7 +4,7 @@ use wost::mm::pool::{self, ArenaId, Dissolved};
 use super::{DESCENDANTS, Killer, registry};
 use crate::{reaper, thread};
 
-// Frame records one dissolve call examines with interrupts off.
+// Surrendered frames one dissolve call zeroes with interrupts off.
 const DISSOLVE_CHUNK: u32 = 512;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

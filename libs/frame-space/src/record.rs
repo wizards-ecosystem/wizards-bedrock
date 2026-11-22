@@ -22,6 +22,16 @@ const ARENA_SHIFT: u64 = 32;
 #[verus_verify]
 const ARENA_BITS: u64 = u64::MAX << ARENA_SHIFT;
 
+#[verus_verify]
+const LINK_SHIFT: u64 = 6;
+
+#[verus_verify]
+const LINK_MASK: u64 = (LINKED_FRAMES as u64) << LINK_SHIFT;
+
+// Frames numbered below this fit a link, which is biased by one in bits 6 to 31.
+#[verus_verify]
+pub const LINKED_FRAMES: u32 = 0x3ff_ffff;
+
 mod owner {
     use vstd::prelude::verus;
 
@@ -32,6 +42,7 @@ mod owner {
     pub(super) const TABLE: u64 = 2;
     pub(super) const DEVICE: u64 = 3;
     pub(super) const ARENA: u64 = 4;
+    pub(super) const SURRENDERED: u64 = 5;
 
     } // verus!
 }
@@ -71,6 +82,42 @@ impl ArenaIndex {
     }
 }
 
+// The next frame on an arena's surrendered list, or its end.
+#[verus_verify]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Link(pub(crate) u32);
+
+#[verus_verify]
+impl Link {
+    #[verus_spec(r =>
+        ensures
+            r matches Some(link) ==> link.spec_get() as int == frame as int + 1
+                && link.spec_get() <= 0x3ff_ffff,
+            r.is_none() == (frame >= 0x3ff_ffff),
+    )]
+    pub fn to(frame: usize) -> Option<Self> {
+        proof! {
+            assert(LINKED_FRAMES == 0x3ff_ffffu32) by (compute_only);
+        }
+        if frame >= LINKED_FRAMES as usize {
+            return None;
+        }
+        Some(Self(frame as u32 + 1))
+    }
+
+    #[verus_spec(r =>
+        ensures
+            r matches Some(frame) ==> frame as int + 1 == self.spec_get() as int,
+            r.is_none() == (self.spec_get() == 0),
+    )]
+    pub fn frame(self) -> Option<usize> {
+        if self.0 == 0 {
+            return None;
+        }
+        Some((self.0 - 1) as usize)
+    }
+}
+
 #[verus_verify]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FrameKind {
@@ -87,6 +134,7 @@ pub enum Owner {
     Table,
     Device,
     Arena(ArenaIndex, FrameKind),
+    Surrendered(ArenaIndex, FrameKind, Link),
 }
 
 #[verus_verify]
@@ -170,6 +218,36 @@ impl Record {
         }
     }
 
+    // A surrendered frame stays its arena's until dissolve, and its record links the next one.
+    #[verus_spec(r =>
+        ensures
+            r matches Some(record) ==> proof::surrenders(self, arena, next) && record.spec_owner()
+                == proof::surrender_of(self.spec_owner(), next) && record.spec_access()
+                == Access::Writable,
+            r.is_none() ==> !proof::surrenders(self, arena, next),
+    )]
+    pub fn surrendered(self, arena: ArenaIndex, next: Link) -> Option<Self> {
+        proof! {
+            assert(LINKED_FRAMES == 0x3ff_ffffu32) by (compute_only);
+        }
+        if next.0 > LINKED_FRAMES || matches!(self.access, Access::Sealed) {
+            return None;
+        }
+        match self.owner {
+            Owner::Arena(index, kind) => {
+                if index.0 == arena.0 {
+                    Some(Self {
+                        owner: Owner::Surrendered(index, kind, next),
+                        access: Access::Writable,
+                    })
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
     #[verus_spec(r =>
         ensures
             r == proof::encoded(self),
@@ -177,10 +255,10 @@ impl Record {
     pub fn encode(self) -> u64 {
         proof! {
             assert(OWNER_MASK == 7u64 && SEALED == 8u64 && KIND_MASK == 0x30u64 && KIND_SHIFT == 4u64
-                && ARENA_SHIFT == 32u64 && ARENA_BITS == 0xffff_ffff_0000_0000u64) by (compute_only);
+                && ARENA_SHIFT == 32u64 && ARENA_BITS == 0xffff_ffff_0000_0000u64 && LINK_SHIFT
+                == 6u64) by (compute_only);
             assert(owner::FREE == 0u64 && owner::KERNEL == 1u64 && owner::TABLE == 2u64
-                && owner::DEVICE == 3u64 && owner::ARENA == 4u64 && kind::OBJECT == 0u64
-                && kind::DATA == 1u64 && kind::TABLE == 2u64);
+                && owner::DEVICE == 3u64 && owner::ARENA == 4u64 && owner::SURRENDERED == 5u64);
         }
         let owner = match self.owner {
             Owner::Free => owner::FREE,
@@ -188,12 +266,13 @@ impl Record {
             Owner::Table => owner::TABLE,
             Owner::Device => owner::DEVICE,
             Owner::Arena(arena, frame) => {
-                let frame = match frame {
-                    FrameKind::ArenaObject => kind::OBJECT,
-                    FrameKind::ArenaData => kind::DATA,
-                    FrameKind::Table => kind::TABLE,
-                };
-                owner::ARENA | frame << KIND_SHIFT | u64::from(arena.0) << ARENA_SHIFT
+                owner::ARENA | kind_word(frame) << KIND_SHIFT | u64::from(arena.0) << ARENA_SHIFT
+            }
+            Owner::Surrendered(arena, frame, next) => {
+                owner::SURRENDERED
+                    | kind_word(frame) << KIND_SHIFT
+                    | u64::from(next.0) << LINK_SHIFT
+                    | u64::from(arena.0) << ARENA_SHIFT
             }
         };
         match self.access {
@@ -211,14 +290,15 @@ impl Record {
     pub fn decode(word: u64) -> Option<Self> {
         proof! {
             assert(OWNER_MASK == 7u64 && SEALED == 8u64 && KIND_MASK == 0x30u64 && KIND_SHIFT == 4u64
-                && ARENA_SHIFT == 32u64 && ARENA_BITS == 0xffff_ffff_0000_0000u64) by (compute_only);
+                && ARENA_SHIFT == 32u64 && ARENA_BITS == 0xffff_ffff_0000_0000u64 && LINK_SHIFT
+                == 6u64 && LINK_MASK == 0xffff_ffc0u64) by (compute_only);
             assert(owner::FREE == 0u64 && owner::KERNEL == 1u64 && owner::TABLE == 2u64
-                && owner::DEVICE == 3u64 && owner::ARENA == 4u64 && kind::OBJECT == 0u64
-                && kind::DATA == 1u64 && kind::TABLE == 2u64);
+                && owner::DEVICE == 3u64 && owner::ARENA == 4u64 && owner::SURRENDERED == 5u64);
+            assert((word & 0xffff_ffc0u64) >> 6u64 <= 0x3ff_ffffu64) by (bit_vector);
         }
         let class = word & OWNER_MASK;
-        if word & !(OWNER_MASK | SEALED | KIND_MASK | ARENA_BITS) != 0
-            || (class != owner::ARENA && word & (KIND_MASK | ARENA_BITS) != 0)
+        if (class != owner::SURRENDERED && word & LINK_MASK != 0)
+            || (class < owner::ARENA && word & (KIND_MASK | ARENA_BITS) != 0)
         {
             proof! {
                 proof::lemma_no_encoding(word);
@@ -230,21 +310,28 @@ impl Record {
             owner::KERNEL => Owner::Kernel,
             owner::TABLE => Owner::Table,
             owner::DEVICE => Owner::Device,
-            owner::ARENA => {
-                let frame = match (word & KIND_MASK) >> KIND_SHIFT {
-                    kind::OBJECT => FrameKind::ArenaObject,
-                    kind::DATA => FrameKind::ArenaData,
-                    kind::TABLE => FrameKind::Table,
-                    _ => {
-                        proof! {
-                            assert((word & 0x30u64) >> 4u64 <= 3) by (bit_vector);
-                            proof::lemma_no_encoding(word);
-                        }
-                        return None;
+            owner::ARENA => match kind_of(word) {
+                Some(frame) => Owner::Arena(ArenaIndex((word >> ARENA_SHIFT) as u32), frame),
+                None => {
+                    proof! {
+                        proof::lemma_no_encoding(word);
                     }
-                };
-                Owner::Arena(ArenaIndex((word >> ARENA_SHIFT) as u32), frame)
-            }
+                    return None;
+                }
+            },
+            owner::SURRENDERED => match kind_of(word) {
+                Some(frame) => Owner::Surrendered(
+                    ArenaIndex((word >> ARENA_SHIFT) as u32),
+                    frame,
+                    Link(((word & LINK_MASK) >> LINK_SHIFT) as u32),
+                ),
+                None => {
+                    proof! {
+                        proof::lemma_no_encoding(word);
+                    }
+                    return None;
+                }
+            },
             _ => {
                 proof! {
                     assert(word & 7u64 <= 7) by (bit_vector);
@@ -271,6 +358,40 @@ impl Record {
 
 #[verus_spec(r =>
     ensures
+        r == proof::kind_bits(frame),
+)]
+fn kind_word(frame: FrameKind) -> u64 {
+    proof! {
+        assert(kind::OBJECT == 0u64 && kind::DATA == 1u64 && kind::TABLE == 2u64);
+    }
+    match frame {
+        FrameKind::ArenaObject => kind::OBJECT,
+        FrameKind::ArenaData => kind::DATA,
+        FrameKind::Table => kind::TABLE,
+    }
+}
+
+#[verus_spec(r =>
+    ensures
+        r matches Some(frame) ==> proof::kind_bits(frame) == (word & 0x30u64) >> 4u64,
+        r.is_none() ==> (word & 0x30u64) >> 4u64 == 3,
+)]
+fn kind_of(word: u64) -> Option<FrameKind> {
+    proof! {
+        assert(KIND_MASK == 0x30u64 && KIND_SHIFT == 4u64) by (compute_only);
+        assert(kind::OBJECT == 0u64 && kind::DATA == 1u64 && kind::TABLE == 2u64);
+        assert((word & 0x30u64) >> 4u64 <= 3) by (bit_vector);
+    }
+    match (word & KIND_MASK) >> KIND_SHIFT {
+        kind::OBJECT => Some(FrameKind::ArenaObject),
+        kind::DATA => Some(FrameKind::ArenaData),
+        kind::TABLE => Some(FrameKind::Table),
+        _ => None,
+    }
+}
+
+#[verus_spec(r =>
+    ensures
         r == proof::can_seal(owner),
 )]
 const fn can_seal(owner: Owner) -> bool {
@@ -283,6 +404,19 @@ const fn can_seal(owner: Owner) -> bool {
 verus! {
 
 impl ArenaIndex {
+    pub open(crate) spec fn spec_get(self) -> u32 {
+        self.0
+    }
+}
+
+impl Link {
+    pub exec const END: Self
+        ensures
+            Self::END.spec_get() == 0,
+    {
+        Self(0)
+    }
+
     pub open(crate) spec fn spec_get(self) -> u32 {
         self.0
     }
@@ -316,6 +450,11 @@ impl Record {
             (Owner::Arena(a, k), Owner::Arena(b, j)) => {
                 assert(a.0 as u64 == b.0 as u64);
                 assert(proof::kind_bits(k) == proof::kind_bits(j));
+            },
+            (Owner::Surrendered(a, k, l), Owner::Surrendered(b, j, m)) => {
+                assert(a.0 as u64 == b.0 as u64);
+                assert(proof::kind_bits(k) == proof::kind_bits(j));
+                assert(l.0 as u64 == m.0 as u64);
             },
             _ => {},
         }

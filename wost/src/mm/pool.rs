@@ -2,7 +2,9 @@ use core::fmt;
 use core::mem::ManuallyDrop;
 use core::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 
-use frame_space::{Access, ArenaIndex, ColourCounts, MAX_COLOURS, Owner, Reservation};
+use frame_space::{
+    Access, ArenaIndex, ColourCounts, LINKED_FRAMES, Link, MAX_COLOURS, Owner, Reservation,
+};
 pub use frame_space::{ColourMask, FrameKind};
 
 use super::direct::DirectSpan;
@@ -14,6 +16,11 @@ use crate::sync::ThreadContext;
 const CAPACITY: usize = 256;
 
 const FRAME_BYTES: usize = frame_space::FRAME_SIZE as usize;
+
+const _: () = assert!(
+    super::CEILING / frame_space::FRAME_SIZE <= LINKED_FRAMES as u64,
+    "every managed frame fits a surrendered link"
+);
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct ArenaId {
@@ -67,7 +74,8 @@ struct Node {
     dying: bool,
     earmarked: usize,
     tokens: usize,
-    cursor: usize,
+    // The last frame surrendered, whose record links the one before it.
+    surrendered: Link,
     reservation: Reservation,
 }
 
@@ -78,7 +86,7 @@ impl Node {
         dying: false,
         earmarked: 0,
         tokens: 0,
-        cursor: 0,
+        surrendered: Link::END,
         reservation: Reservation::EMPTY,
     };
 }
@@ -119,7 +127,7 @@ impl Nodes {
         node.dying = false;
         node.earmarked = 0;
         node.tokens = 0;
-        node.cursor = 0;
+        node.surrendered = Link::END;
         node.reservation = reservation;
         ArenaId {
             index: index as u32,
@@ -460,7 +468,7 @@ impl ArenaFrame {
     pub fn surrender(self) {
         let frame = ManuallyDrop::new(self);
         frame.mappings.retire().settle();
-        surrender(frame.arena);
+        surrender(frame.frame, frame.arena);
     }
 
     // A writable user mapping holds a count, so a frame with none left has only flushes to await.
@@ -534,12 +542,6 @@ impl SealedFrame {
         span.is_some_and(|span| span.read_at(at, into))
     }
 
-    pub fn surrender(self) {
-        let frame = ManuallyDrop::new(self);
-        frame.mappings.retire().settle();
-        surrender(frame.arena);
-    }
-
     // The caller must already have removed every mapping of the frame and waited for that flush.
     pub fn release(self, flush: &mut Flush) {
         let frame = ManuallyDrop::new(self);
@@ -607,12 +609,18 @@ fn settle(frame: usize, arena: ArenaId, was: Access) {
     node.tokens -= 1;
 }
 
-// Ends a token in constant time; its frame stays charged until `dissolve` zeroes and frees it.
-fn surrender(arena: ArenaId) {
+// Ends a token in constant time; its frame stays charged on the arena's surrendered list, and its
+// bytes untouched for a processor that may still walk it, until `dissolve` zeroes and frees it.
+fn surrender(frame: usize, arena: ArenaId) {
+    let Some(link) = Link::to(frame) else {
+        panic!("frame {frame} lies beyond a surrendered link");
+    };
     let mut guard = FRAMES.lock_leaf();
     let Some(node) = guard.nodes.live(arena) else {
         panic!("a frame token outlived its arena");
     };
+    table::surrender(frame, arena.record(), node.surrendered);
+    node.surrendered = link;
     node.tokens -= 1;
 }
 
@@ -626,8 +634,8 @@ pub enum Dissolved {
     Done,
 }
 
-// Refuses until every token is released or surrendered, so no safe handle reaches what it frees;
-// examines at most `budget` frame records per call and none once no frame is left charged.
+// Refuses until every token is released or surrendered, so no safe handle reaches what it frees
+// and every frame still charged is on the surrendered list; frees at most `budget` per call.
 pub fn dissolve(arena: ArenaId, heir: ArenaId, budget: u32) -> Result<Dissolved, Refused> {
     let colours = super::colours();
     let mut guard = FRAMES.lock_leaf();
@@ -635,42 +643,40 @@ pub fn dissolve(arena: ArenaId, heir: ArenaId, budget: u32) -> Result<Dissolved,
     if arena == heir || nodes.live(heir).is_none() {
         return Err(Refused::Stale);
     }
-    let limit = space.limit();
     let node = nodes.live(arena).ok_or(Refused::Stale)?;
     if node.earmarked != 0 || node.tokens != 0 {
         return Err(Refused::Busy);
     }
     node.dying = true;
-    let end = node.cursor.saturating_add(budget as usize).min(limit);
-    let mut charged = holds_frames(&node.reservation);
-    while charged && node.cursor < end {
-        let frame = node.cursor;
-        node.cursor += 1;
-        let record = table::read(frame);
-        if !matches!(record.owner(), Owner::Arena(index, _) if index == arena.record()) {
-            continue;
-        }
-        table::release(frame);
-        if record.access() == Access::Sealed {
-            let flush = set_direct_access(frame_address(frame), DirectAccess::Writable);
-            assert!(
-                flush.is_complete(),
-                "a dissolved sealed frame awaits a flush"
-            );
-        }
-        // SAFETY: the record named this dying arena, whose handles are never used again, and
-        // its leaf is writable.
+    for _ in 0..budget {
+        let Some(frame) = node.surrendered.frame() else {
+            break;
+        };
+        let record = table::release(frame);
+        node.surrendered = match record.owner() {
+            Owner::Surrendered(index, _, next) if index == arena.record() => next,
+            _ => panic!(
+                "frame {frame} on arena {}'s surrendered list is {record:?}",
+                arena.index
+            ),
+        };
+        // SAFETY: the frame's token ended at its surrender, so nothing names it, and a surrendered
+        // frame was writable, so its leaf is.
         unsafe { zero_frame(frame) };
         let freed = space.free_reserved(frame, colours, pool, &mut node.reservation);
         assert!(
             freed.is_ok(),
             "arena frame {frame} was not charged: {freed:?}"
         );
-        charged = holds_frames(&node.reservation);
     }
-    if charged && node.cursor < limit {
+    if node.surrendered.frame().is_some() {
         return Ok(Dissolved::Progress);
     }
+    assert!(
+        !holds_frames(&node.reservation),
+        "arena {} holds a charged frame its surrendered list does not name",
+        arena.index
+    );
     let mut reservation = core::mem::replace(&mut node.reservation, Reservation::EMPTY);
     let Some(heir) = nodes.live(heir) else {
         return Err(Refused::Stale);

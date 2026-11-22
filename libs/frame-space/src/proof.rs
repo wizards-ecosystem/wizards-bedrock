@@ -550,8 +550,34 @@ pub open spec fn can_seal(owner: crate::Owner) -> bool {
     }
 }
 
+// A surrendered frame's link fits its 26 bits.
+pub open spec fn link_fits(owner: crate::Owner) -> bool {
+    match owner {
+        crate::Owner::Surrendered(_, _, next) => next.spec_get() <= 0x3ff_ffff,
+        _ => true,
+    }
+}
+
 pub open spec fn well_formed(record: crate::Record) -> bool {
-    record.spec_access() == crate::Access::Sealed ==> can_seal(record.spec_owner())
+    &&& (record.spec_access() == crate::Access::Sealed ==> can_seal(record.spec_owner()))
+    &&& link_fits(record.spec_owner())
+}
+
+// Only a writable frame of `arena` is surrendered, so each frame joins one list once.
+pub open spec fn surrenders(from: crate::Record, arena: crate::ArenaIndex, next: crate::Link) -> bool {
+    &&& from.spec_access() == crate::Access::Writable
+    &&& next.spec_get() <= 0x3ff_ffff
+    &&& match from.spec_owner() {
+        crate::Owner::Arena(index, _) => index == arena,
+        _ => false,
+    }
+}
+
+pub open spec fn surrender_of(owner: crate::Owner, next: crate::Link) -> crate::Owner {
+    match owner {
+        crate::Owner::Arena(arena, kind) => crate::Owner::Surrendered(arena, kind, next),
+        owner => owner,
+    }
 }
 
 pub open spec fn kind_bits(kind: crate::FrameKind) -> u64 {
@@ -569,6 +595,7 @@ pub open spec fn class_bits(owner: crate::Owner) -> u64 {
         crate::Owner::Table => 2,
         crate::Owner::Device => 3,
         crate::Owner::Arena(_, _) => 4,
+        crate::Owner::Surrendered(_, _, _) => 5,
     }
 }
 
@@ -576,12 +603,15 @@ pub open spec fn owner_word(owner: crate::Owner) -> u64 {
     match owner {
         crate::Owner::Arena(arena, kind) => 4u64 | kind_bits(kind) << 4u64 | (
         arena.spec_get() as u64) << 32u64,
+        crate::Owner::Surrendered(arena, kind, next) => 5u64 | kind_bits(kind) << 4u64 | (
+        next.spec_get() as u64) << 6u64 | (arena.spec_get() as u64) << 32u64,
         owner => class_bits(owner),
     }
 }
 
-// The record word: owner class in bits 0 to 2, sealed in bit 3, and for an arena owner the frame
-// kind in bits 4 and 5 and the arena index in bits 32 to 63.
+// The record word: owner class in bits 0 to 2, sealed in bit 3, for an arena or surrendered owner
+// the frame kind in bits 4 and 5 and the arena index in bits 32 to 63, and for a surrendered one
+// the link in bits 6 to 31.
 pub open spec fn encoded(record: crate::Record) -> u64 {
     match record.spec_access() {
         crate::Access::Writable => owner_word(record.spec_owner()),
@@ -589,46 +619,59 @@ pub open spec fn encoded(record: crate::Record) -> u64 {
     }
 }
 
-pub open spec fn stray(word: u64) -> u64 {
-    word & !(7u64 | 8u64 | 0x30u64 | 0xffff_ffff_0000_0000u64)
-}
-
 pub open spec fn layout_matches(word: u64, record: crate::Record) -> bool {
-    &&& stray(word) == 0
     &&& word & 7 == class_bits(record.spec_owner())
     &&& (word & 8 == 0) == (record.spec_access() == crate::Access::Writable)
     &&& match record.spec_owner() {
         crate::Owner::Arena(arena, kind) => (word & 0x30) >> 4u64 == kind_bits(kind) && (word
-            >> 32u64) as u32 == arena.spec_get(),
-        _ => word & (0x30u64 | 0xffff_ffff_0000_0000u64) == 0,
+            >> 32u64) as u32 == arena.spec_get() && word & 0xffff_ffc0u64 == 0,
+        crate::Owner::Surrendered(arena, kind, next) => (word & 0x30) >> 4u64 == kind_bits(kind)
+            && (word >> 32u64) as u32 == arena.spec_get() && (word & 0xffff_ffc0u64) >> 6u64
+            == next.spec_get() as u64,
+        _ => word & (0x30u64 | 0xffff_ffff_0000_0000u64) == 0 && word & 0xffff_ffc0u64 == 0,
     }
 }
 
 pub proof fn lemma_encoded_layout(record: crate::Record)
+    requires
+        link_fits(record.spec_owner()),
     ensures
         layout_matches(encoded(record), record),
 {
-    let sealed = record.spec_access() == crate::Access::Sealed;
     match record.spec_owner() {
         crate::Owner::Arena(arena, kind) => {
             let (k, a) = (kind_bits(kind), arena.spec_get());
             let plain = 4u64 | k << 4u64 | (a as u64) << 32u64;
-            assert(plain & !(7u64 | 8u64 | 0x30u64 | 0xffff_ffff_0000_0000u64) == 0 && plain & 7
-                == 4 && plain & 8 == 0 && (plain & 0x30) >> 4u64 == k && (plain >> 32u64) as u32
-                == a && (plain | 8u64) & !(7u64 | 8u64 | 0x30u64 | 0xffff_ffff_0000_0000u64) == 0
-                && (plain | 8u64) & 7 == 4 && (plain | 8u64) & 8 != 0 && ((plain | 8u64) & 0x30)
-                >> 4u64 == k && ((plain | 8u64) >> 32u64) as u32 == a) by (bit_vector)
+            assert(plain & 0xffff_ffc0u64 == 0 && plain & 7 == 4 && plain & 8 == 0 && (plain
+                & 0x30) >> 4u64 == k && (plain >> 32u64) as u32 == a && (plain | 8u64)
+                & 0xffff_ffc0u64 == 0 && (plain | 8u64) & 7 == 4 && (plain | 8u64) & 8 != 0 && ((
+            plain | 8u64) & 0x30) >> 4u64 == k && ((plain | 8u64) >> 32u64) as u32 == a)
+                by (bit_vector)
                 requires
                     k <= 2,
                     plain == 4u64 | k << 4u64 | (a as u64) << 32u64,
             ;
         },
+        crate::Owner::Surrendered(arena, kind, next) => {
+            let (k, a, l) = (kind_bits(kind), arena.spec_get(), next.spec_get());
+            let plain = 5u64 | k << 4u64 | (l as u64) << 6u64 | (a as u64) << 32u64;
+            assert(plain & 7 == 5 && plain & 8 == 0 && (plain & 0x30) >> 4u64 == k && (plain
+                >> 32u64) as u32 == a && (plain & 0xffff_ffc0u64) >> 6u64 == l as u64 && (plain
+                | 8u64) & 7 == 5 && (plain | 8u64) & 8 != 0 && ((plain | 8u64) & 0x30) >> 4u64 == k
+                && ((plain | 8u64) >> 32u64) as u32 == a && ((plain | 8u64) & 0xffff_ffc0u64)
+                >> 6u64 == l as u64) by (bit_vector)
+                requires
+                    k <= 2,
+                    l <= 0x3ff_ffff,
+                    plain == 5u64 | k << 4u64 | (l as u64) << 6u64 | (a as u64) << 32u64,
+            ;
+        },
         owner => {
             let c = class_bits(owner);
-            assert(c <= 3 ==> (c) & !(7u64 | 8u64 | 0x30u64 | 0xffff_ffff_0000_0000u64) == 0 && c & 7 == c && c & 8 == 0 && c & (0x30u64
-                | 0xffff_ffff_0000_0000u64) == 0 && (c | 8u64) & !(7u64 | 8u64 | 0x30u64 | 0xffff_ffff_0000_0000u64) == 0 && (c | 8u64) & 7 == c && (c
-                | 8u64) & 8 != 0 && (c | 8u64) & (0x30u64 | 0xffff_ffff_0000_0000u64) == 0)
-                by (bit_vector);
+            assert(c <= 3 ==> c & 0xffff_ffc0u64 == 0 && c & 7 == c && c & 8 == 0 && c & (0x30u64
+                | 0xffff_ffff_0000_0000u64) == 0 && (c | 8u64) & 0xffff_ffc0u64 == 0 && (c | 8u64)
+                & 7 == c && (c | 8u64) & 8 != 0 && (c | 8u64) & (0x30u64
+                | 0xffff_ffff_0000_0000u64) == 0) by (bit_vector);
         },
     }
 }
@@ -638,18 +681,24 @@ pub proof fn lemma_layout_unique(word: u64, record: crate::Record)
         layout_matches(word, record),
     ensures
         encoded(record) == word,
-        forall|other: crate::Record| #[trigger] encoded(other) == word ==> other == record,
+        forall|other: crate::Record|
+            link_fits(other.spec_owner()) && #[trigger] encoded(other) == word ==> other == record,
 {
+    assert((word & 0xffff_ffc0u64) >> 6u64 <= 0x3ff_ffffu64) by (bit_vector);
     lemma_encoded_layout(record);
     let e = encoded(record);
-    assert((word) & !(7u64 | 8u64 | 0x30u64 | 0xffff_ffff_0000_0000u64) == 0 && (e) & !(7u64 | 8u64 | 0x30u64 | 0xffff_ffff_0000_0000u64) == 0 && word & 7 == e & 7 && (word & 8 == 0) == (e & 8
-        == 0) && (word & 0x30) >> 4u64 == (e & 0x30) >> 4u64 && (word >> 32u64) as u32 == (e
-        >> 32u64) as u32 ==> word == e) by (bit_vector);
+    assert(word & 7 == e & 7 && (word & 8 == 0) == (e & 8 == 0) && (word & 0x30) >> 4u64 == (e
+        & 0x30) >> 4u64 && (word & 0xffff_ffc0u64) >> 6u64 == (e & 0xffff_ffc0u64) >> 6u64 && (word
+        >> 32u64) as u32 == (e >> 32u64) as u32 ==> word == e) by (bit_vector);
     assert(word & (0x30u64 | 0xffff_ffff_0000_0000u64) == 0 ==> (word & 0x30) >> 4u64 == 0 && (word
         >> 32u64) as u32 == 0) by (bit_vector);
     assert(e & (0x30u64 | 0xffff_ffff_0000_0000u64) == 0 ==> (e & 0x30) >> 4u64 == 0 && (e
         >> 32u64) as u32 == 0) by (bit_vector);
-    assert forall|other: crate::Record| #[trigger] encoded(other) == word implies other == record by {
+    assert(word & 0xffff_ffc0u64 == 0 ==> (word & 0xffff_ffc0u64) >> 6u64 == 0) by (bit_vector);
+    assert(e & 0xffff_ffc0u64 == 0 ==> (e & 0xffff_ffc0u64) >> 6u64 == 0) by (bit_vector);
+    assert forall|other: crate::Record|
+        link_fits(other.spec_owner()) && #[trigger] encoded(other) == word implies other
+        == record by {
         lemma_encoded_layout(other);
         record.lemma_same_layout(other, word);
     }
@@ -657,12 +706,15 @@ pub proof fn lemma_layout_unique(word: u64, record: crate::Record)
 
 pub proof fn lemma_no_encoding(word: u64)
     requires
-        stray(word) != 0 || word & 7 > 4 || (word & 7 != 4 && word & (0x30u64
-            | 0xffff_ffff_0000_0000u64) != 0) || (word & 7 == 4 && (word & 0x30) >> 4u64 == 3),
+        (word & 7 != 5 && word & 0xffff_ffc0u64 != 0) || word & 7 > 5 || (word & 7 < 4 && word
+            & (0x30u64 | 0xffff_ffff_0000_0000u64) != 0) || (word & 7 >= 4 && (word & 0x30)
+            >> 4u64 == 3),
     ensures
-        forall|record: crate::Record| #[trigger] encoded(record) != word,
+        forall|record: crate::Record|
+            link_fits(record.spec_owner()) ==> #[trigger] encoded(record) != word,
 {
-    assert forall|record: crate::Record| #[trigger] encoded(record) != word by {
+    assert forall|record: crate::Record|
+        link_fits(record.spec_owner()) implies #[trigger] encoded(record) != word by {
         lemma_encoded_layout(record);
     }
 }

@@ -680,6 +680,13 @@ number and is added here, as one entry or as an amending id on the entry it chan
   fit: its drain comes after `Quiesce`, closing the pins makes the world Closed at once, so a late
   process could no longer resolve its world to tear down, and the pin count also holds foreign
   teardown pins that `Quiesce` must not wait on.
+- **D-740** Each arena keeps its surrendered frames on a list linked through their frame records
+  (amends D-525's scan): `surrender` turns the record from `Arena` to `Surrendered`, which keeps the
+  arena and kind and adds a 26-bit link to the previous head, under the frame lock it already
+  takes, and dissolve pops the list. Dissolve refuses while a token is out, so the list is every
+  frame the arena still holds, and a kill costs what the world holds. The record carries the link
+  because a surrendered table may still be walked by a processor until its flush, so its own
+  entries cannot.
 - **D-548** A pin is a `wost::sync::PinGuard` at rank `Pin`, below the object locks, plus a counted
   slab hold of the world's record; object locks under it are taken as leaves at rank `Object`, so
   no guard lends its token and no equal-rank pair lock is needed.

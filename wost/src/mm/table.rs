@@ -1,7 +1,7 @@
 use core::ptr::null_mut;
 use core::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 
-use frame_space::{FRAME_SIZE, Owner, Record};
+use frame_space::{ArenaIndex, FRAME_SIZE, Link, Owner, Record};
 
 use super::{Space, direct_pointer, frame::frame_address};
 
@@ -57,6 +57,13 @@ pub(super) fn claim(frame: usize, owner: Owner) {
 pub(super) fn seal(frame: usize) {
     let Some(record) = read(frame).sealed() else {
         panic!("frame {frame} cannot be sealed from its current record");
+    };
+    write(frame, record);
+}
+
+pub(super) fn surrender(frame: usize, arena: ArenaIndex, next: Link) {
+    let Some(record) = read(frame).surrendered(arena, next) else {
+        panic!("frame {frame} was surrendered while it is no writable frame of its arena");
     };
     write(frame, record);
 }

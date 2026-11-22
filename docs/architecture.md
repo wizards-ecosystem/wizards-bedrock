@@ -260,15 +260,16 @@ promised, and a refusal changes nothing. For each colour
 the unused reservations never exceed the free frames, so the kernel's own allocations take only
 unreserved frames and a reserved frame can always be taken. An operation calls `pool::earmark`
 first and then takes `ArenaFrame`s that cannot fail; each arrives zeroed and is zeroed when released.
-`pool::dissolve` returns the reservation to the heir at once when the arena's `used` counts are
-zero; otherwise it walks the records in bounded steps, zeroing and freeing the arena's frames,
-and stops as soon as none is left charged. There are 256 nodes; a node's generation is in every
+`pool::dissolve` pops the arena's surrendered list in bounded steps, zeroing and freeing each
+frame, and then returns the reservation to the heir with its `used` counts at zero. There are 256 nodes; a node's generation is in every
 `ArenaId`, and a node whose generation reaches the maximum is retired. Each node counts its
 outstanding `ArenaFrame` and `SealedFrame` tokens, and dissolve refuses with no change while that
 count or an earmark is not zero, so no safe handle reaches a frame it frees. A holder ends a token
 either by releasing it (zeroed and credited at once) or by `surrender`, which costs constant time
-and leaves the frame to dissolve's scan. Surrendered frames are the only ones that scan finds, so
-a world whose objects all went back to their pools dissolves without reading the frame table.
+and leaves the frame charged. A surrendered frame's record turns `Surrendered`, still naming the
+arena, and links the frame surrendered before it; the head sits in the arena's node. The frame's
+own bytes stay untouched, since a processor may still walk a surrendered table. With no token
+left, those frames are all the arena still holds, so dissolve never reads the frame table.
 
 Kernel objects made for a world live in object pages (`wost/src/mm/slab.rs`). An `ObjectPage`
 owns one arena object frame and holds `libs/object-pool`'s slot state,
@@ -326,7 +327,7 @@ it is in flight; closes the pin
 word and waits for the counted pins to drain; takes the record, leaves every ancestor's set and
 only then credits the nearest ancestor still holding a set with its own slot and unspent budgets,
 releases every object page and bumps the node's generation; and then dissolves the arena,
-scanning for surrendered frames 512 records at a time, each frame zeroed and credited once to the
+popping its surrendered list 512 frames at a time, each frame zeroed and credited once to the
 nearest Live ancestor, chosen again for every chunk. No step waits on another world's teardown.
 A descendant still dying returns its own share when it detaches, so each set holds at most the
 members its world's budget paid for at every instant.

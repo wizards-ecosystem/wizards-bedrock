@@ -16,7 +16,7 @@ use vstd::prelude::*;
 use vstd::prelude::{proof, verus, verus_spec, verus_verify};
 
 pub use colour::{ColourCounts, ColourMask, Colours, MAX_COLOURS};
-pub use record::{Access, ArenaIndex, FrameKind, Owner, Record};
+pub use record::{Access, ArenaIndex, FrameKind, LINKED_FRAMES, Link, Owner, Record};
 pub use reserve::{Pool, Reservation};
 
 #[verus_verify]
