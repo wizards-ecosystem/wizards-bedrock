@@ -909,7 +909,8 @@ pub(crate) fn run_processor(cpu: usize) -> ! {
     }
 }
 
-// Holds one run-queue lock at a time: the source's to take a thread, then its own to place it.
+// One run-queue lock at a time, and interrupts off from the take to the place, so this processor
+// never runs another thread while the stolen one is on no queue.
 fn steal(context: &mut ThreadContext) -> bool {
     let me = this_processor();
     if QUEUES[me].lock(context).ready > 0 {
@@ -925,11 +926,14 @@ fn steal(context: &mut ThreadContext) -> bool {
     let Some(source) = wake_state::steal_source(&ready, me) else {
         return false;
     };
-    let Some(taken) = QUEUES[source].lock(context).take_off_cpu(me) else {
-        return false;
-    };
-    QUEUES[me].lock(context).place(&taken);
-    true
+    let saved = interrupt::disable();
+    let taken = QUEUES[source].lock(context).take_off_cpu(me);
+    let stolen = taken.is_some();
+    if let Some(taken) = taken {
+        QUEUES[me].lock(context).place(&taken);
+    }
+    saved.restore();
+    stolen
 }
 
 // It runs only when nothing else can, so it never logs: a thread lock it held could wait forever.

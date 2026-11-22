@@ -453,8 +453,9 @@ spin lock clears that flag, so critical sections need no preempt count. A ring 3
 preempted in its handoff, as a thread. Every lock is dropped before a switch. A new or woken thread
 goes to its last processor if that one idles, else to an idle one, else to its last, and any
 other processor it lands on gets the reschedule vector. An idle processor steals the first ready
-thread off every processor from the queue with the most, holding one run-queue lock at a time, so a
-thread moves between queues only while it is on no queue and no processor.
+thread off every processor from the queue with the most, holding one run-queue lock at a time and
+interrupts off from the take to the place, so a runnable thread is on no queue and no processor only
+inside that one move.
 
 A `WaitQueue` (`kernel/src/wait.rs`) is a list of threads linked through their records under the
 queue's own lock, so a wake from a handler allocates nothing. A waiter checks its condition, links

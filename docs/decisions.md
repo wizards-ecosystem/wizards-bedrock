@@ -261,6 +261,11 @@ number and is added here, as one entry or as an amending id on the entry it chan
   weighted average vruntime as running sums (`eevdf::Load`, Linux's `avg_vruntime`), so only the
   pick walks the queue; sleepers stay in deadline order, so the alarm and the wake-up read the
   head (amends D-582).
+- **D-596** A steal is one move with interrupts off, from the take off the busy queue to the place
+  on the thief's, still under one run-queue lock at a time (amends D-585). Between the two locks an
+  interrupt could switch the idle thread out holding a thread on no queue, for as long as other work
+  kept that processor busy. Taking both queue locks in processor order would also close it, but the
+  rank word allows one lock of a rank, and every path that assumes one queue lock would need review.
 
 ## Memory
 
