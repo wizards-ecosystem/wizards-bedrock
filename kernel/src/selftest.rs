@@ -74,6 +74,10 @@ const CHECKS: &[Check] = &[
         "channel moves conserve handles",
         processes::channel_moves_conserve_handles,
     ),
+    (
+        "a read that opens an endpoint page stays within its earmark",
+        processes::a_read_that_opens_an_endpoint_page_stays_within_its_earmark,
+    ),
     ("calls end once", processes::calls_end_once),
     (
         "two spaces map one address to different memory",

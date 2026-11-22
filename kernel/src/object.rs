@@ -68,7 +68,8 @@ pub(crate) enum ObjectRef {
     World(NodeRef),
     // Weak and single-use: the call it answers lives in its caller's queue.
     Reply(Caller),
-    // An object whose world died while it was in transit: every use answers `DEAD`.
+    // An object whose world died in transit, or that may not enter its holder's world: every use
+    // answers `DEAD`.
     Dead(ObjectType),
 }
 

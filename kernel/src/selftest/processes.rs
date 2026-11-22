@@ -13,7 +13,8 @@ use super::threads::{STOP_SPINNING, light_spinner, yields_until};
 use super::worlds;
 use crate::arch::current::trap;
 use crate::arena::Local;
-use crate::channel::{self, Endpoint, Peer};
+use crate::channel::{self, Endpoint, Head, NONE_MOVED, NONE_RECEIVED, Peer};
+use crate::object::ObjectRef;
 use crate::process::Rites;
 use crate::thread::ThreadContext;
 use crate::world::{self, registry};
@@ -338,6 +339,82 @@ pub(super) fn calls_end_once(context: &mut ThreadContext) -> bool {
             root,
             before + server_reserved + client_reserved,
         )
+}
+
+// Records on 64 full pages, so the next one opens ordinal 64 and a directory level above it.
+const BEFORE_THE_PAGE: usize = 256;
+
+const PAGE_FRAMES: u32 = 512;
+
+const FOREIGN: usize = 4;
+
+// A read that brings four endpoints of another world into a world whose endpoint pool must open a
+// page and a directory level re-homes all four from the frames it earmarked.
+pub(super) fn a_read_that_opens_an_endpoint_page_stays_within_its_earmark(
+    context: &mut ThreadContext,
+) -> bool {
+    let Some(root) = world::root() else {
+        return false;
+    };
+    let per_colour = PAGE_FRAMES.div_ceil(pool::colours().max(1));
+    let (Some(sender), Some(reader)) = (
+        worlds::child(context, root, WORLD_FRAMES),
+        worlds::child(context, root, per_colour),
+    ) else {
+        return false;
+    };
+    let (Some((before, _)), Some((sent, _)), Some((read, _))) = (
+        world::inspect(root),
+        world::inspect(sender),
+        world::inspect(reader),
+    ) else {
+        return false;
+    };
+    let rehomed = foreign_read(context, sender, reader) == Some(FOREIGN);
+    rehomed
+        && worlds::killed(context, sender, root, before + sent)
+        && worlds::killed(context, reader, root, before + sent + read)
+}
+
+// The endpoints a read of four moved from the sender re-homed into the reader.
+fn foreign_read(context: &mut ThreadContext, sender: NodeRef, reader: NodeRef) -> Option<usize> {
+    let from = registry::hold(sender)?;
+    let into = registry::hold(reader)?;
+    let mut earmark = pool::earmark(context, from.arena(), Endpoint::frames_for(6)?).ok()?;
+    let (inbox, writer) = channel::create(&mut earmark, &from)?;
+    let (first, second) = channel::create(&mut earmark, &from)?;
+    let (third, fourth) = channel::create(&mut earmark, &from)?;
+    drop(earmark);
+    let mut earmark = pool::earmark(context, into.arena(), Endpoint::rehome_frames_for(1)?).ok()?;
+    let inbox = Peer {
+        world: sender,
+        endpoint: inbox,
+    };
+    let inbox = channel::rehome(&mut earmark, &into, inbox)?;
+    drop(earmark);
+    let mut moved = NONE_MOVED;
+    for (slot, endpoint) in moved.iter_mut().zip([first, second, third, fourth]) {
+        *slot = Some((ObjectRef::Endpoint(endpoint), channel::RIGHTS));
+    }
+    channel::write(&from, writer, &[], &mut moved, FOREIGN, None).ok()?;
+    for _ in 1..BEFORE_THE_PAGE {
+        let mut earmark = pool::earmark(context, into.arena(), Endpoint::frames_for(1)?).ok()?;
+        channel::alone(&mut earmark, &into)?;
+    }
+    let Head::Message { foreign, .. } = channel::head(&into, inbox) else {
+        return None;
+    };
+    let frames = Endpoint::rehome_frames_for(u32::from(foreign))?;
+    let mut earmark = pool::earmark(context, into.arena(), frames).ok()?;
+    let mut received = NONE_RECEIVED;
+    channel::take(&into, inbox, (0, foreign, foreign, false), &mut [], &mut received)?;
+    let arrived = received
+        .into_iter()
+        .flatten()
+        .map(|carried| channel::arrive(Some(&mut earmark), &into, carried))
+        .filter(|object| matches!(object, ObjectRef::Endpoint(_)))
+        .count();
+    Some(arrived)
 }
 
 // Two endpoints of the root world, one for each program's birth.

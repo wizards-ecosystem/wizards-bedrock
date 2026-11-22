@@ -576,18 +576,26 @@ declared room, reserving a table slot for each moved handle first; a message too
 `TOO_SMALL` with its size and stays queued. An empty inbox with an open peer arms the read: a pending
 entry in the reader's queue and a place in the endpoint's 8 armed readers. A write pops the oldest
 armed reader and marks its entry ready, and the reader's next `RingWait` performs the read in its
-own context. Once the inbox is empty and the peer is gone, a read answers `PEER_CLOSED`.
+own context. A read that ends without taking the head message (too small, no memory, no table slot,
+or cancelled after its wake) wakes the next armed reader, so no read waits while a message is
+queued. Once the inbox is empty and the peer is gone, a read answers `PEER_CLOSED`.
 
 A moved object stays in its sender's world while in transit. A read that takes an endpoint of
-another world re-homes it: the reader's world earmarks a record and two data frames first, and a
-refusal answers `NO_MEMORY` with the message still queued. The kernel copies the old record's inbox
-and frame into a new endpoint in the reader's world, checks under the old endpoint's lock that
-nothing changed since the copy (or copies again), marks the old one forwarded to the new, points the
-peer at the new one and releases the old, whose frame returns to the sender's world. Since the moved
-reference was the endpoint's only one, no handle names the old record afterwards: only a peer's
-write that raced the repoint meets the forwarded record, and it follows it once. An object whose world is no longer live installs as a
-dead entry: every use answers `DEAD` and `Close` frees it. A memory object that arrives in another
-world inside a re-homed inbox installs dead as well, until memory objects cross worlds.
+another world re-homes it: the reader's world first earmarks, for each such endpoint, a data frame
+and a record page with its directory path, and a refusal answers `NO_MEMORY` with the message still
+queued. Under one pin of the old record's world, the kernel freezes the old record, copies its inbox
+and frame into a new endpoint in the reader's world, and forwards the old record to the new one. A
+write into a frozen record answers `FULL` and keeps its handles, and a peer's close during the
+freeze is passed to the new endpoint. The kernel then points the peer's current record at the new
+endpoint and the new endpoint at it, waiting out a peer frozen by its own re-home, and releases the
+old record, whose frame returns to the sender's world. A peer that can no longer be held is dying,
+so the new endpoint reads `PEER_CLOSED`. Since the moved reference was the endpoint's only one, no
+handle names the old record afterwards: only a peer's write that raced the repoint meets the
+forwarded record, and it follows it once. An object whose world is no longer live installs as a
+dead entry: every use answers `DEAD` and `Close` frees it. Each handle a re-homed inbox carries
+meets the rule of a direct write into the reader's world; one that may not enter, such as a memory
+object, arrives dead, and its reference stays in the old record until that record's own world
+destroys it.
 
 An endpoint goes with its last strong reference. Its inbox's messages are destroyed with every
 handle they carry, each other world's count released under a pin of that world, its peer turns

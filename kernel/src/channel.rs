@@ -77,7 +77,14 @@ struct State {
     bytes: ArenaFrame,
     armed: [Option<Reader>; ARMED],
     doomed: Option<Local<Endpoint>>,
+    // Being re-homed: refuses commits and relinks until it forwards.
+    frozen: bool,
 }
+
+const _: () = assert!(
+    HANDLES <= u32::BITS as u16,
+    "a re-home names its refused transit slots in one word"
+);
 
 const TRANSIT_AT: usize = BYTES as usize;
 
@@ -283,22 +290,34 @@ impl Endpoint {
         EndpointPool::frames_for(endpoints)?.checked_add(endpoints)
     }
 
-    // A re-home takes one more frame for the copy, which returns once the copy is in place.
+    // Each re-home takes one data frame and at worst opens a record page and its directory path,
+    // whatever other inserts into the same pool take meanwhile.
     pub(crate) fn rehome_frames_for(endpoints: u32) -> Option<u32> {
-        Self::frames_for(endpoints)?.checked_add(1)
+        Self::frames_for(1)?.checked_mul(endpoints)
     }
 
     fn insert(earmark: &mut Earmark, world: &World, link: Link<Peer>) -> Option<Local<Self>> {
         let bytes = earmark.take(FrameKind::ArenaData)?;
-        Some(world.endpoints.insert(earmark, || Self {
+        Some(Self::place(earmark, world, bytes, Inbox::EMPTY, link))
+    }
+
+    fn place(
+        earmark: &mut Earmark,
+        world: &World,
+        bytes: ArenaFrame,
+        inbox: Inbox,
+        link: Link<Peer>,
+    ) -> Local<Self> {
+        world.endpoints.insert(earmark, || Self {
             state: SpinLock::new(State {
                 link,
-                inbox: Inbox::EMPTY,
+                inbox,
                 bytes,
                 armed: [None; ARMED],
                 doomed: None,
+                frozen: false,
             }),
-        }))
+        })
     }
 }
 
@@ -401,18 +420,25 @@ fn admit(there: &World, here: NodeRef, to: Peer, moved: &Moved) -> Result<(), Wr
     }
 }
 
-// A memory object stays in its world, and a world handle enters only that world or an ancestor.
 pub(crate) fn admits(there: &World, here: NodeRef, moved: &Moved) -> bool {
-    let crossing = there.node() != here;
-    !moved.iter().flatten().any(|&(object, _)| match object {
-        ObjectRef::Memory(_) => crossing,
-        ObjectRef::World(node) => crossing && !there.governs(node),
-        ObjectRef::Endpoint(_)
-        | ObjectRef::File(_)
-        | ObjectRef::Directory(_)
-        | ObjectRef::Reply(_)
-        | ObjectRef::Dead(_) => false,
-    })
+    moved
+        .iter()
+        .flatten()
+        .all(|&(object, _)| enters(there, here, object))
+}
+
+// A memory object stays in its world, and a world handle enters only that world or an ancestor.
+fn enters(there: &World, from: NodeRef, object: ObjectRef) -> bool {
+    from == there.node()
+        || match object {
+            ObjectRef::Memory(_) => false,
+            ObjectRef::World(node) => there.governs(node),
+            ObjectRef::Endpoint(_)
+            | ObjectRef::File(_)
+            | ObjectRef::Directory(_)
+            | ObjectRef::Reply(_)
+            | ObjectRef::Dead(_) => true,
+        }
 }
 
 fn commit(
@@ -423,6 +449,9 @@ fn commit(
     call: Option<(Caller, &CallCell)>,
 ) -> Result<Commit, WriteRefusal> {
     let mut state = to.state.lock_leaf();
+    if state.frozen {
+        return Err(WriteRefusal::Full);
+    }
     match route(from, state.link, hop) {
         Route::Deliver => {}
         Route::Follow(next) => return Ok(Commit::Follow(next)),
@@ -530,8 +559,8 @@ fn copy_frame(from: &ArenaFrame, to: &mut ArenaFrame) {
     }
 }
 
-// A moved object as the reading world holds it: an endpoint of another world is copied in, and a
-// counted object of another world, or one whose world died in transit, becomes a dead entry.
+// A moved object as the reading world holds it: an endpoint of another world is copied in, and
+// one whose world died in transit becomes a dead entry.
 pub(crate) fn arrive(earmark: Option<&mut Earmark>, world: &World, carried: Carried) -> ObjectRef {
     if carried.origin == world.node() {
         return carried.object;
@@ -546,12 +575,7 @@ pub(crate) fn arrive(earmark: Option<&mut Earmark>, world: &World, carried: Carr
                 rehome(earmark, world, from)
             })
             .map_or(ObjectRef::Dead(ObjectType::Endpoint), ObjectRef::Endpoint),
-        ObjectRef::Memory(_) => {
-            if let Some(origin) = registry::pin(carried.origin, Admission::Live) {
-                carried.object.release(&origin);
-            }
-            ObjectRef::Dead(ObjectType::Memory)
-        }
+        ObjectRef::Memory(_) => panic!("a memory object reached another world past its admission"),
         object => object,
     }
 }
@@ -582,59 +606,70 @@ fn dispose(world: &World, carried: Carried, doomed: &mut Option<Local<Endpoint>>
 }
 
 // Copies an endpoint of another world, its record and queued contents, into this world's arena
-// from the earmark, then retires the old one; `None` when the other world is no longer live.
+// from the earmark, then retires the old one; `None` when the other world is no longer live. The
+// old record stays frozen from the copy to the forward, inside one pin, so the copy is final.
 pub(crate) fn rehome(earmark: &mut Earmark, world: &World, from: Peer) -> Option<Local<Endpoint>> {
-    let (Some(mut spare), Some(moved)) = (
-        earmark.take(FrameKind::ArenaData),
-        Endpoint::insert(earmark, world, Link::PeerClosed),
-    ) else {
+    let Some(mut bytes) = earmark.take(FrameKind::ArenaData) else {
         panic!("a re-home outran its earmark");
     };
+    let source = registry::pin(from.world, Admission::Live)?;
+    let (inbox, link) = {
+        let hold = held(&source, from.endpoint);
+        let mut state = hold.state.lock_leaf();
+        assert!(!state.frozen, "an endpoint in transit was re-homed twice at once");
+        state.frozen = true;
+        copy_frame(&state.bytes, &mut bytes);
+        (state.inbox.clone(), state.link)
+    };
+    let refused = admit_copy(world, &mut bytes);
+    let moved = Endpoint::place(earmark, world, bytes, inbox, link);
     let me = Peer {
         world: world.node(),
         endpoint: moved,
     };
-    // The peer may still commit while the copy is made, so the old record is checked unchanged
-    // before it forwards; each retry follows a commit into a bounded inbox or one link change.
-    let link = loop {
-        let Some(source) = registry::pin(from.world, Admission::Live) else {
-            abandon(world, moved);
-            return None;
-        };
-        let (inbox, link) = {
-            let hold = held(&source, from.endpoint);
-            let state = hold.state.lock_leaf();
-            copy_frame(&state.bytes, &mut spare);
-            (state.inbox.clone(), state.link)
-        };
-        drop(source);
-        {
-            let hold = held(world, moved);
-            let mut state = hold.state.lock_leaf();
-            core::mem::swap(&mut state.bytes, &mut spare);
-            state.inbox = inbox.clone();
-            state.link = link;
-        }
-        let Some(source) = registry::pin(from.world, Admission::Live) else {
-            abandon(world, moved);
-            return None;
-        };
+    let closed = {
         let hold = held(&source, from.endpoint);
         let mut state = hold.state.lock_leaf();
-        if state.inbox == inbox && state.link == link {
-            state.link = Link::Forwarded(me);
-            state.inbox = Inbox::EMPTY;
-            break link;
+        state.frozen = false;
+        state.inbox = Inbox::EMPTY;
+        for slot in 0..usize::from(HANDLES) {
+            if refused & (1 << slot) == 0 {
+                state.hand(slot, None, NOWHERE);
+            }
         }
+        let closed = state.link != link;
+        if let Link::Open(_) = state.link {
+            state.link = Link::Forwarded(me);
+        }
+        closed
     };
-    if let Link::Open(peer) = link {
-        repoint(world, peer, from, me);
+    drop(source);
+    match link {
+        Link::Open(_) if closed => settle_home(world, moved, link, Link::PeerClosed),
+        Link::Open(peer) => repoint(world, peer, me, link),
+        Link::PeerClosed | Link::Forwarded(_) => {}
     }
     if let Some(source) = registry::pin(from.world, Admission::Live) {
         release_pinned(&source, from.endpoint);
     }
-    drop(spare);
     Some(moved)
+}
+
+// Each moved handle the copy brings into this world meets the rule a direct write meets. One that
+// may not enter is dead here and stays in the old record, whose own world releases it.
+fn admit_copy(world: &World, frame: &mut ArenaFrame) -> u32 {
+    let mut refused = 0;
+    for slot in 0..usize::from(HANDLES) {
+        let at = TRANSIT_AT + slot * TRANSIT;
+        if let Some(carried) = peek(frame, at)
+            && !enters(world, carried.origin, carried.object)
+        {
+            let dead = ObjectRef::Dead(carried.object.kind());
+            hand(frame, at, Some((dead, carried.rights)), world.node());
+            refused |= 1 << slot;
+        }
+    }
+    refused
 }
 
 // An endpoint a spawn was given and never placed goes back through its own world.
@@ -644,42 +679,60 @@ pub(crate) fn forfeit(endpoint: Peer) {
     }
 }
 
-// A copy that never took over owns none of the references it holds.
-fn abandon(world: &World, endpoint: Local<Endpoint>) {
-    {
-        let hold = held(world, endpoint);
-        let mut state = hold.state.lock_leaf();
-        state.inbox = Inbox::EMPTY;
-        state.link = Link::PeerClosed;
+// The new home's link moves on only from the one it was copied with, so a later step wins.
+fn settle_home(world: &World, home: Local<Endpoint>, copied: Link<Peer>, now: Link<Peer>) {
+    let hold = held(world, home);
+    let mut state = hold.state.lock_leaf();
+    if state.link == copied {
+        state.link = now;
     }
-    release(world, endpoint);
 }
 
-// The peer names the new home instead of the old, following any re-home of its own.
-fn repoint(world: &World, mut peer: Peer, old: Peer, new: Peer) {
+enum Repoint {
+    Frozen,
+    Follow(Peer),
+    Done,
+    Closed,
+}
+
+// The peer's current record names the new home, and the new home names it. A peer being re-homed
+// is waited out, since its freeze is one pinned step that waits on nothing. A peer that can no
+// longer be held is dying and its close may miss the old record, so the new home closes here.
+fn repoint(world: &World, first: Peer, home: Peer, copied: Link<Peer>) {
+    let mut peer = first;
     loop {
         let Some(there) = reach(world, peer.world) else {
-            return;
+            return settle_home(world, home.endpoint, copied, Link::PeerClosed);
         };
         if there.endpoints.acquire(peer.endpoint).is_err() {
-            return;
+            drop(there);
+            return settle_home(world, home.endpoint, copied, Link::PeerClosed);
         }
-        let next = {
+        let step = {
             let hold = held(&there, peer.endpoint);
             let mut state = hold.state.lock_leaf();
             match state.link {
-                Link::Open(at) if at == old => {
-                    state.link = Link::Open(new);
-                    None
+                _ if state.frozen => Repoint::Frozen,
+                Link::Forwarded(to) => Repoint::Follow(to),
+                Link::Open(_) => {
+                    state.link = Link::Open(home);
+                    Repoint::Done
                 }
-                Link::Forwarded(to) => Some(to),
-                Link::Open(_) | Link::PeerClosed => None,
+                Link::PeerClosed => Repoint::Closed,
             }
         };
         there.let_go(peer.endpoint);
-        match next {
-            Some(to) => peer = to,
-            None => return,
+        match step {
+            Repoint::Frozen => core::hint::spin_loop(),
+            // A peer's re-home that finished meanwhile already linked both ends.
+            Repoint::Follow(_) if held(world, home.endpoint).state.lock_leaf().link != copied => {
+                return;
+            }
+            Repoint::Follow(to) => peer = to,
+            Repoint::Done => return settle_home(world, home.endpoint, copied, Link::Open(peer)),
+            Repoint::Closed => {
+                return settle_home(world, home.endpoint, copied, Link::PeerClosed);
+            }
         }
     }
 }
@@ -710,19 +763,44 @@ pub(crate) fn arm(
     Ok(())
 }
 
+// A settled read that a write had already woken passes the wake on.
 pub(crate) fn disarm(world: &World, endpoint: Local<Endpoint>, reader: Reader) {
     if world.endpoints.acquire(endpoint).is_err() {
         return;
     }
-    {
+    let next = {
         let hold = held(world, endpoint);
         let mut state = hold.state.lock_leaf();
-        if let Some(at) = state.armed.iter().position(|slot| *slot == Some(reader)) {
-            state.armed[at] = None;
-            state.armed[at..].rotate_left(1);
+        match state.armed.iter().position(|slot| *slot == Some(reader)) {
+            Some(at) => {
+                state.armed[at] = None;
+                state.armed[at..].rotate_left(1);
+                None
+            }
+            None => next_reader(&mut state),
         }
-    }
+    };
     release(world, endpoint);
+    if let Some(next) = next {
+        next.queue.ready(next);
+    }
+}
+
+// A read that ends without taking the head message wakes the next waiting read, so none stays
+// waiting while a message is queued.
+pub(crate) fn pass(world: &World, endpoint: Local<Endpoint>) {
+    let next = next_reader(&mut held(world, endpoint).state.lock_leaf());
+    if let Some(next) = next {
+        next.queue.ready(next);
+    }
+}
+
+fn next_reader(state: &mut State) -> Option<Reader> {
+    if state.inbox.count() == 0 {
+        None
+    } else {
+        pop_armed(state)
+    }
 }
 
 pub(crate) fn release(world: &World, endpoint: Local<Endpoint>) {
@@ -791,6 +869,13 @@ fn destroy(world: &World, first: Local<Endpoint>) {
                     queue::close_call(world, caller);
                 }
                 for carried in received.into_iter().flatten() {
+                    dispose(world, carried, &mut doomed);
+                }
+            }
+            // What a re-home refused to carry into the reader's world stays in its transit slot.
+            for slot in 0..usize::from(HANDLES) {
+                let left = held.state.lock_leaf().claim(slot);
+                if let Some(carried) = left {
                     dispose(world, carried, &mut doomed);
                 }
             }
