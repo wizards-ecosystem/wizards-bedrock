@@ -286,14 +286,12 @@ impl Reach<'_> {
 }
 
 impl Endpoint {
+    // Each endpoint made or re-homed takes one data frame and at worst opens a record page and its
+    // directory path, whatever other inserts into the same pool take meanwhile.
     pub(crate) fn frames_for(endpoints: u32) -> Option<u32> {
-        EndpointPool::frames_for(endpoints)?.checked_add(endpoints)
-    }
-
-    // Each re-home takes one data frame and at worst opens a record page and its directory path,
-    // whatever other inserts into the same pool take meanwhile.
-    pub(crate) fn rehome_frames_for(endpoints: u32) -> Option<u32> {
-        Self::frames_for(1)?.checked_mul(endpoints)
+        EndpointPool::frames_for(1)?
+            .checked_add(1)?
+            .checked_mul(endpoints)
     }
 
     fn insert(earmark: &mut Earmark, world: &World, link: Link<Peer>) -> Option<Local<Self>> {
@@ -722,6 +720,7 @@ fn repoint(world: &World, first: Peer, home: Peer, copied: Link<Peer>) {
             }
         };
         there.let_go(peer.endpoint);
+        drop(there);
         match step {
             Repoint::Frozen => core::hint::spin_loop(),
             // A peer's re-home that finished meanwhile already linked both ends.

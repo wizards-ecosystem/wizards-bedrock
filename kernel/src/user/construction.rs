@@ -396,7 +396,7 @@ fn earmark(
         .and_then(|((record, contents), tables)| record.checked_add(contents)?.checked_add(tables));
     let frames = world::TablePool::frames_for(1)
         .zip(QueueRef::frames_for())
-        .zip(Endpoint::rehome_frames_for(1))
+        .zip(Endpoint::frames_for(1))
         .zip(records)
         .zip(stack.zip(plan.frames()))
         .and_then(|((((table, queue), channel), records), (stack, image))| {

@@ -370,7 +370,7 @@ fn attempt(
         // The reader's world pays for every moved endpoint that comes from another world.
         let mut earmark = None;
         if foreign > 0 {
-            let frames = Endpoint::rehome_frames_for(u32::from(foreign));
+            let frames = Endpoint::frames_for(u32::from(foreign));
             match frames.map(|frames| pool::earmark(process.context, process.world.arena(), frames))
             {
                 Some(Ok(taken)) => earmark = Some(taken),

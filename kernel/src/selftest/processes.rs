@@ -385,7 +385,7 @@ fn foreign_read(context: &mut ThreadContext, sender: NodeRef, reader: NodeRef) -
     let (first, second) = channel::create(&mut earmark, &from)?;
     let (third, fourth) = channel::create(&mut earmark, &from)?;
     drop(earmark);
-    let mut earmark = pool::earmark(context, into.arena(), Endpoint::rehome_frames_for(1)?).ok()?;
+    let mut earmark = pool::earmark(context, into.arena(), Endpoint::frames_for(1)?).ok()?;
     let inbox = Peer {
         world: sender,
         endpoint: inbox,
@@ -404,7 +404,7 @@ fn foreign_read(context: &mut ThreadContext, sender: NodeRef, reader: NodeRef) -
     let Head::Message { foreign, .. } = channel::head(&into, inbox) else {
         return None;
     };
-    let frames = Endpoint::rehome_frames_for(u32::from(foreign))?;
+    let frames = Endpoint::frames_for(u32::from(foreign))?;
     let mut earmark = pool::earmark(context, into.arena(), frames).ok()?;
     let mut received = NONE_RECEIVED;
     channel::take(&into, inbox, (0, foreign, foreign, false), &mut [], &mut received)?;
